@@ -24,6 +24,8 @@ cli/ (Python host)
 ## Try it
 
 Needs Python 3.11+, Go 1.22+ (to build the download plugin) and Node 18+ (for chat).
+On recent macOS use a current Go release: macOS 26's loader refuses binaries
+without an `LC_UUID` load command, which Go 1.22 builds lack.
 
 ```sh
 make build        # build plugins for this machine
