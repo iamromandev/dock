@@ -25,7 +25,7 @@ class DockE2E(unittest.TestCase):
     @classmethod
     def dock(cls, *args, stdin="", **kw):
         return subprocess.run(
-            [sys.executable, "-m", "dock", *args],
+            [sys.executable, "-m", "cli", *args],
             input=stdin, capture_output=True, text=True, check=False, env=cls.env, cwd=kw.get("cwd", ROOT), timeout=30,
         )
 
@@ -70,7 +70,7 @@ class DockE2E(unittest.TestCase):
 
     def test_ctrl_c_cancels_and_cleans_up(self):
         p = subprocess.Popen(
-            [sys.executable, "-m", "dock", "chat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            [sys.executable, "-m", "cli", "chat"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, text=True, env=self.env, cwd=ROOT,
         )
         time.sleep(1.0)  # let it provision and wait at the prompt

@@ -10,7 +10,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from dock import API_VERSION
+from cli import API_VERSION
 
 
 class ManifestError(Exception):

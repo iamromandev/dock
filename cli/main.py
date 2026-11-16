@@ -9,9 +9,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from dock import __version__, lifecycle
-from dock.manifest import ManifestError, platform_key
-from dock.store import Store
+from cli import __version__, lifecycle
+from cli.manifest import ManifestError, platform_key
+from cli.store import Store
 
 BUILTIN_HELP = """\
 usage: dock <command> [args...]

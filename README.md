@@ -5,8 +5,8 @@ any language, that speaks the [dock protocol](protocol/PROTOCOL.md):
 JSON-RPC 2.0 over stdin/stdout, one message per line.
 
 ```
-dock (Python host)
- ├─ cli.py        parse argv, built-ins, forward everything else
+cli/ (Python host)
+ ├─ main.py       parse argv, built-ins, forward everything else
  ├─ store.py      ~/.dock: install, index, resolve command -> plugin
  ├─ manifest.py   plugin.toml + pick the build for this OS/arch
  ├─ lifecycle.py  initialize -> provision -> invoke -> unprovision -> shutdown, crash recovery
@@ -27,11 +27,11 @@ Needs Python 3.11+, Go 1.22+ (to build the download plugin) and Node 18+ (for ch
 ```sh
 make build        # build plugins for this machine
 make install      # install the 3 example plugins into ~/.dock
-python3 -m dock help
-python3 -m dock hello Roman
-python3 -m dock count 30
-python3 -m dock chat
-python3 -m dock download https://example.com/ -o page.html
+python3 -m cli help
+python3 -m cli hello Roman
+python3 -m cli count 30
+python3 -m cli chat
+python3 -m cli download https://example.com/ -o page.html
 make test         # end-to-end tests in a throwaway DOCK_HOME
 ```
 

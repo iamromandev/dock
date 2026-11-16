@@ -14,7 +14,7 @@ import os
 import shutil
 from pathlib import Path
 
-from dock.manifest import Manifest, ManifestError
+from cli.manifest import Manifest, ManifestError
 
 
 class Store:

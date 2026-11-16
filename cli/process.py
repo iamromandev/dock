@@ -13,8 +13,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from dock import API_VERSION
-from dock.manifest import Manifest
+from cli import API_VERSION
+from cli.manifest import Manifest
 
 
 class PluginError(Exception):

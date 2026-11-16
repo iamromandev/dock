@@ -6,11 +6,11 @@ import json
 import os
 import time
 
-from dock import API_VERSION, __version__
-from dock.manifest import Manifest, ManifestError
-from dock.process import CANCELLED, PluginError, PluginProcess
-from dock.store import Store
-from dock.ui import TerminalUI
+from cli import API_VERSION, __version__
+from cli.manifest import Manifest, ManifestError
+from cli.process import CANCELLED, PluginError, PluginProcess
+from cli.store import Store
+from cli.ui import TerminalUI
 
 INIT_TIMEOUT = 10
 PROVISION_TIMEOUT = 120

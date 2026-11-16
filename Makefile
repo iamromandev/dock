@@ -1,4 +1,4 @@
-PLATFORM := $(shell python3 -c "from dock.manifest import platform_key; print(platform_key())")
+PLATFORM := $(shell python3 -c "from cli.manifest import platform_key; print(platform_key())")
 DL := plugins/download
 
 .PHONY: build dist install test clean
@@ -20,9 +20,9 @@ dist:
 
 ## install: put the three example plugins into $$DOCK_HOME (default ~/.dock)
 install: build
-	python3 -m dock plugins install plugins/hello
-	python3 -m dock plugins install plugins/chat
-	python3 -m dock plugins install plugins/download
+	python3 -m cli plugins install plugins/hello
+	python3 -m cli plugins install plugins/chat
+	python3 -m cli plugins install plugins/download
 
 test: build
 	python3 -m unittest discover -s tests -v
