@@ -19,7 +19,9 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          # Recent macOS dyld rejects binaries without LC_UUID, which Go 1.22.x
+          # does not emit; build with current stable Go.
+          go-version: stable
           cache-dependency-path: plugin/download/go.mod
       - uses: actions/setup-node@v4
         with:
