@@ -1,0 +1,18 @@
+id = "dev.dock.chat"
+version = "0.1.0"
+api_version = "1"
+description = "Interactive chat (toy model; swap in a real LLM in provision())"
+
+# Interpreted plugin: one entry that runs anywhere Node is installed.
+[run]
+any = { cmd = "node", args = ["index.js"], requires = ["node"] }
+
+[[commands]]
+name = "chat"
+summary = "Chat with the model (/exit to quit)"
+
+[capabilities]
+permissions = ["network"]
+
+[lifecycle]
+provision = true   # load the model before invoke, release it after

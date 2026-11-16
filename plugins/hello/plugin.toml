@@ -1,0 +1,15 @@
+id = "dev.dock.hello"
+version = "0.1.0"
+api_version = "1"
+description = "Example plugin built with the Python SDK; one plugin, two commands"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+[[commands]]
+name = "hello"
+summary = "Greet someone: hello [name]"
+
+[[commands]]
+name = "count"
+summary = "Count with a progress bar: count [n]"
