@@ -26,13 +26,28 @@ class PluginError(Exception):
 CANCELLED = -32800
 
 
+class Hub:
+    """One inbox for every plugin in a session.
+
+    Whatever the host is waiting for, it keeps serving all plugins. Example:
+    while the host waits for the llm plugin to finish `generate`, chat is
+    already sending `output` for the tokens it was forwarded; those must reach
+    the terminal now, not after the reply completes.
+    """
+
+    def __init__(self):
+        self.inbox: queue.Queue = queue.Queue()  # (process, kind, message)
+        self.replies: dict = {}                  # (process, id) -> reply that arrived while waiting on something else
+
+
 class PluginProcess:
-    def __init__(self, manifest: Manifest, log_path, handlers: dict[str, Callable[[dict], Any]]):
+    def __init__(self, manifest: Manifest, log_path, handlers: dict[str, Callable[[dict], Any]], hub: Hub | None = None):
         self.manifest = manifest
         self.log_path = log_path
-        self.handlers = handlers  # plugin -> host methods (output, log, progress, prompt_user)
+        self.handlers = handlers  # plugin -> host methods (output, log, progress, prompt_user, call)
+        self.hub = hub or Hub()
+        self.exited = False
         self._ids = itertools.count(1)
-        self._inbox: queue.Queue = queue.Queue()
         self._write_lock = threading.Lock()
         self.proc: subprocess.Popen | None = None
 
@@ -70,10 +85,10 @@ class PluginProcess:
             if not line:
                 continue
             try:
-                self._inbox.put(("msg", json.loads(line)))
+                self.hub.inbox.put((self, "msg", json.loads(line)))
             except json.JSONDecodeError:
-                self._inbox.put(("junk", line))
-        self._inbox.put(("eof", None))
+                self.hub.inbox.put((self, "junk", line))
+        self.hub.inbox.put((self, "eof", None))
 
     def stop(self, timeout: float = 3.0) -> None:
         if not self.proc:
@@ -110,29 +125,33 @@ class PluginProcess:
         return self.wait_for(req_id, method, timeout)
 
     def wait_for(self, req_id: int, method: str, timeout: float | None) -> Any:
+        """Wait for our reply to req_id, serving every plugin's messages meanwhile."""
+        key = (self, req_id)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-            try:
-                kind, msg = self._inbox.get(timeout=remaining)
-            except queue.Empty:
-                raise PluginError(f"{self.manifest.id} did not answer '{method}' in {timeout}s")
-
-            if kind == "eof":
-                self._inbox.put(("eof", None))  # keep it visible for later calls
-                raise PluginError(f"{self.manifest.id} exited during '{method}' (see {self.log_path})")
-            if kind == "junk":
-                self._log.write(f"[non-protocol stdout] {msg}\n")
-                continue
-            if "method" in msg:
-                self._handle_incoming(msg)
-                continue
-            if msg.get("id") == req_id:
+            if key in self.hub.replies:
+                msg = self.hub.replies.pop(key)
                 if "error" in msg:
                     err = msg["error"]
                     raise PluginError(err.get("message", "plugin error"), err.get("code", -32000))
                 return msg.get("result")
-            # a late reply to an earlier request (e.g. after cancel): ignore
+            if self.exited:
+                raise PluginError(f"{self.manifest.id} exited during '{method}' (see {self.log_path})")
+
+            remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            try:
+                proc, kind, msg = self.hub.inbox.get(timeout=remaining)
+            except queue.Empty:
+                raise PluginError(f"{self.manifest.id} did not answer '{method}' in {timeout}s") from None
+
+            if kind == "eof":
+                proc.exited = True
+            elif kind == "junk":
+                proc._log.write(f"[non-protocol stdout] {msg}\n")
+            elif "method" in msg:
+                proc._handle_incoming(msg)  # may itself wait (e.g. a relayed call): re-entrant by design
+            else:
+                self.hub.replies[(proc, msg.get("id"))] = msg  # ours, or someone else's: picked up by its waiter
 
     def _handle_incoming(self, msg: dict) -> None:
         method, params, msg_id = msg["method"], msg.get("params") or {}, msg.get("id")

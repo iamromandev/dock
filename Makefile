@@ -18,9 +18,10 @@ dist:
 	GOOS=darwin  GOARCH=arm64 go build -o bin/download-darwin-arm64 . && \
 	GOOS=windows GOARCH=amd64 go build -o bin/download-windows-x86_64.exe .
 
-## install: put the three example plugins into $$DOCK_HOME (default ~/.dock)
+## install: put the four example plugins into $$DOCK_HOME (default ~/.dock)
 install: build
 	python3 -m cli plugins install plugins/hello
+	python3 -m cli plugins install plugins/llm
 	python3 -m cli plugins install plugins/chat
 	python3 -m cli plugins install plugins/download
 

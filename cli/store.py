@@ -5,6 +5,7 @@
   state/<id>.provisioned    crash-recovery markers
   data/<id>/                each plugin's private data dir
   logs/<id>.log             each plugin's stderr
+  config.toml               optional; [providers] picks a plugin per capability
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import tomllib
 from pathlib import Path
 
 from cli.manifest import Manifest, ManifestError
@@ -59,6 +61,8 @@ class Store:
             "path": str(dest),
             "description": installed.description,
             "commands": {c.name: c.summary for c in installed.commands},
+            "provides": installed.provides,
+            "requires": installed.requires,
         }
         self._save_index(idx)
         return installed
@@ -91,6 +95,35 @@ class Store:
             choices = ", ".join(f"{pid}:{name}" for pid in owners)
             raise ManifestError(f"'{name}' is provided by several plugins; use one of: {choices}")
         return self.get(owners[0]), name
+
+    def providers_of(self, capability: str) -> list[str]:
+        return sorted(pid for pid, e in self.index().items() if capability in e.get("provides", []))
+
+    def config(self) -> dict:
+        path = self.home / "config.toml"
+        if not path.exists():
+            return {}
+        try:
+            return tomllib.loads(path.read_text(encoding="utf-8"))
+        except tomllib.TOMLDecodeError as e:
+            raise ManifestError(f"{path}: {e}") from e
+
+    def provider(self, capability: str) -> Manifest:
+        """The plugin that serves a capability: config.toml choice, else the only one installed."""
+        owners = self.providers_of(capability)
+        chosen = self.config().get("providers", {}).get(capability)
+        if chosen:
+            if chosen not in owners:
+                raise ManifestError(f"config.toml picks {chosen} for '{capability}', but it does not provide it")
+            return self.get(chosen)
+        if not owners:
+            raise ManifestError(f"no installed plugin provides '{capability}'")
+        if len(owners) > 1:
+            raise ManifestError(
+                f"several plugins provide '{capability}' ({', '.join(owners)}); choose one in "
+                f"{self.home / 'config.toml'}:\n  [providers]\n  {capability} = \"{owners[0]}\""
+            )
+        return self.get(owners[0])
 
     # per-plugin paths ----------------------------------------------------
     def data_dir(self, plugin_id: str) -> Path:

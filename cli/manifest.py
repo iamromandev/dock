@@ -42,6 +42,8 @@ class Manifest:
     commands: list[Command] = field(default_factory=list)
     provision: bool = False
     permissions: list[str] = field(default_factory=list)
+    provides: list[str] = field(default_factory=list)  # capabilities other plugins can call
+    requires: list[str] = field(default_factory=list)  # capabilities this plugin calls
 
     @classmethod
     def load(cls, root: Path) -> Manifest:
@@ -64,6 +66,10 @@ class Manifest:
         if "." not in data["id"]:
             raise ManifestError(f"{path}: id must be namespaced, like 'vendor.name'")
 
+        caps = data.get("capabilities", {})
+        if not data.get("commands") and not caps.get("provides"):
+            raise ManifestError(f"{path}: a plugin needs at least one command or one provided capability")
+
         return cls(
             id=data["id"],
             version=str(data["version"]),
@@ -73,7 +79,9 @@ class Manifest:
             root=root,
             commands=[Command(c["name"], c.get("summary", "")) for c in data.get("commands", [])],
             provision=bool(data.get("lifecycle", {}).get("provision", False)),
-            permissions=list(data.get("capabilities", {}).get("permissions", [])),
+            permissions=list(caps.get("permissions", [])),
+            provides=list(caps.get("provides", [])),
+            requires=list(caps.get("requires", [])),
         )
 
     def entrypoint(self) -> list[str]:

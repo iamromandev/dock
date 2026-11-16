@@ -49,13 +49,27 @@ def cmd_plugins(store: Store, args: list[str]) -> int:
         if not idx:
             print("no plugins installed")
         for pid, e in sorted(idx.items()):
-            print(f"{pid:<22} {e['version']:<8} {', '.join(e['commands'])}")
+            parts = []
+            if e["commands"]:
+                parts.append("commands: " + ", ".join(e["commands"]))
+            if e.get("provides"):
+                parts.append("provides: " + ", ".join(e["provides"]))
+            print(f"{pid:<22} {e['version']:<8} {'  '.join(parts)}")
         return 0
     if sub == "install" and len(args) == 2:
         m = store.install(Path(args[1]))
-        print(f"installed {m.id} {m.version} -> commands: {', '.join(c.name for c in m.commands)}")
+        print(f"installed {m.id} {m.version}")
+        if m.commands:
+            print(f"  commands:    {', '.join(c.name for c in m.commands)}")
+        if m.provides:
+            print(f"  provides:    {', '.join(m.provides)}")
+        if m.requires:
+            print(f"  requires:    {', '.join(m.requires)}")
         if m.permissions:
-            print(f"  requested permissions: {', '.join(m.permissions)}")
+            print(f"  permissions: {', '.join(m.permissions)}")
+        for cap in m.requires:
+            if not store.providers_of(cap):
+                print(f"  note: nothing installed provides '{cap}' yet; install a plugin that does")
         return 0
     if sub == "remove" and len(args) == 2:
         store.remove(args[1])
@@ -65,6 +79,9 @@ def cmd_plugins(store: Store, args: list[str]) -> int:
         m = store.get(args[1])
         print(f"id:          {m.id}\nversion:     {m.version}\nprotocol:    v{m.api_version}")
         print(f"description: {m.description}\nprovision:   {m.provision}")
+        print(f"commands:    {', '.join(c.name for c in m.commands) or '-'}")
+        print(f"provides:    {', '.join(m.provides) or '-'}")
+        print(f"requires:    {', '.join(m.requires) or '-'}")
         print(f"permissions: {', '.join(m.permissions) or '-'}")
         print(f"builds:      {', '.join(m.run)}  (this machine: {platform_key()})")
         print(f"location:    {m.root}")

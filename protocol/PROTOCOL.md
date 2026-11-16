@@ -38,7 +38,8 @@ so it can find its own files. The user's directory arrives in `invoke.cwd`.
 
 | Method   | Params | Notes |
 |----------|--------|-------|
-| `cancel` | `{}`   | User pressed Ctrl-C. Abort the running `invoke` and reply to it with error code `-32800`. |
+| `cancel` | `{}`   | User pressed Ctrl-C. Abort the running `invoke` (or provider `call`) and reply to it with error code `-32800`. |
+| `call_event` | `{capability, data}` | A streamed event from a provider, during a `call` this plugin made. |
 
 ## Plugin → host notifications
 
@@ -53,6 +54,60 @@ so it can find its own files. The user's directory arrives in `invoke.cwd`.
 | Method        | Params     | Result                           |
 |---------------|------------|----------------------------------|
 | `prompt_user` | `{prompt}` | `{text}` or `{eof: true}` when input has ended |
+| `call`        | `{capability, method, params}` | whatever the provider returns (see Capabilities) |
+
+## Capabilities: plugins using other plugins
+
+A plugin can serve a named **capability** to other plugins, for example the
+llm plugin serves `llm` and chat uses it. Plugins never talk to each other
+directly; the host relays every message.
+
+Declared in `plugin.toml`:
+
+```toml
+[capabilities]
+provides = ["llm"]   # on the provider
+requires = ["llm"]   # on the user of it
+```
+
+Flow for chat calling `llm.generate`:
+
+```
+chat ──call {capability:"llm", method:"generate", params}──▶ host
+host ──call {capability:"llm", method:"generate", params}──▶ llm
+llm  ──event {data:{token}}  (any number)──────────────────▶ host
+host ──call_event {capability:"llm", data:{token}}─────────▶ chat
+llm  ──result {text}───────────────────────────────────────▶ host ──▶ chat
+```
+
+Rules:
+
+- **Provider side:** a plugin that `provides` a capability must answer the
+  host request `call {capability, method, params}`. It may send any number of
+  `event {data}` notifications while working; the host forwards each to the
+  caller as `call_event {capability, data}`. What `method`, `params`, `data`
+  and the result mean is defined by the capability, not by this protocol (the
+  `llm` capability is documented in `plugins/llm/main.py`).
+- **Caller side:** a plugin may only call capabilities listed in its
+  `requires`; anything else is rejected.
+- **Startup:** before invoking a command, the host starts and provisions one
+  provider for each capability the plugin `requires`. A missing provider
+  fails the command before it starts. Providers live for the whole dock
+  command and are unprovisioned and stopped after it, newest first.
+- **Choosing a provider:** if several installed plugins provide the same
+  capability, the user picks one in `$DOCK_HOME/config.toml`:
+
+  ```toml
+  [providers]
+  llm = "dev.dock.llm"
+  ```
+
+- **Isolation:** providers cannot use `prompt_user`; only the plugin running
+  the command talks to the user. `log` and `progress` from providers are shown
+  as usual.
+- **Cancel:** on Ctrl-C the host sends `cancel` to every plugin in the session.
+- **Cycles:** a call that would re-enter a capability already being called is
+  rejected.
 
 ## Error codes
 

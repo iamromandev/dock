@@ -1,18 +1,16 @@
 id = "dev.dock.chat"
-version = "0.1.0"
+version = "0.2.0"
 api_version = "1"
-description = "Interactive chat (toy model; swap in a real LLM in provision())"
+description = "Interactive chat; the model comes from whichever plugin provides 'llm'"
 
-# Interpreted plugin: one entry that runs anywhere Node is installed.
 [run]
 any = { cmd = "node", args = ["index.js"], requires = ["node"] }
 
 [[commands]]
 name = "chat"
-summary = "Chat with the model (/exit to quit)"
+summary = "Chat with the model (/exit to quit, /reset to clear history)"
 
+# chat holds no model. It calls the `llm` capability through the host, and the
+# host starts and provisions the llm plugin for the session.
 [capabilities]
-permissions = ["network"]
-
-[lifecycle]
-provision = true   # load the model before invoke, release it after
+requires = ["llm"]

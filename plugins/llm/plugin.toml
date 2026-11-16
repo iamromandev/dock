@@ -1,0 +1,15 @@
+id = "dev.dock.llm"
+version = "0.1.0"
+api_version = "1"
+description = "Language model provider: built-in toy model, or any OpenAI-compatible server"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+# No commands of its own: other plugins call it through the host.
+[capabilities]
+provides = ["llm"]
+permissions = ["network"]
+
+[lifecycle]
+provision = true   # load the model / open the client; unprovision releases it
