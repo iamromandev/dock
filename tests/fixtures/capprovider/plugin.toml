@@ -1,0 +1,13 @@
+id = "dev.dock.capprovider"
+version = "0.1.0"
+api_version = "1"
+description = "Test fixture: provides 'probecap'; streams events during a call and answers cancel after a delay"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+[capabilities]
+provides = ["probecap"]
+
+[lifecycle]
+provision = true

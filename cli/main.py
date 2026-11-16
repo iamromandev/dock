@@ -19,18 +19,34 @@ usage: dock <command> [args...]
 built-in:
   help                      show this help
   version                   show dock version
-  plugins list              list installed plugins
-  plugins info <id>         show a plugin's manifest details
-  plugins install <path>    install a plugin from a folder
-  plugins remove <id>       uninstall a plugin
+  shell                     open the interactive dock> prompt (default on a terminal)
+  plugin list               list installed plugins
+  plugin info <id>          show a plugin's manifest details
+  plugin install <path>     install a plugin from a folder
+  plugin remove <id>        uninstall a plugin
 
 options (before the command):
   -v, --verbose             show plugin debug logs
 """
 
 
-def cmd_help(store: Store) -> int:
-    print(BUILTIN_HELP)
+SHELL_HELP = """\
+built-in:
+  help                      show this help
+  version                   show dock version
+  status                    list running plugins with idle time
+  exit, quit                leave the shell (or press Ctrl-D)
+  plugin list               list installed plugins
+  plugin info <id>          show a plugin's manifest details
+  plugin install <path>     install a plugin from a folder
+  plugin remove <id>        uninstall a plugin
+
+anything else runs a plugin command: <command> [args...]
+"""
+
+
+def cmd_help(store: Store, in_shell: bool = False) -> int:
+    print(SHELL_HELP if in_shell else BUILTIN_HELP)
     idx = store.index()
     if idx:
         print("plugin commands:")
@@ -38,11 +54,11 @@ def cmd_help(store: Store) -> int:
             for name, summary in entry["commands"].items():
                 print(f"  {name:<25} {summary}  ({pid})")
     else:
-        print("no plugins installed yet: dock plugins install <path>")
+        print("no plugins installed yet: dock plugin install <path>")
     return 0
 
 
-def cmd_plugins(store: Store, args: list[str]) -> int:
+def cmd_plugin(store: Store, args: list[str]) -> int:
     sub = args[0] if args else "list"
     if sub == "list":
         idx = store.index()
@@ -99,13 +115,17 @@ def main(argv: list[str] | None = None) -> int:
 
     store = Store()
     try:
+        if argv[:1] == ["shell"] or (not argv and sys.stdin.isatty()):
+            from cli import shell
+
+            return shell.start(store, verbose)
         if not argv or argv[0] in ("help", "-h", "--help"):
             return cmd_help(store)
         if argv[0] in ("version", "--version"):
             print(f"dock {__version__}")
             return 0
-        if argv[0] == "plugins":
-            return cmd_plugins(store, argv[1:])
+        if argv[0] == "plugin":
+            return cmd_plugin(store, argv[1:])
 
         lifecycle.recover(store)
         manifest, command = store.resolve(argv[0])

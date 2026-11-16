@@ -87,7 +87,7 @@ Rules:
   `event {data}` notifications while working; the host forwards each to the
   caller as `call_event {capability, data}`. What `method`, `params`, `data`
   and the result mean is defined by the capability, not by this protocol (the
-  `llm` capability is documented in `plugins/llm/main.py`).
+  `llm` capability is documented in `plugin/llm/main.py`).
 - **Caller side:** a plugin may only call capabilities listed in its
   `requires`; anything else is rejected.
 - **Startup:** before invoking a command, the host starts and provisions one
@@ -106,6 +106,12 @@ Rules:
   the command talks to the user. `log` and `progress` from providers are shown
   as usual.
 - **Cancel:** on Ctrl-C the host sends `cancel` to every plugin in the session.
+  A `cancel` that arrives while the plugin has nothing in flight (it only
+  concerns an operation that already finished, or one that ran in another
+  plugin) must be ignored and must not affect later `invoke`s or `call`s. A
+  plugin that has not answered its in-flight request a few seconds after
+  `cancel` (or after a second Ctrl-C) is killed by the host and started afresh
+  on next use.
 - **Cycles:** a call that would re-enter a capability already being called is
   rejected.
 
@@ -121,8 +127,14 @@ Rules:
 ## Lifecycle
 
 ```
-spawn → initialize → [provision] → invoke → [unprovision] → shutdown → (kill on timeout)
+spawn → initialize → [provision] → invoke* → [unprovision] → shutdown → (kill on timeout)
 ```
+
+`invoke` may repeat any number of times, sequentially, between
+`initialize`/`provision` and `shutdown` (the interactive `dock shell` keeps
+plugins running between operations). A plugin must handle every `invoke` in
+the same process and must not leak per-invoke state into the next one, unless
+it documents otherwise.
 
 ## Recovery
 
@@ -131,6 +143,12 @@ deletes the marker after `unprovision` succeeds. If dock or the plugin is
 killed hard, the marker survives; on the next run the host starts the plugin,
 calls `initialize` then `unprovision`, and removes the marker. So `unprovision`
 must be able to clean up using only what is on disk in `data_dir`.
+
+The host also force-kills a plugin that ignores `cancel` past the grace period.
+That plugin's `unprovision` is skipped and its marker stays. The next
+`provision` (the host rewrites the marker first) or the next run's recovery
+must therefore clean up whatever the killed process left behind, so
+`provision` should tolerate leftovers of an earlier, unreleased provision.
 
 ## Versioning
 

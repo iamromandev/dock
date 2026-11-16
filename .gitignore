@@ -8,7 +8,7 @@ __pycache__
 **/*.lock
 **/*.pyc
 *.egg-info
-plugins/download/bin/
+plugin/download/bin/
 
 ### project ###
 .env

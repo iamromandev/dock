@@ -1,0 +1,27 @@
+id = "dev.dock.probe"
+version = "0.1.0"
+api_version = "1"
+description = "Test fixture: exit codes, crashes, pids, cancellable sleep"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+[[commands]]
+name = "code"
+summary = "Return exit code n: code <n>"
+
+[[commands]]
+name = "crash"
+summary = "Exit the process mid-invoke"
+
+[[commands]]
+name = "pid"
+summary = "Write pid to data_dir/pid and print it"
+
+[[commands]]
+name = "sleep"
+summary = "Sleep s seconds, honours cancel: sleep <s>"
+
+[[commands]]
+name = "stubborn"
+summary = "Sleep s seconds and ignore cancel: stubborn <s>"
