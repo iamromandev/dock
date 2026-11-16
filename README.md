@@ -14,7 +14,7 @@ dock (Python host)
  └─ ui.py         the host owns the terminal: output, logs, progress, prompts
         │  stdio
    ┌────┼───────────────┬──────────────────┐
- chat (Node)      download (Go)       hello (Python + SDK)
+ chat (Node)      download (Go)       hello (Python)
  provision/        5 native builds     2 commands, prompts,
  unprovision,      progress, cancel    progress
  streaming
@@ -42,7 +42,7 @@ another plugin folder.
 
 | Idea | Where |
 |---|---|
-| Language independence | Same protocol from Node (raw), Go (raw) and Python (SDK) |
+| Language independence | Same protocol from Node, Go and Python, no shared code |
 | Machine independence | `plugins/download/plugin.toml` lists 5 OS/arch builds; `make dist` builds them; the host picks one |
 | Lazy discovery | `dock help` reads `index.json`; no plugin is started |
 | Namespacing and collisions | ids are `vendor.name`; on a clash use `dock dev.dock.chat:chat` |
@@ -68,7 +68,7 @@ another plugin folder.
    ```
 
 2. A program that answers `initialize`, `invoke` and `shutdown` on stdio
-   (copy `sdk/python/dock_sdk.py`, or follow `plugins/chat/index.js` in any language).
+   (follow `plugins/hello/main.py` or `plugins/chat/index.js`, in any language).
 3. `dock plugins install ./thing`
 
 ## Not in this example yet

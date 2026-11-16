@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// chat plugin for dock, written against the raw protocol (no SDK):
+// chat plugin for dock, written against the raw protocol:
 // JSON-RPC 2.0, one JSON object per line on stdin/stdout. See protocol/PROTOCOL.md.
 "use strict";
 
