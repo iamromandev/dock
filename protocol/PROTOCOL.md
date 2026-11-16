@@ -30,7 +30,7 @@ so it can find its own files. The user's directory arrives in `invoke.cwd`.
 |---------------|-----------------------------------------------|-----------------------|-------|
 | `initialize`  | `{api_version, host:{name,version}, data_dir}` | `{name, ...}`         | Always first. `data_dir` is a private, persistent folder for the plugin. |
 | `provision`   | `{}`                                          | `{}`                  | Only if manifest says `lifecycle.provision = true`. Acquire resources (load a model, open a connection). |
-| `invoke`      | `{command, args: [string], cwd}`              | `{exit_code: int}`    | Run one command. `args` are the raw CLI args after the command name; the plugin parses them. Resolve relative paths in `args` against `cwd` (the user's directory), not the plugin's own. |
+| `invoke`      | `{command, args: [string], cwd, inputs?}`     | `{exit_code: int}`    | Run one command. `args` are the raw CLI args after the command name; the plugin may parse them, or use `inputs` (see Typed inputs). Resolve relative paths in `args` against `cwd` (the user's directory), not the plugin's own. |
 | `unprovision` | `{}`                                          | `{}`                  | Release what `provision` acquired. **Must be idempotent** and must work in a fresh process (see Recovery). |
 | `shutdown`    | `{}`                                          | `{}`                  | Plugin should exit after replying. Host kills it after a timeout. |
 
@@ -55,6 +55,52 @@ so it can find its own files. The user's directory arrives in `invoke.cwd`.
 |---------------|------------|----------------------------------|
 | `prompt_user` | `{prompt}` | `{text}` or `{eof: true}` when input has ended |
 | `call`        | `{capability, method, params}` | whatever the provider returns (see Capabilities) |
+
+## Typed inputs
+
+A `[[commands]]` entry may declare its inputs. The host then parses and
+validates the user's args before starting any plugin, and sends the result as
+`inputs` in `invoke`. Commands without an `inputs` key are unchanged: no
+parsing, no `inputs` param.
+
+```toml
+[[commands]]
+name = "fetch"
+inputs = [
+  { name = "url",     type = "string", required = true },
+  { name = "output",  type = "string", flag = "--output", short = "-o" },
+  { name = "retries", type = "int",    flag = "--retries", default = 3 },
+  { name = "quiet",   type = "bool",   flag = "--quiet" },
+]
+```
+
+| Key        | Required | Meaning |
+|------------|----------|---------|
+| `name`     | yes      | Key in `inputs`. Unique within the command. |
+| `type`     | yes      | `string`, `int` (base-10 integer) or `bool`. |
+| `required` | no       | Default `false`. Cannot be combined with `default`; not allowed for `bool`. |
+| `default`  | no       | Value used when not given; must match `type`. Not allowed for `bool` (a `bool` is `false` unless its flag is given). |
+| `flag`     | no       | `--long` form. An input without `flag` is positional (not allowed for `bool`). |
+| `short`    | no       | `-x` form (one character, no bundling); needs `flag`. |
+
+Other keys in an input table are ignored, so newer manifests that add keys
+still load on this host.
+
+Parsing: positionals fill positional inputs in declared order (a required
+positional cannot follow an optional one); flags may appear anywhere, as
+`--name value`, `--name=value`, `-x value` or `-x=value`; a value-taking flag consumes the
+next word even if it starts with `-`; a `bool` flag takes no value and sets
+`true`; `--` ends flag parsing. An input not given takes its `default`, a
+`bool` is `false`, and other optional inputs are absent. Invalid declarations
+are rejected at install; invalid args fail with `dock: <command>: <message>`
+(exit code 2 in one-shot use) and the plugin is not started.
+
+`invoke` params become `{command, args, cwd, inputs?}`. `inputs` is an object
+`{name: value}` with JSON types (string, integer, boolean), present only for
+commands that declare `inputs` (an empty declaration gives `{}`). `args` stays
+the unchanged raw list. When present, `inputs` is authoritative: a plugin
+should use it instead of re-parsing `args`. The change is additive within
+protocol v1.
 
 ## Capabilities: plugins using other plugins
 

@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from cli import __version__, lifecycle
+from cli.inputs import UsageError
 from cli.lifecycle import Session
 from cli.manifest import Manifest, ManifestError
 from cli.store import Store
@@ -127,6 +128,8 @@ class Shell:
                     print(f"exit {code}", file=sys.stderr)
         except ManifestError as e:
             print(f"dock: {e}", file=sys.stderr)
+        except UsageError as e:
+            print(f"dock: {name.split(':', 1)[-1]}: {e}", file=sys.stderr)
         return True
 
     def _status(self) -> None:

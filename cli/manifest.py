@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from cli import API_VERSION
+from cli.inputs import InputSpec, specs_from_toml
 
 
 class ManifestError(Exception):
@@ -29,6 +30,7 @@ def platform_key() -> str:
 class Command:
     name: str
     summary: str = ""
+    inputs: list[InputSpec] | None = None  # None = undeclared; [] = declares none
 
 
 @dataclass
@@ -70,6 +72,16 @@ class Manifest:
         if not data.get("commands") and not caps.get("provides"):
             raise ManifestError(f"{path}: a plugin needs at least one command or one provided capability")
 
+        commands = []
+        for c in data.get("commands", []):
+            inputs = None
+            if "inputs" in c:
+                try:
+                    inputs = specs_from_toml(c["name"], c["inputs"])
+                except ValueError as e:
+                    raise ManifestError(f"{path}: {e}") from e
+            commands.append(Command(c["name"], c.get("summary", ""), inputs))
+
         return cls(
             id=data["id"],
             version=str(data["version"]),
@@ -77,12 +89,15 @@ class Manifest:
             description=data.get("description", ""),
             run=data["run"],
             root=root,
-            commands=[Command(c["name"], c.get("summary", "")) for c in data.get("commands", [])],
+            commands=commands,
             provision=bool(data.get("lifecycle", {}).get("provision", False)),
             permissions=list(caps.get("permissions", [])),
             provides=list(caps.get("provides", [])),
             requires=list(caps.get("requires", [])),
         )
+
+    def command(self, name: str) -> Command | None:
+        return next((c for c in self.commands if c.name == name), None)
 
     def entrypoint(self) -> list[str]:
         """Pick the run entry for this machine: exact platform first, then 'any'."""

@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from cli import __version__, lifecycle
+from cli.inputs import UsageError, parse_for
 from cli.manifest import ManifestError, platform_key
 from cli.store import Store
 
@@ -114,6 +115,7 @@ def main(argv: list[str] | None = None) -> int:
         argv.pop(0)
 
     store = Store()
+    command = ""
     try:
         if argv[:1] == ["shell"] or (not argv and sys.stdin.isatty()):
             from cli import shell
@@ -127,11 +129,15 @@ def main(argv: list[str] | None = None) -> int:
         if argv[0] == "plugin":
             return cmd_plugin(store, argv[1:])
 
-        lifecycle.recover(store)
         manifest, command = store.resolve(argv[0])
+        parse_for(manifest, command, argv[1:])  # a bad invocation must start no process, not even recovery
+        lifecycle.recover(store)
         return lifecycle.run(store, manifest, command, argv[1:], verbose=verbose)
     except ManifestError as e:
         print(f"dock: {e}", file=sys.stderr)
         return 1
+    except UsageError as e:
+        print(f"dock: {command}: {e}", file=sys.stderr)
+        return 2
     except KeyboardInterrupt:
         return 130

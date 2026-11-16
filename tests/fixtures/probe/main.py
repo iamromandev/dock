@@ -21,7 +21,9 @@ def output(text):
     send({"method": "output", "params": {"text": text + "\n"}})
 
 
-def invoke(command, args):
+def invoke(command, args, params):
+    if command in ("fetch", "echoargs", "noargs"):
+        output(json.dumps({"args": args, "inputs": params.get("inputs", "<absent>")}))
     if command == "code":
         return int(args[0])
     if command == "crash":
@@ -70,7 +72,7 @@ while True:
         send({"id": msg_id, "result": {"name": "probe"}})
     elif method == "invoke":
         cancelled.clear()
-        code = invoke(params["command"], list(params.get("args", [])))
+        code = invoke(params["command"], list(params.get("args", [])), params)
         if code is None:
             send({"id": msg_id, "error": {"code": -32800, "message": "cancelled"}})
         else:

@@ -16,6 +16,7 @@ import os
 import time
 
 from cli import API_VERSION, __version__
+from cli.inputs import parse_for
 from cli.manifest import Manifest, ManifestError
 from cli.process import CANCELLED, Hub, PluginError, PluginProcess
 from cli.store import Store
@@ -251,6 +252,8 @@ class Session:
 
     # running a command -----------------------------------------------------------
     def invoke(self, manifest: Manifest, command: str, args: list[str], cwd: str | None = None) -> int:
+        # Parse first: a usage error (UsageError) must surface before anything starts.
+        inputs = parse_for(manifest, command, args)
         ui = TerminalUI(manifest.id, self.verbose)
         proc = self.commands.get(manifest.id)
         try:
@@ -266,9 +269,10 @@ class Session:
                 self.commands[manifest.id] = proc
 
             self.last_used[proc] = time.monotonic()
-            invoke_id = proc.send_request(
-                "invoke", {"command": command, "args": args, "cwd": cwd or os.getcwd()}
-            )
+            params = {"command": command, "args": args, "cwd": cwd or os.getcwd()}
+            if inputs is not None:
+                params["inputs"] = inputs
+            invoke_id = proc.send_request("invoke", params)
             try:
                 result = proc.wait_for(invoke_id, "invoke", timeout=None)
             except KeyboardInterrupt:

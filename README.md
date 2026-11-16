@@ -112,6 +112,23 @@ a small built-in toy model, so chat works out of the box.
    summary = "Does the thing"
    ```
 
+   A command can declare typed inputs; dock then parses and checks the args
+   before starting the plugin and sends them as `inputs` with `invoke`
+   (see `protocol/PROTOCOL.md`, "Typed inputs"):
+
+   ```toml
+   [[commands]]
+   name = "fetch"
+   summary = "fetch <url> [--retries n]"
+   inputs = [
+     { name = "url",     type = "string", required = true },
+     { name = "retries", type = "int",    flag = "--retries", default = 3 },
+   ]
+   ```
+
+   Types are `string`, `int` and `bool`. A `bool` is a flag that is `false`
+   unless given, so it takes neither `default` nor `required`.
+
 2. A program that answers `initialize`, `invoke` and `shutdown` on stdio
    (follow `plugin/hello/main.py` or `plugin/chat/index.js`, in any language).
 3. `dock plugin install ./thing`
