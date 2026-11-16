@@ -171,7 +171,8 @@ class DockE2E(unittest.TestCase):
             src = Path(tmp, "src.bin")
             src.write_bytes(os.urandom(300_000))
             r = self.dock("download", src.as_uri(), "-o", "copy.bin", cwd=tmp)
-            self.assertEqual(r.returncode, 0, r.stderr)
+            log = Path(self.home, "logs", "dev.dock.download.log")
+            self.assertEqual(r.returncode, 0, r.stderr + (log.read_text()[-2000:] if log.exists() else ""))
             self.assertEqual(Path(tmp, "copy.bin").read_bytes(), src.read_bytes())
 
     def test_unknown_command(self):
