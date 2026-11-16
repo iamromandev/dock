@@ -1,0 +1,14 @@
+id = "dev.dock.provprobe"
+version = "0.1.0"
+api_version = "1"
+description = "Test fixture: provision/unprovision with a switchable behaviour"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+[[commands]]
+name = "ping"
+summary = "Print pong"
+
+[lifecycle]
+provision = true

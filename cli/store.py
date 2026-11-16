@@ -1,11 +1,13 @@
 """The local plugin store under $DOCK_HOME (default ~/.dock).
 
-  plugins/<id>/<version>/   installed plugin files
+  plugin/<id>/<version>/    installed plugin files
   index.json                cached manifests -> command lookup without spawning anything
   state/<id>.provisioned    crash-recovery markers
   data/<id>/                each plugin's private data dir
   logs/<id>.log             each plugin's stderr
-  config.toml               optional; [providers] picks a plugin per capability
+  history                   shell input history
+  config.toml               optional; [providers] picks a plugin per capability,
+                            [shell] idle_timeout sets the idle stop (seconds)
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sys
 import tomllib
 from pathlib import Path
 
@@ -22,12 +25,14 @@ from cli.manifest import Manifest, ManifestError
 class Store:
     def __init__(self, home: Path | None = None):
         self.home = Path(home or os.environ.get("DOCK_HOME") or Path.home() / ".dock")
-        self.plugins_dir = self.home / "plugins"
+        self.plugin_dir = self.home / "plugin"
         self.state_dir = self.home / "state"
         self.data_root = self.home / "data"
         self.logs_dir = self.home / "logs"
         self.index_path = self.home / "index.json"
-        for d in (self.plugins_dir, self.state_dir, self.data_root, self.logs_dir):
+        self.history_path = self.home / "history"
+        self._warned_idle_timeout = False
+        for d in (self.plugin_dir, self.state_dir, self.data_root, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     # index ---------------------------------------------------------------
@@ -46,7 +51,7 @@ class Store:
         manifest = Manifest.load(src)
         manifest.entrypoint()  # fail early if it can't run on this machine
 
-        dest = self.plugins_dir / manifest.id / manifest.version
+        dest = self.plugin_dir / manifest.id / manifest.version
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(
@@ -71,7 +76,7 @@ class Store:
         idx = self.index()
         if plugin_id not in idx:
             raise ManifestError(f"{plugin_id} is not installed")
-        shutil.rmtree(self.plugins_dir / plugin_id, ignore_errors=True)
+        shutil.rmtree(self.plugin_dir / plugin_id, ignore_errors=True)
         del idx[plugin_id]
         self._save_index(idx)
 
@@ -107,6 +112,16 @@ class Store:
             return tomllib.loads(path.read_text(encoding="utf-8"))
         except tomllib.TOMLDecodeError as e:
             raise ManifestError(f"{path}: {e}") from e
+
+    def idle_timeout(self) -> float:
+        """Seconds a shell keeps an idle plugin running; 0 = never stop. Default 300."""
+        value = self.config().get("shell", {}).get("idle_timeout", 300)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            if not self._warned_idle_timeout:  # every prompt asks; say it once
+                self._warned_idle_timeout = True
+                print(f"dock: invalid [shell] idle_timeout {value!r}; using 300", file=sys.stderr)
+            return 300
+        return value
 
     def provider(self, capability: str) -> Manifest:
         """The plugin that serves a capability: config.toml choice, else the only one installed."""

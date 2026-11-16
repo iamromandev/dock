@@ -41,6 +41,33 @@ make test         # end-to-end tests in a throwaway DOCK_HOME
 `pip install -e .` gives you a real `dock` command. Set `DOCK_HOME` to use
 another plugin folder.
 
+### Interactive shell
+
+`python3 -m cli shell` (or bare `dock` on a terminal) opens a `dock>` prompt.
+Each line is an operation, split with shell-style quoting: `hello "Ada Lovelace"`.
+Plugins stay running between operations, so `llm` provisions once per shell.
+Built-ins: `help`, `version`, `plugin ...`, `status`, `exit`/`quit` (or Ctrl-D).
+`status` lists the running plugins with their idle time and what they provide.
+Tab completes commands, `plugin` subcommands and installed plugin ids.
+History is kept in `~/.dock/history` (last 1000 lines); set `DOCK_NO_READLINE=1`
+to run without readline (no completion or history).
+A plugin idle longer than `idle_timeout` seconds (default 300) is stopped
+before each prompt and again when a line is entered (so a long wait at the
+prompt counts), and restarts on demand; set it in `~/.dock/config.toml`:
+
+```toml
+[shell]
+idle_timeout = 300   # seconds; 0 = never stop idle plugins
+```
+
+Ctrl-C cancels the running operation and returns to the prompt. A non-zero exit
+code is printed as `exit <n>`. Everything is unprovisioned and stopped on exit.
+`dock shell` also works without a terminal: lines are read from stdin, so
+`printf 'hello Bob\nstatus\n' | python3 -m cli shell` runs them in one session.
+
+Behaviour change: bare `dock` on a terminal now opens the shell instead of
+printing help (`dock help` still prints it; piped stdin still prints help).
+
 ### LLM backends
 
 The llm plugin talks to any OpenAI-compatible server. Without settings it uses
@@ -57,7 +84,7 @@ a small built-in toy model, so chat works out of the box.
 | Idea | Where |
 |---|---|
 | Language independence | Same protocol from Node, Go and Python, no shared code |
-| Machine independence | `plugins/download/plugin.toml` lists 5 OS/arch builds; `make dist` builds them; the host picks one |
+| Machine independence | `plugin/download/plugin.toml` lists 5 OS/arch builds; `make dist` builds them; the host picks one |
 | Lazy discovery | `dock help` reads `index.json`; no plugin is started |
 | Namespacing and collisions | ids are `vendor.name`; on a clash use `dock dev.dock.chat:chat` |
 | Plugins using plugins | `chat` requires the `llm` capability; the host starts the llm plugin and relays calls and streamed tokens between them |
@@ -84,12 +111,11 @@ a small built-in toy model, so chat works out of the box.
    ```
 
 2. A program that answers `initialize`, `invoke` and `shutdown` on stdio
-   (follow `plugins/hello/main.py` or `plugins/chat/index.js`, in any language).
-3. `dock plugins install ./thing`
+   (follow `plugin/hello/main.py` or `plugin/chat/index.js`, in any language).
+3. `dock plugin install ./thing`
 
 ## Not in this example yet
 
-Remote registry and `dock plugins install <name>`, checksums and signatures,
-permission enforcement (permissions are only declared and shown), warm plugin
-processes (the llm plugin reloads its model on every `dock chat`). See `protocol/PROTOCOL.md` for the parts
-that are fixed and the versioning rule for adding them.
+Remote registry and `dock plugin install <name>`, checksums and signatures,
+permission enforcement (permissions are only declared and shown). See
+`protocol/PROTOCOL.md` for the parts that are fixed and the versioning rule for adding them.

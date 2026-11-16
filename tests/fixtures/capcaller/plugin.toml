@@ -1,0 +1,18 @@
+id = "dev.dock.capcaller"
+version = "0.1.0"
+api_version = "1"
+description = "Test fixture: a command that calls the 'probecap' capability and answers cancel at once"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+[[commands]]
+name = "callcap"
+summary = "Call probecap and print its events"
+
+[[commands]]
+name = "quick"
+summary = "Print quick and exit 0, no capability call"
+
+[capabilities]
+requires = ["probecap"]

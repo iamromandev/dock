@@ -21,7 +21,7 @@ class DockE2E(unittest.TestCase):
         cls.home = tempfile.mkdtemp(prefix="dock-home-")
         cls.env = {**os.environ, "DOCK_HOME": cls.home, "PYTHONPATH": str(ROOT)}
         for name in ("hello", "llm", "chat", "download"):
-            r = cls.dock("plugins", "install", str(ROOT / "plugins" / name))
+            r = cls.dock("plugin", "install", str(ROOT / "plugin" / name))
             assert r.returncode == 0, r.stderr
 
     @classmethod
@@ -153,7 +153,7 @@ class DockE2E(unittest.TestCase):
     def test_chat_fails_cleanly_without_llm(self):
         home = tempfile.mkdtemp(prefix="dock-home-")
         env = {**self.env, "DOCK_HOME": home}
-        r = self.dock("plugins", "install", str(ROOT / "plugins" / "chat"), env=env)
+        r = self.dock("plugin", "install", str(ROOT / "plugin" / "chat"), env=env)
         self.assertIn("nothing installed provides 'llm'", r.stdout)
         r = self.dock("chat", env=env)
         self.assertEqual(r.returncode, 1)
