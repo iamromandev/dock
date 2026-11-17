@@ -5,6 +5,7 @@ description = "Python plugin; one plugin, two commands"
 
 [run]
 any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+container = { cmd = "python3", args = ["/plugin/main.py"] }
 
 [[commands]]
 name = "hello"

@@ -19,6 +19,7 @@ import sys
 import tomllib
 from pathlib import Path
 
+from cli import isolation
 from cli.manifest import Manifest, ManifestError
 
 
@@ -32,6 +33,7 @@ class Store:
         self.index_path = self.home / "index.json"
         self.history_path = self.home / "history"
         self._warned_idle_timeout = False
+        self.isolation_warned: set[str] = set()  # [isolation] plugins entries already reported
         for d in (self.plugin_dir, self.state_dir, self.data_root, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -49,15 +51,18 @@ class Store:
     # install / remove ----------------------------------------------------
     def install(self, src: Path) -> Manifest:
         manifest = Manifest.load(src)
-        manifest.entrypoint()  # fail early if it can't run on this machine
+        if manifest.container is None:
+            manifest.entrypoint()  # fail early if it can't run on this machine
+        # With a container entry the plugin can run without a native build for this machine.
 
         dest = self.plugin_dir / manifest.id / manifest.version
         if dest.exists():
             shutil.rmtree(dest)
-        shutil.copytree(
-            manifest.root, dest,
-            ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules", "*.go", "go.mod"),
-        )
+        # The Dockerfile builds from the installed folder, so a container plugin keeps its sources.
+        ignored = (".git", "__pycache__", "node_modules")
+        if manifest.container is None:
+            ignored += ("*.go", "go.mod")
+        shutil.copytree(manifest.root, dest, ignore=shutil.ignore_patterns(*ignored))
         installed = Manifest.load(dest)
 
         idx = self.index()
@@ -70,6 +75,7 @@ class Store:
             "requires": installed.requires,
         }
         self._save_index(idx)
+        isolation.forget_image(self, installed)  # after the index: a `plugins` entry for it is then valid
         return installed
 
     def remove(self, plugin_id: str) -> None:
@@ -110,7 +116,7 @@ class Store:
             return {}
         try:
             return tomllib.loads(path.read_text(encoding="utf-8"))
-        except tomllib.TOMLDecodeError as e:
+        except (tomllib.TOMLDecodeError, UnicodeDecodeError, OSError) as e:
             raise ManifestError(f"{path}: {e}") from e
 
     def idle_timeout(self) -> float:

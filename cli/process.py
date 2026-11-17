@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import queue
 import subprocess
 import sys
@@ -13,7 +12,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from cli import API_VERSION
+from cli import isolation
 from cli.manifest import Manifest
 
 
@@ -60,8 +59,13 @@ class Hub:
 
 
 class PluginProcess:
-    def __init__(self, manifest: Manifest, log_path, handlers: dict[str, Callable[[dict], Any]], hub: Hub | None = None):
+    def __init__(
+        self, manifest: Manifest, log_path, handlers: dict[str, Callable[[dict], Any]],
+        launch: isolation.Launch, hub: Hub | None = None,
+    ):
         self.manifest = manifest
+        self.launch = launch  # what to spawn: always decided by isolation.prepare, never defaulted here
+        self._container_removed = False
         self.log_path = log_path
         self.handlers = handlers  # plugin -> host methods (output, log, progress, prompt_user, call)
         self.hub = hub or Hub()
@@ -75,7 +79,8 @@ class PluginProcess:
 
     # process -------------------------------------------------------------
     def start(self) -> None:
-        cmd = self.manifest.entrypoint()
+        launch = self.launch
+        cmd = launch.argv
         self._log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in stop()
         self._log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} start {cmd}\n")
         self._log.flush()
@@ -95,7 +100,7 @@ class PluginProcess:
             text=True,
             encoding="utf-8",
             bufsize=1,
-            env={**os.environ, "DOCK_PLUGIN_ID": self.manifest.id, "DOCK_API_VERSION": API_VERSION},
+            env=launch.env,
             **group,
         )
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
@@ -133,6 +138,12 @@ class PluginProcess:
             except OSError:
                 pass  # e.g. a flush into a broken stdin
 
+    def _remove_container(self) -> None:
+        """The child is gone, but killing a container's runtime client may leave the container: remove it."""
+        if self.launch and self.launch.container and not self._container_removed:
+            self._container_removed = True
+            isolation.remove(self.launch, self._log)
+
     def stop(self, timeout: float = 3.0) -> None:
         if not self.proc:
             return
@@ -152,6 +163,7 @@ class PluginProcess:
             self.kill()
             raise
         self._close_pipes()
+        self._remove_container()
         self._log.close()
 
     def kill(self) -> None:
@@ -162,6 +174,7 @@ class PluginProcess:
             self.proc.kill()
         self.proc.wait()
         self._close_pipes()
+        self._remove_container()
         self._log.close()
 
     # messaging -----------------------------------------------------------
