@@ -5,10 +5,12 @@ description = "Interactive chat; the model comes from whichever plugin provides 
 
 [run]
 any = { cmd = "node", args = ["index.js"], requires = ["node"] }
+container = { cmd = "node", args = ["/plugin/index.js"] }
 
 [[commands]]
 name = "chat"
 summary = "Chat with the model (/exit to quit, /reset to clear history)"
+inputs = []
 
 # chat holds no model. It calls the `llm` capability through the host, and the
 # host starts and provisions the llm plugin for the session.

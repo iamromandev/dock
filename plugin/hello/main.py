@@ -55,16 +55,13 @@ def prompt(text):
 
 
 # ---- commands -------------------------------------------------------------
-def hello(args):
-    name = " ".join(args) or prompt("what's your name? ")
+def hello(inputs):
+    name = inputs["name"] if "name" in inputs else prompt("what's your name? ")
     output(f"hello, {name or 'stranger'}!")
 
 
-def count(args):
-    try:
-        n = int(args[0]) if args else 10
-    except ValueError:
-        raise Failure("count needs a number", -32602) from None
+def count(inputs):
+    n = inputs["n"]
     for i in range(1, n + 1):
         if cancelled.is_set():
             raise Cancelled()
@@ -89,7 +86,7 @@ def handle(msg):
             if fn is None:
                 raise Failure(f"unknown command {params.get('command')}", -32601)
             cancelled.clear()
-            fn(list(params.get("args", [])))
+            fn(params.get("inputs") or {})
             result = {"exit_code": 0}
         elif method == "shutdown":
             send({"id": msg_id, "result": {}})

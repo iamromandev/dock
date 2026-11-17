@@ -32,6 +32,7 @@ make build        # build plugins for this machine
 make install      # install the 4 example plugins into ~/.dock
 python3 -m cli help
 python3 -m cli hello Roman
+python3 -m cli hello "Ada Lovelace"                   # quote a name of several words
 python3 -m cli count 30
 python3 -m cli chat                                   # built-in toy model
 DOCK_LLM_BASE_URL=http://localhost:11434/v1 \
@@ -71,6 +72,13 @@ code is printed as `exit <n>`. Everything is unprovisioned and stopped on exit.
 Behaviour change: bare `dock` on a terminal now opens the shell instead of
 printing help (`dock help` still prints it; piped stdin still prints help).
 
+Behaviour change: `hello`, `count`, `download` and `chat` declare typed inputs, so
+dock checks their arguments before starting them (usage errors exit 2). A name of
+several words must be quoted (`hello "Ada Lovelace"`; `hello Ada Lovelace` is an
+error), `count abc` is dock's "must be an integer" error, `download` needs a URL,
+and `chat` takes no arguments. dock reads anything starting with `-` as a flag, so a
+negative number goes after `--` (`count -- -3`).
+
 ### Container isolation (opt-in)
 
 By default a plugin is a native child process with your full environment,
@@ -84,7 +92,7 @@ enabled = true          # every plugin; or list some: plugins = ["dev.dock.hello
 ```
 
 A plugin takes part when it has a `Dockerfile` and `[run].container` in its
-`plugin.toml` (the bundled `hello` and `download` do; `download` compiles its Go
+`plugin.toml` (the bundled `hello` (which also serves `count`), `download`, `chat` and `llm` do; `download` compiles its Go
 binary inside the image, so isolated use needs no Go on the host). With isolation on, a plugin without
 them is refused (`dock: <id>: isolation is on but the plugin has no container
 build ...`), never run unisolated. The image `dock/<id>:<version>` is built
@@ -101,9 +109,27 @@ what the declared permissions allow:
 |-------------|--------|
 | Network | `--network none` unless the plugin declares `network` |
 | Files | read-only root, writable `/tmp`; the plugin's data dir is mounted read-write; your current directory is mounted read-write only with `fs:write:cwd`, and then never when it is `/`, your home directory, or the dock home (`~/.dock`) or a directory above or inside it: dock refuses to start the plugin there |
-| Environment | only `LANG`, `TZ` (if set), `HOME=/tmp`, `DOCK_PLUGIN_ID`, `DOCK_API_VERSION`; nothing else from your environment, not even `PATH` (the image's own is used) |
+| Environment | only `LANG`, `TZ` (if set), `HOME=/tmp`, `DOCK_PLUGIN_ID`, `DOCK_API_VERSION`, and the variables the plugin lists in `[capabilities] env` (see below); nothing else from your environment, not even `PATH` (the image's own is used) |
 | Privileges | `--cap-drop ALL`, `no-new-privileges`, run as your uid:gid |
 | Images | `--pull never`: a run never downloads anything; only `dock plugin build` and the first-use build do |
+
+A plugin that needs more of your environment, such as an API key, lists the
+variable names in its manifest; the bundled `llm` does:
+
+```toml
+[capabilities]
+provides = ["llm"]
+permissions = ["network"]
+env = ["DOCK_LLM_BASE_URL", "DOCK_LLM_MODEL", "DOCK_LLM_API_KEY"]
+```
+
+Each listed name that is set on the host reaches the container; one that is not
+set is left out. Values are never put on the runtime's command line (dock passes
+a bare `-e NAME` and the runtime reads the value from its own environment), so
+they do not show up in the process list. Names must look like `MY_VAR` and may
+not be ones dock sets itself (`HOME`, `PATH`, `LANG`, `TZ`, `DOCK_PLUGIN_ID`,
+`DOCK_API_VERSION`). Native plugins ignore `env` and keep your whole environment.
+`dock plugin info <id>` shows the names on an `env:` line (`-` when there are none).
 
 `dock plugin build <id>` (re)builds the image of an installed plugin on demand,
 whether or not isolation is on (for example after editing its Dockerfile without
@@ -133,10 +159,10 @@ Things to know:
 - Image builds run with the runtime's default network access and without any
   of the restrictions above, and run the Dockerfile's instructions as written;
   only install plugins whose Dockerfile you trust. Base images (`python:3.12-slim`,
-  `golang:1-alpine`, `alpine`) are not pinned to a digest.
+  `golang:1-alpine`, `alpine`, `node:22-alpine`) are not pinned to a digest.
 - The build context is the whole installed plugin folder, so anything in it
-  (including a native `bin/`) is sent to the runtime; the bundled `hello` and
-  `download` ship a `.dockerignore` that leaves `bin/` out, and your own plugins
+  (including a native `bin/`) is sent to the runtime; the bundled plugins
+  ship a `.dockerignore` that leaves `bin/` out, and your own plugins
   should do the same.
 - Paths containing `:` (your current directory with `fs:write:cwd`, or `~/.dock`)
   are not supported: they cannot be written in a `-v` mount.
@@ -157,6 +183,12 @@ a small built-in toy model, so chat works out of the box.
 | `DOCK_LLM_BASE_URL` | `http://localhost:11434/v1` (Ollama), `http://localhost:1234/v1` (LM Studio), `https://api.openai.com/v1` |
 | `DOCK_LLM_MODEL` | `llama3.2`, `gpt-4o-mini`; required with a base URL |
 | `DOCK_LLM_API_KEY` | only if the server needs one |
+
+With [isolation](#container-isolation-opt-in) on, `llm` runs in a container that
+gets these three variables (and none of your others beyond `LANG` and `TZ`), and `chat` runs in one too.
+A container cannot reach a model server on your machine's `localhost`: use
+`http://host.docker.internal:11434/v1` on Docker Desktop (plain Docker on Linux
+does not define that name), or run `llm` natively.
 
 ## What the example demonstrates
 
@@ -217,6 +249,9 @@ a small built-in toy model, so chat works out of the box.
    any       = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
    container = { cmd = "python3", args = ["/plugin/main.py"] }  # dockerfile = "Dockerfile" by default
    ```
+
+   A container sees only a fixed environment. To receive host variables, list their
+   names: `[capabilities] env = ["MY_API_KEY"]` (see "Container isolation").
 
 ## Not in this example yet
 

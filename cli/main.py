@@ -86,6 +86,8 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
             print(f"  requires:    {', '.join(m.requires)}")
         if m.permissions:
             print(f"  permissions: {', '.join(m.permissions)}")
+        if m.env:
+            print(f"  env:         {', '.join(m.env)}")
         for cap in m.requires:
             if not store.providers_of(cap):
                 print(f"  note: nothing installed provides '{cap}' yet; install a plugin that does")
@@ -106,6 +108,7 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
         print(f"provides:    {', '.join(m.provides) or '-'}")
         print(f"requires:    {', '.join(m.requires) or '-'}")
         print(f"permissions: {', '.join(m.permissions) or '-'}")
+        print(f"env:         {', '.join(m.env) or '-'}")
         print(f"isolation:   {isolation.describe(store, m)}")
         print(f"builds:      {', '.join(m.run)}  (this machine: {platform_key()})")
         print(f"location:    {m.root}")

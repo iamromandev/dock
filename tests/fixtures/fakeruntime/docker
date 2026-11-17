@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Fake Docker-compatible runtime for tests: records every call, keeps images and
 running containers in a JSON state file, and "runs" a container by exec'ing its
-command on the host with only the -e variables as environment.
+command on the host with only the -e variables as environment (`-e NAME` takes the value
+from this process's own environment, as the real client does).
 
   FAKE_RUNTIME_LOG          file the calls are appended to, one JSON argv list per line
   FAKE_RUNTIME_STATE        JSON state (default: $FAKE_RUNTIME_LOG.state)
@@ -105,8 +106,11 @@ def run(args):
             elif flag == "--label":
                 label = value.split("=", 1)[1]
             elif flag == "-e":
-                k, _, v = value.partition("=")
-                env[k] = v
+                k, eq, v = value.partition("=")
+                if eq:
+                    env[k] = v
+                elif k in os.environ:  # `-e NAME`: like Docker, the client's own value, and nothing if unset
+                    env[k] = os.environ[k]
         else:
             i += 1  # -i, --rm, --read-only
     image, cmd = args[i], args[i + 1:]

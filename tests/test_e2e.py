@@ -45,10 +45,65 @@ class DockE2E(unittest.TestCase):
         r = self.dock("hello", stdin="Ada\n")
         self.assertIn("hello, Ada!", r.stdout)
 
+    def starts(self, plugin_id):
+        log = Path(self.home, "logs", f"{plugin_id}.log")
+        return log.read_text().count(" start ") if log.exists() else 0
+
+    def assert_usage_error(self, plugin_id, message, *args):
+        """dock refuses the arguments itself: exit 2, its message, and no plugin process started."""
+        before = self.starts(plugin_id)
+        r = self.dock(*args)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertEqual(r.stderr.strip(), f"dock: {args[0]}: {message}")
+        self.assertEqual(self.starts(plugin_id), before, "the plugin was started")
+
     def test_bad_args_become_clean_error(self):
-        r = self.dock("count", "abc")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("count needs a number", r.stderr)
+        self.assert_usage_error("dev.dock.hello", "input 'n' must be an integer, got 'abc'", "count", "abc")
+
+    def test_hello_greets_a_quoted_multi_word_name(self):
+        r = self.dock("hello", "Ada Lovelace")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), "hello, Ada Lovelace!")
+
+    def test_hello_with_two_words_unquoted_is_a_usage_error(self):
+        self.assert_usage_error("dev.dock.hello", "unexpected argument 'Lovelace'", "hello", "Ada", "Lovelace")
+
+    def test_hello_with_an_empty_name_greets_it_instead_of_prompting(self):
+        r = self.dock("hello", "")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("your name", r.stdout)
+        self.assertEqual(r.stdout.strip(), "hello, stranger!")
+
+    def test_count_counts_to_the_given_number(self):
+        r = self.dock("count", "3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("counted to 3", r.stdout)
+
+    def test_count_defaults_to_ten(self):
+        r = self.dock("count")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("counted to 10", r.stdout)
+
+    def test_count_negative_needs_double_dash(self):
+        # dock reads a leading '-' as a flag, so a negative number goes after `--`
+        self.assert_usage_error("dev.dock.hello", "unknown flag '-3'", "count", "-3")
+        r = self.dock("count", "--", "-3")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("counted to -3", r.stdout)
+
+    def test_download_without_a_url_is_a_usage_error(self):
+        self.assert_usage_error("dev.dock.download", "missing required input 'url'", "download")
+
+    def test_download_with_a_repeated_output_flag_is_a_usage_error(self):
+        self.assert_usage_error("dev.dock.download", "flag '-o' given more than once",
+                                "download", "file:///x", "-o", "a", "-o", "b")
+
+    def test_chat_with_an_argument_is_a_usage_error(self):
+        self.assert_usage_error("dev.dock.chat", "unexpected argument 'extra'", "chat", "extra")
+
+    def test_chat_without_arguments_still_works(self):
+        r = self.dock("chat", stdin="/exit\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
 
     def test_chat_uses_llm_plugin_and_releases_it(self):
         r = self.dock("chat", stdin="hello\nwhat is dock?\nthird\n/exit\n")
@@ -174,6 +229,9 @@ class DockE2E(unittest.TestCase):
             log = Path(self.home, "logs", "dev.dock.download.log")
             self.assertEqual(r.returncode, 0, r.stderr + (log.read_text()[-2000:] if log.exists() else ""))
             self.assertEqual(Path(tmp, "copy.bin").read_bytes(), src.read_bytes())
+            r = self.dock("download", src.as_uri(), "--output=copy2.bin", cwd=tmp)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(Path(tmp, "copy2.bin").read_bytes(), src.read_bytes())
 
     def test_unknown_command(self):
         r = self.dock("nope")

@@ -35,6 +35,21 @@ class Command:
 
 
 _TAG_PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
+RESERVED_ENV = {"HOME", "PATH", "LANG", "TZ", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"}  # dock sets these itself
+
+
+def _env_names(path: Path, caps: dict) -> list[str]:
+    """[capabilities].env: host variables a plugin asks to receive in its container, de-duplicated in order."""
+    names = caps.get("env", [])
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ManifestError(f"{path}: [capabilities].env must be a list of names")
+    for n in names:
+        if not ENV_NAME.fullmatch(n):
+            raise ManifestError(f"{path}: env entry '{n}' must look like an environment variable name (A-Z, 0-9, _)")
+        if n in RESERVED_ENV:
+            raise ManifestError(f"{path}: env entry '{n}' is set by dock already")
+    return list(dict.fromkeys(names))
 
 
 @dataclass
@@ -77,6 +92,7 @@ class Manifest:
     provides: list[str] = field(default_factory=list)  # capabilities other plugins can call
     requires: list[str] = field(default_factory=list)  # capabilities this plugin calls
     container: ContainerRun | None = None  # [run].container: how to run it in an isolated container
+    env: list[str] = field(default_factory=list)  # host variables passed into the container (not native runs)
 
     @classmethod
     def load(cls, root: Path) -> Manifest:
@@ -102,6 +118,8 @@ class Manifest:
         caps = data.get("capabilities", {})
         if not data.get("commands") and not caps.get("provides"):
             raise ManifestError(f"{path}: a plugin needs at least one command or one provided capability")
+
+        env = _env_names(path, caps)
 
         commands = []
         for c in data.get("commands", []):
@@ -136,6 +154,7 @@ class Manifest:
             provides=list(caps.get("provides", [])),
             requires=list(caps.get("requires", [])),
             container=container,
+            env=env,
         )
 
     def command(self, name: str) -> Command | None:
