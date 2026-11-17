@@ -15,7 +15,7 @@ import json
 import os
 import time
 
-from cli import API_VERSION, __version__
+from cli import API_VERSION, __version__, isolation
 from cli.inputs import parse_for
 from cli.manifest import Manifest, ManifestError
 from cli.process import CANCELLED, Hub, PluginError, PluginProcess
@@ -41,7 +41,8 @@ class Session:
 
     # starting plugins ------------------------------------------------------
     def start(self, manifest: Manifest, ui: TerminalUI) -> PluginProcess:
-        proc = PluginProcess(manifest, self.store.log_path(manifest.id), ui.handlers(), self.hub)
+        launch = isolation.prepare(self.store, manifest)  # may build an image; raises before anything starts
+        proc = PluginProcess(manifest, self.store.log_path(manifest.id), ui.handlers(), launch, self.hub)
         proc.handlers["call"] = lambda params: self._call(proc, params)
         proc.start()
         self.procs.append(proc)
@@ -232,10 +233,12 @@ class Session:
                 reaped.append(proc.manifest.id)
         return reaped
 
-    def running(self) -> list[tuple[str, float, list[str]]]:
+    def running(self) -> list[tuple[str, float, list[str], str | None]]:
+        """(id, idle seconds, provided capabilities, container runtime or None) per running plugin."""
         now = time.monotonic()
         return [
-            (p.manifest.id, now - self.last_used.get(p, now), list(p.manifest.provides))
+            (p.manifest.id, now - self.last_used.get(p, now), list(p.manifest.provides),
+             p.launch.runtime)
             for p in self.procs
         ]
 
@@ -251,7 +254,7 @@ class Session:
             raise first
 
     # running a command -----------------------------------------------------------
-    def invoke(self, manifest: Manifest, command: str, args: list[str], cwd: str | None = None) -> int:
+    def invoke(self, manifest: Manifest, command: str, args: list[str]) -> int:
         # Parse first: a usage error (UsageError) must surface before anything starts.
         inputs = parse_for(manifest, command, args)
         ui = TerminalUI(manifest.id, self.verbose)
@@ -269,7 +272,7 @@ class Session:
                 self.commands[manifest.id] = proc
 
             self.last_used[proc] = time.monotonic()
-            params = {"command": command, "args": args, "cwd": cwd or os.getcwd()}
+            params = {"command": command, "args": args, "cwd": os.getcwd()}  # the one prepare() mounts for fs:write:cwd
             if inputs is not None:
                 params["inputs"] = inputs
             invoke_id = proc.send_request("invoke", params)
@@ -314,7 +317,12 @@ def recover(store: Store) -> None:
             marker.unlink()  # plugin was removed; nothing we can call
             continue
         ui.warn(f"{plugin_id} was left provisioned by an earlier run, cleaning up")
-        proc = PluginProcess(manifest, store.log_path(plugin_id), ui.handlers())
+        try:
+            launch = isolation.prepare(store, manifest)
+        except ManifestError as e:
+            ui.warn(f"cleanup of {plugin_id} failed: {e}")
+            continue
+        proc = PluginProcess(manifest, store.log_path(plugin_id), ui.handlers(), launch)
         try:
             proc.start()
             proc.request(

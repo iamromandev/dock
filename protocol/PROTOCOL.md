@@ -24,6 +24,37 @@ process and talks to it over stdin/stdout.
 The plugin process runs with its install directory as the working directory,
 so it can find its own files. The user's directory arrives in `invoke.cwd`.
 
+### Running in a container
+
+A manifest may add a `container` entry to `[run]`, next to the native ones:
+
+```toml
+[run]
+any       = { cmd = "python3", args = ["main.py"] }
+container = { cmd = "python3", args = ["/plugin/main.py"], dockerfile = "Dockerfile" }
+```
+
+`cmd` is required; `args` and `dockerfile` (relative to the plugin folder, must
+stay inside it) are optional. When the user enables isolation, the host builds
+an image from that Dockerfile and runs `cmd` in it with `<runtime> run -i`; the
+Dockerfile should put the plugin folder at `/plugin` (`COPY . /plugin`), which is
+also the working directory. The protocol is unchanged: the plugin still speaks
+JSON-RPC on stdin/stdout, and still gets `DOCK_PLUGIN_ID` and `DOCK_API_VERSION`.
+Inside the container the environment is limited to `LANG`, `TZ` (if the
+host has them), `HOME=/tmp` and those two, plus the image's own `PATH` (the
+host's `PATH` is not passed on); `data_dir` is mounted at the same path,
+and `invoke.cwd` is reachable only for plugins that declare `fs:write:cwd`, and the
+host refuses to start such a plugin when the cwd is `/`, the user's home
+directory, or the dock home or something above or inside it.
+No network without the `network` permission. A plugin with only a `container`
+entry has no native build and cannot run unless isolation is on. Installing a
+plugin that declares `container` copies its whole folder (including sources such
+as `*.go` and `go.mod`, which a native-only install leaves out), because the
+Dockerfile builds from the installed folder. `dock plugin build <id>` rebuilds
+the image on demand. With `container`, the `id` and `version` become the image
+tag `dock/<id>:<version>`, so they may only contain letters, digits, `.`, `_`
+and `-`, and must not start with `.` or `-`.
+
 ## Host → plugin requests
 
 | Method        | Params                                        | Result                | Notes |

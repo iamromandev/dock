@@ -4,6 +4,7 @@ without running any plugin code."""
 from __future__ import annotations
 
 import platform
+import re
 import shutil
 import sys
 import tomllib
@@ -33,6 +34,35 @@ class Command:
     inputs: list[InputSpec] | None = None  # None = undeclared; [] = declares none
 
 
+_TAG_PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+
+
+@dataclass
+class ContainerRun:
+    """How to run the plugin inside the image built from its Dockerfile."""
+    cmd: str
+    args: list[str] = field(default_factory=list)
+    dockerfile: str = "Dockerfile"  # relative to the plugin root, must stay inside it
+
+
+def _container_run(path: Path, root: Path, spec) -> ContainerRun:
+    where = f"{path}: [run].container"
+    if not isinstance(spec, dict):
+        raise ManifestError(f"{where} must be a table like {{ cmd = \"...\" }}")
+    cmd = spec.get("cmd")
+    if not isinstance(cmd, str) or not cmd:
+        raise ManifestError(f"{where} needs a 'cmd'")
+    args = spec.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ManifestError(f"{where} 'args' must be a list of strings")
+    dockerfile = spec.get("dockerfile", "Dockerfile")
+    if not isinstance(dockerfile, str) or not dockerfile:
+        raise ManifestError(f"{where} 'dockerfile' must be a path")
+    if not (root / dockerfile).resolve().is_relative_to(root):
+        raise ManifestError(f"{where} 'dockerfile' must stay inside the plugin folder: {dockerfile}")
+    return ContainerRun(cmd, list(args), dockerfile)
+
+
 @dataclass
 class Manifest:
     id: str
@@ -46,6 +76,7 @@ class Manifest:
     permissions: list[str] = field(default_factory=list)
     provides: list[str] = field(default_factory=list)  # capabilities other plugins can call
     requires: list[str] = field(default_factory=list)  # capabilities this plugin calls
+    container: ContainerRun | None = None  # [run].container: how to run it in an isolated container
 
     @classmethod
     def load(cls, root: Path) -> Manifest:
@@ -82,6 +113,16 @@ class Manifest:
                     raise ManifestError(f"{path}: {e}") from e
             commands.append(Command(c["name"], c.get("summary", ""), inputs))
 
+        container = None
+        if "container" in data["run"]:
+            container = _container_run(path, root, data["run"]["container"])
+            for part in ("id", "version"):  # they become the image tag dock/<id>:<version>
+                if not _TAG_PART.fullmatch(str(data[part])):
+                    raise ManifestError(
+                        f"{path}: {part} '{data[part]}' cannot be used with [run].container: "
+                        "only letters, digits, '.', '_' and '-', not starting with '.' or '-'"
+                    )
+
         return cls(
             id=data["id"],
             version=str(data["version"]),
@@ -94,6 +135,7 @@ class Manifest:
             permissions=list(caps.get("permissions", [])),
             provides=list(caps.get("provides", [])),
             requires=list(caps.get("requires", [])),
+            container=container,
         )
 
     def command(self, name: str) -> Command | None:
@@ -102,9 +144,12 @@ class Manifest:
     def entrypoint(self) -> list[str]:
         """Pick the run entry for this machine: exact platform first, then 'any'."""
         key = platform_key()
-        spec = self.run.get(key) or self.run.get("any")
+        native = {k: v for k, v in self.run.items() if k != "container"}  # container is not a native build
+        if not native:
+            raise ManifestError(f"{self.id} has no native build (only a container entry)")
+        spec = native.get(key) or native.get("any")
         if spec is None:
-            raise ManifestError(f"{self.id} has no build for {key} (has: {', '.join(self.run)})")
+            raise ManifestError(f"{self.id} has no build for {key} (has: {', '.join(native)})")
 
         for tool in spec.get("requires", []):
             if shutil.which(tool) is None:

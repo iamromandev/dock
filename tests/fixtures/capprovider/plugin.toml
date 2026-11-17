@@ -5,6 +5,7 @@ description = "Test fixture: provides 'probecap'; streams events during a call a
 
 [run]
 any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+container = { cmd = "python3", args = ["/plugin/main.py"] }
 
 [capabilities]
 provides = ["probecap"]

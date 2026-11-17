@@ -9,7 +9,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from cli import __version__, lifecycle
+from cli import __version__, isolation, lifecycle
 from cli.inputs import UsageError, parse_for
 from cli.manifest import ManifestError, platform_key
 from cli.store import Store
@@ -24,6 +24,7 @@ built-in:
   plugin list               list installed plugins
   plugin info <id>          show a plugin's manifest details
   plugin install <path>     install a plugin from a folder
+  plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
 
 options (before the command):
@@ -40,6 +41,7 @@ built-in:
   plugin list               list installed plugins
   plugin info <id>          show a plugin's manifest details
   plugin install <path>     install a plugin from a folder
+  plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
 
 anything else runs a plugin command: <command> [args...]
@@ -92,6 +94,10 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
         store.remove(args[1])
         print(f"removed {args[1]}")
         return 0
+    if sub == "build" and len(args) == 2:
+        tag = isolation.build(store, store.get(args[1]))
+        print(f"built {tag}")
+        return 0
     if sub == "info" and len(args) == 2:
         m = store.get(args[1])
         print(f"id:          {m.id}\nversion:     {m.version}\nprotocol:    v{m.api_version}")
@@ -100,6 +106,7 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
         print(f"provides:    {', '.join(m.provides) or '-'}")
         print(f"requires:    {', '.join(m.requires) or '-'}")
         print(f"permissions: {', '.join(m.permissions) or '-'}")
+        print(f"isolation:   {isolation.describe(store, m)}")
         print(f"builds:      {', '.join(m.run)}  (this machine: {platform_key()})")
         print(f"location:    {m.root}")
         return 0
@@ -131,6 +138,7 @@ def main(argv: list[str] | None = None) -> int:
 
         manifest, command = store.resolve(argv[0])
         parse_for(manifest, command, argv[1:])  # a bad invocation must start no process, not even recovery
+        isolation.sweep(store)
         lifecycle.recover(store)
         return lifecycle.run(store, manifest, command, argv[1:], verbose=verbose)
     except ManifestError as e:

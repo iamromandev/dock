@@ -318,10 +318,11 @@ class ShellE2E(unittest.TestCase):
 
     def test_candidates_plugin_subcommands_and_ids(self):
         sh = self._shell_obj()
-        self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "remove"])
+        self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "build", "remove"])
         self.assertEqual(sh.candidates("plugin info dev.dock.", "dev.dock."),
                          ["dev.dock.capcaller", "dev.dock.capprovider", "dev.dock.chat", "dev.dock.hello",
                           "dev.dock.llm", "dev.dock.probe", "dev.dock.provprobe"])
+        self.assertEqual(sh.candidates("plugin build dev.dock.h", "dev.dock.h"), ["dev.dock.hello"])
 
     def test_complete_uses_line_buffer_and_state(self):
         import types

@@ -5,6 +5,7 @@ description = "Test fixture: exit codes, crashes, pids, cancellable sleep"
 
 [run]
 any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+container = { cmd = "python3", args = ["/plugin/main.py"] }
 
 [[commands]]
 name = "code"

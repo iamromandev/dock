@@ -7,7 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from cli import __version__, lifecycle
+from cli import __version__, isolation, lifecycle
 from cli.inputs import UsageError
 from cli.lifecycle import Session
 from cli.manifest import Manifest, ManifestError
@@ -15,7 +15,7 @@ from cli.store import Store
 
 PROMPT = "dock> "
 BUILTINS = ["help", "version", "plugin", "status", "exit", "quit"]
-PLUGIN_SUBS = ["list", "info", "install", "remove"]
+PLUGIN_SUBS = ["list", "info", "install", "build", "remove"]
 
 
 class Shell:
@@ -65,7 +65,7 @@ class Shell:
             return sorted(n for n in names if n.startswith(text))
         if done == ["plugin"]:
             return [s for s in PLUGIN_SUBS if s.startswith(text)]
-        if len(done) == 2 and done[0] == "plugin" and done[1] in ("info", "remove"):
+        if len(done) == 2 and done[0] == "plugin" and done[1] in ("info", "build", "remove"):
             return sorted(i for i in self.store.index() if i.startswith(text))
         return []
 
@@ -136,11 +136,13 @@ class Shell:
         procs = self.session.running()
         if not procs:
             print("no plugins running")
-        for plugin_id, idle, provides in procs:
+        for plugin_id, idle, provides, runtime in procs:
             m, sec = divmod(int(idle), 60)
             line = f"{plugin_id:<20} running   idle {m}m{sec:02d}s"
             if provides:
                 line += "   provides: " + ", ".join(provides)
+            if runtime:
+                line += "   isolated: " + isolation.runtime_label(runtime)
             print(line)
 
     def _plugin(self, main, args: list[str]) -> None:
@@ -175,6 +177,7 @@ def _setup_readline(store: Store):
 
 
 def start(store: Store, verbose: bool) -> int:
+    isolation.sweep(store)
     lifecycle.recover(store)
     readline = _setup_readline(store)
     shell = Shell(store, Session(store, verbose), readline=readline, verbose=verbose)
