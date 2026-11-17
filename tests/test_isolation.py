@@ -126,6 +126,71 @@ class ManifestContainer(unittest.TestCase):
             m.entrypoint()
 
 
+class ManifestEnv(unittest.TestCase):
+    """R6: [capabilities].env, the host variables a plugin asks to receive inside its container."""
+
+    def load(self, names: str) -> Manifest:
+        return Manifest.load(make_plugin('container = { cmd = "python3" }', f"\n[capabilities]\nenv = {names}\n"))
+
+    def test_reserved_names_cover_everything_dock_sets_in_a_container(self):
+        from cli.manifest import RESERVED_ENV
+        set_by_dock = set(isolation.ENV_ALLOW) | {"HOME", "PATH", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"}
+        self.assertLessEqual(set_by_dock, RESERVED_ENV)
+        m = Manifest.load(make_plugin('container = { cmd = "python3" }'))
+        self.assertLessEqual(set(isolation.container_env(m)), RESERVED_ENV)
+
+    def test_no_env_means_an_empty_list(self):
+        self.assertEqual(Manifest.load(make_plugin('container = { cmd = "python3" }')).env, [])
+
+    def test_declared_names_are_kept_in_order(self):
+        self.assertEqual(self.load('["MY_VAR", "_X1", "A"]').env, ["MY_VAR", "_X1", "A"])
+
+    def test_duplicates_are_dropped_silently_keeping_the_first(self):
+        self.assertEqual(self.load('["B", "A", "B", "A"]').env, ["B", "A"])
+
+    def test_env_does_not_disturb_the_other_capabilities(self):
+        root = make_plugin('container = { cmd = "python3" }',
+                           '\n[capabilities]\npermissions = ["network"]\nenv = ["MY_VAR"]\n')
+        m = Manifest.load(root)
+        self.assertEqual((m.permissions, m.env), (["network"], ["MY_VAR"]))
+
+    def test_names_that_are_not_variable_names_are_rejected_naming_the_entry(self):
+        for bad in ("lower", "Mixed", "1ABC", "A-B", "A B", "A=B", ""):
+            with self.subTest(name=bad):
+                with self.assertRaisesRegex(
+                    ManifestError, rf"env entry '{bad}' must look like an environment variable name \(A-Z, 0-9, _\)"
+                ):
+                    self.load(f'["{bad}"]')
+
+    def test_names_dock_sets_itself_are_rejected_naming_the_entry(self):
+        for bad in ("HOME", "PATH", "LANG", "TZ", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"):
+            with self.subTest(name=bad):
+                with self.assertRaisesRegex(ManifestError, f"env entry '{bad}' is set by dock already"):
+                    self.load(f'["{bad}"]')
+
+    def test_the_error_names_the_manifest_file(self):
+        with self.assertRaisesRegex(ManifestError, r"plugin\.toml: env entry 'lower'"):
+            self.load('["lower"]')
+
+    def test_env_must_be_a_list_of_names(self):
+        for bad in ('"MY_VAR"', "[1]", "{ A = 1 }", '["A", 2]'):
+            with self.subTest(env=bad):
+                with self.assertRaisesRegex(ManifestError, r"\[capabilities\]\.env must be a list of names"):
+                    self.load(bad)
+
+    def test_a_bad_env_fails_the_install(self):
+        store = Store(temp_dir("dock-iso-install-") / "home")
+        root = make_plugin('container = { cmd = "python3" }', '\n[capabilities]\nenv = ["PATH"]\n')
+        with self.assertRaisesRegex(ManifestError, "env entry 'PATH'"):
+            store.install(root)
+        self.assertEqual(store.index(), {})
+
+    def test_a_good_env_installs(self):
+        store = Store(temp_dir("dock-iso-install-") / "home")
+        root = make_plugin('container = { cmd = "python3" }', '\n[capabilities]\nenv = ["MY_VAR"]\n')
+        self.assertEqual(store.install(root).env, ["MY_VAR"])
+
+
 class IsolationConfig(unittest.TestCase):
     def store(self, config: str | bytes | None) -> Store:
         home = temp_dir("dock-iso-home-")
@@ -285,9 +350,11 @@ class RunArgv(unittest.TestCase):
         extra = f"\n[capabilities]\npermissions = {json.dumps(list(permissions))}\n"
         return Manifest.load(make_plugin(f"container = {container}", extra))
 
-    def argv(self, m, env=None, cwd="/work/dir", uid_gid=(501, 20), data_dir="/home/u/.dock/data/dev.dock.sample"):
+    def argv(self, m, env=None, cwd="/work/dir", uid_gid=(501, 20), data_dir="/home/u/.dock/data/dev.dock.sample",
+             passthrough=()):
         return isolation.run_argv(self.CFG, m, name="dock-dev-dock-sample-1-0", data_dir=data_dir,
-                                  cwd=cwd, uid_gid=uid_gid, env=env if env is not None else {"HOME": "/tmp"})
+                                  cwd=cwd, uid_gid=uid_gid, env=env if env is not None else {"HOME": "/tmp"},
+                                  passthrough=passthrough)
 
     def test_image_tag_is_id_and_version(self):
         self.assertEqual(isolation.image_tag(self.manifest()), "dock/dev.dock.sample:1.2.3")
@@ -306,6 +373,31 @@ class RunArgv(unittest.TestCase):
             "-e", "LANG=C", "-e", "HOME=/tmp", "-e", f"DOCK_PLUGIN_ID={m.id}",
             "dock/dev.dock.sample:1.2.3", "python3", "/plugin/main.py",
         ])
+
+    def test_exact_argv_with_passed_through_names_after_the_value_pairs_and_without_values(self):
+        m = self.manifest()
+        argv = self.argv(m, {"HOME": "/tmp"}, passthrough=["MY_VAR", "OTHER_VAR"])
+        i = argv.index("--workdir")
+        self.assertEqual(argv[i:], [
+            "--workdir", "/plugin", "-e", "HOME=/tmp", "-e", "MY_VAR", "-e", "OTHER_VAR",
+            "dock/dev.dock.sample:1.2.3", "python3", "/plugin/main.py",
+        ])
+
+    def test_no_passthrough_adds_no_name_only_entries(self):
+        argv = self.argv(self.manifest(), {"HOME": "/tmp"})
+        values = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        self.assertEqual(values, ["HOME=/tmp"])
+
+    def test_passthrough_env_lists_declared_names_that_are_set_on_the_host(self):
+        m = Manifest.load(make_plugin('container = { cmd = "python3" }',
+                                      '\n[capabilities]\nenv = ["MY_VAR", "UNSET_VAR", "EMPTY_VAR"]\n'))
+        with mock.patch.dict(os.environ, {"MY_VAR": "v", "EMPTY_VAR": "", "OTHER": "x"}):
+            os.environ.pop("UNSET_VAR", None)
+            self.assertEqual(isolation.passthrough_env(m), ["MY_VAR", "EMPTY_VAR"])  # empty counts as set
+
+    def test_passthrough_env_is_empty_when_nothing_is_declared(self):
+        with mock.patch.dict(os.environ, {"OTHER": "x"}):
+            self.assertEqual(isolation.passthrough_env(self.manifest()), [])
 
     def test_network_flag_only_without_network_permission(self):
         self.assertIn("--network", self.argv(self.manifest()))
@@ -438,6 +530,21 @@ class Prepare(FakeRuntimeCase):
         self.assertEqual(len(builds), 1)
         self.assertEqual(builds[0][:3], ["build", "-t", "dock/dev.dock.sample:1.2.3"])
         self.assertEqual(builds[0][3:], ["-f", str(m.root / "Dockerfile"), str(m.root)])
+
+    def test_declared_env_is_passed_by_name_only_and_the_client_keeps_the_host_environment(self):
+        self.configure()
+        m = install(self.store, NATIVE_AND_CONTAINER, '\n[capabilities]\nenv = ["MY_VAR", "UNSET_VAR"]\n')
+        with mock.patch.dict(os.environ, {"MY_VAR": "hello-123", "OTHER": "nope"}):
+            os.environ.pop("UNSET_VAR", None)
+            with redirect_stderr(StringIO()):
+                launch = isolation.prepare(self.store, m)
+        passed = [launch.argv[i + 1] for i, a in enumerate(launch.argv) if a == "-e"]
+        self.assertIn("MY_VAR", passed)  # name only
+        self.assertNotIn("UNSET_VAR", passed)
+        self.assertEqual(launch.env["MY_VAR"], "hello-123")  # the client resolves it from its own environment
+        joined = " ".join(launch.argv)
+        for leaked in ("hello-123", "OTHER", "nope", "UNSET_VAR"):
+            self.assertNotIn(leaked, joined)
 
     def test_second_prepare_does_not_build_again(self):
         self.configure()
@@ -605,6 +712,59 @@ class DockIsolated(FakeRuntimeCase):
 
     def removed(self):
         return [c[-1] for c in self.calls("rm")]
+
+
+class EnvPassthrough(DockIsolated):
+    """R7/R8: declared variables reach the container by name only; nothing else of the host does."""
+
+    HOST = {"MY_VAR": "hello-123", "OTHER": "nope", "EMPTY_VAR": ""}
+
+    def setUp(self):
+        super().setUp()
+        path = self.tmp / "envprobe"
+        shutil.copytree(FIXTURES / "jail", path, ignore=shutil.ignore_patterns("__pycache__"))
+        manifest = (path / "plugin.toml").read_text().replace("dev.dock.jail", "dev.dock.envprobe")
+        manifest = manifest.replace('env = ["DOCK_LLM_MODEL"]', 'env = ["MY_VAR", "UNSET_VAR", "EMPTY_VAR"]')
+        self.assertIn("MY_VAR", manifest)
+        (path / "plugin.toml").write_text(manifest)
+        self.store.install(path)
+        self.host_env = {k: v for k, v in self.env.items() if k != "UNSET_VAR"} | self.HOST
+
+    def probe(self, name):
+        r = self.dock("dev.dock.envprobe:env", name, env=self.host_env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout.strip()
+
+    def test_the_recorded_argv_has_the_name_but_never_the_value(self):
+        self.configure()
+        self.probe("MY_VAR")
+        argv = self.run_calls()[0]
+        passed = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
+        self.assertIn("MY_VAR", passed)
+        self.assertIn("EMPTY_VAR", passed)  # set to the empty string on the host: still passed
+        self.assertNotIn("UNSET_VAR", passed)
+        text = json.dumps(argv)
+        for leaked in ("hello-123", "OTHER", "nope", "UNSET_VAR"):
+            self.assertNotIn(leaked, text)
+
+    def test_a_secret_declared_variable_never_appears_in_any_runtime_call(self):
+        self.configure()
+        env = {**self.host_env, "MY_VAR": "secret-xyz"}
+        r = self.dock("dev.dock.envprobe:env", "MY_VAR", env=env)
+        self.assertEqual(r.stdout.strip(), "set:secret-xyz", r.stderr)  # the plugin inside sees it
+        self.assertNotIn("secret-xyz", json.dumps(self.calls()))
+
+    def test_the_plugin_inside_sees_the_declared_variable_and_not_the_others(self):
+        self.configure()
+        self.assertEqual(self.probe("MY_VAR"), "set:hello-123")
+        self.assertEqual(self.probe("EMPTY_VAR"), "set:")
+        self.assertEqual(self.probe("UNSET_VAR"), "unset")
+        self.assertEqual(self.probe("OTHER"), "unset")
+
+    def test_a_native_run_still_sees_the_whole_environment(self):
+        self.assertEqual(self.probe("OTHER"), "set:nope")
+        self.assertEqual(self.probe("MY_VAR"), "set:hello-123")
+        self.assertEqual(self.calls("run"), [])
 
 
 class NativeByDefault(DockIsolated):
@@ -1081,6 +1241,18 @@ class FakeRuntimeSelfTest(unittest.TestCase):
         r = self.call("run", "--name", "c", "--label", "dev.dock.owner=1", "t:1", "/usr/bin/env")
         self.assertNotIn("SECRET_TOKEN", r.stdout)
 
+    def test_a_dash_e_name_without_a_value_is_read_from_the_runtime_clients_environment(self):
+        self.env.update({"PASSED": "from-host", "NOT_PASSED": "nope"})
+        self.call("build", "-t", "t:1", "-f", "x", str(self.ctx))
+        r = self.call("run", "--name", "c", "--label", "dev.dock.owner=1", "-e", "PASSED", "-e", "UNSET_ONE",
+                      "-e", "EMPTY=", "t:1", "/usr/bin/env")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        got = dict(l.split("=", 1) for l in r.stdout.splitlines())
+        self.assertEqual(got["PASSED"], "from-host")
+        self.assertEqual(got["EMPTY"], "")
+        self.assertNotIn("UNSET_ONE", got)  # like Docker: a name that is unset is not passed
+        self.assertNotIn("NOT_PASSED", got)
+
     def test_failing_build_exit_builds_no_image(self):
         self.env["FAKE_RUNTIME_BUILD_EXIT"] = "1"
         self.assertEqual(self.call("build", "-t", "t:1", "-f", "x", str(self.ctx)).returncode, 1)
@@ -1199,6 +1371,48 @@ class PluginInfoIsolation(DockIsolated):
     def test_broken_config_does_not_break_info(self):
         (self.store.home / "config.toml").write_text("[isolation\n")
         self.assertIn("isolation:   unknown", self.isolation_line("dev.dock.hello"))
+
+
+class PluginInfoEnv(DockIsolated):
+    """R9: the `env:` line of `plugin info`, and the install summary."""
+
+    def line(self, plugin_id, key="env:"):
+        out = self.dock("plugin", "info", plugin_id).stdout
+        return next(l for l in out.splitlines() if l.startswith(key))
+
+    def test_dash_without_declared_env(self):
+        self.assertEqual(self.line("dev.dock.hello"), "env:         -")
+
+    def test_declared_names_are_listed_after_the_permissions(self):
+        install(self.store, NATIVE_AND_CONTAINER, '\n[capabilities]\npermissions = ["network"]\nenv = ["A_ONE", "B_TWO"]\n')
+        self.assertEqual(self.line("dev.dock.sample"), "env:         A_ONE, B_TWO")
+        lines = self.dock("plugin", "info", "dev.dock.sample").stdout.splitlines()
+        keys = [l.split(":")[0] for l in lines]
+        self.assertEqual(keys.index("env"), keys.index("permissions") + 1)
+
+    def test_the_bundled_llm_declares_its_backend_variables(self):
+        self.store.install(ROOT / "plugin" / "llm")
+        self.assertEqual(self.line("dev.dock.llm"), "env:         DOCK_LLM_BASE_URL, DOCK_LLM_MODEL, DOCK_LLM_API_KEY")
+        self.assertEqual(self.line("dev.dock.llm", "permissions:"), "permissions: network")
+
+    def test_the_bundled_llm_can_run_isolated(self):
+        self.store.install(ROOT / "plugin" / "llm")
+        self.configure()
+        self.assertEqual(self.line("dev.dock.llm", "isolation:"), "isolation:   docker (network, no cwd access)")
+
+    def test_install_summary_lists_env_only_when_declared(self):
+        root = make_plugin(NATIVE_AND_CONTAINER, '\n[capabilities]\nenv = ["A_ONE", "B_TWO"]\n')
+        (root / "Dockerfile").write_text("FROM scratch\n")
+        out = self.dock("plugin", "install", str(root)).stdout
+        self.assertIn("  env:         A_ONE, B_TWO", out.splitlines())
+        out = self.dock("plugin", "install", str(ROOT / "plugin" / "hello")).stdout
+        self.assertNotIn("env:", out)
+
+    def test_a_bad_env_fails_the_install_with_exit_1_naming_the_entry(self):
+        root = make_plugin(NATIVE_AND_CONTAINER, '\n[capabilities]\nenv = ["lower"]\n')
+        r = self.dock("plugin", "install", str(root))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("env entry 'lower'", r.stderr)
 
 
 class ShellStatusIsolation(DockIsolated):
@@ -1333,7 +1547,7 @@ class InstallKeepsBuildFiles(unittest.TestCase):
             self.store.install(self.plugin('someos-nocpu = { cmd = "x" }'))
 
     def test_bundled_container_plugins_keep_native_builds_out_of_the_image_context(self):
-        for name in ("hello", "download"):
+        for name in ("hello", "download", "llm", "chat"):
             with self.subTest(plugin=name):
                 m = self.store.install(ROOT / "plugin" / name)
                 lines = (m.root / ".dockerignore").read_text().splitlines()

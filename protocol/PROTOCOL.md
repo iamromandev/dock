@@ -46,6 +46,22 @@ host's `PATH` is not passed on); `data_dir` is mounted at the same path,
 and `invoke.cwd` is reachable only for plugins that declare `fs:write:cwd`, and the
 host refuses to start such a plugin when the cwd is `/`, the user's home
 directory, or the dock home or something above or inside it.
+A plugin that needs more of the host's environment (say an API key) declares the
+variable names in `[capabilities]`:
+
+```toml
+[capabilities]
+env = ["DOCK_LLM_BASE_URL", "DOCK_LLM_API_KEY"]
+```
+
+Each declared name that is set on the host (even to the empty string) is passed
+into the container as a bare `-e NAME`: the runtime client reads the value from
+its own environment, so the value never appears on the command line (and so not
+in the process list). Names that are not set on the host are not passed, and
+nothing that is not declared gets in. Names must match `[A-Z_][A-Z0-9_]*` and may
+not be one dock sets itself (`HOME`, `PATH`, `LANG`, `TZ`, `DOCK_PLUGIN_ID`,
+`DOCK_API_VERSION`); `Manifest.load` rejects the manifest otherwise. A native
+plugin ignores `env`: it already inherits the whole environment.
 No network without the `network` permission. A plugin with only a `container`
 entry has no native build and cannot run unless isolation is on. Installing a
 plugin that declares `container` copies its whole folder (including sources such

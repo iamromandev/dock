@@ -6,6 +6,7 @@ plugins work in their images. They run on the Ubuntu CI runner; macOS runners ha
 """
 
 import os
+import shlex
 import shutil
 import socket
 import subprocess
@@ -52,7 +53,8 @@ class RealDocker(unittest.TestCase):
         shutil.copytree(FIXTURES / "jail", path, ignore=shutil.ignore_patterns("__pycache__"))
         manifest = (path / "plugin.toml").read_text().replace("dev.dock.jail", f"dev.dock.{name}")
         perms = ", ".join(f'"{p}"' for p in permissions)
-        (path / "plugin.toml").write_text(manifest + f"\n[capabilities]\npermissions = [{perms}]\n")
+        # The jail already has a [capabilities] table (for env): add to it, never open a second one.
+        (path / "plugin.toml").write_text(manifest.replace("[capabilities]\n", f"[capabilities]\npermissions = [{perms}]\n"))
         return path
 
     @classmethod
@@ -60,15 +62,26 @@ class RealDocker(unittest.TestCase):
         cls.tmp = Path(tempfile.mkdtemp(prefix="dock-docker-")).resolve()
         cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
         cls.store = Store(cls.tmp / "home")
-        (cls.store.home / "config.toml").write_text("[isolation]\nenabled = true\n")  # runtime = docker
+        # A thin wrapper around the real docker that records each call, to see what dock asked it to run.
+        cls.calls = cls.tmp / "docker-calls"
+        wrapper = cls.tmp / "docker-recorder"
+        wrapper.write_text(
+            f"#!/bin/sh\nprintf '%s\\n' \"$*\" >> {shlex.quote(str(cls.calls))}\n"
+            f"exec {shlex.quote(shutil.which('docker'))} \"$@\"\n"
+        )
+        wrapper.chmod(0o755)
+        (cls.store.home / "config.toml").write_text(f'[isolation]\nenabled = true\nruntime = "{wrapper}"\n')
         cls.pids = []  # every dock process of this run: their containers are the only ones we judge
 
         cls.env = {
             **os.environ, "DOCK_HOME": str(cls.store.home), "PYTHONPATH": str(ROOT),
-            "DOCK_TEST_HOST_SECRET": cls.HOST_SECRET,
+            "DOCK_TEST_HOST_SECRET": cls.HOST_SECRET, "DOCK_LLM_MODEL": "test-model",
         }
+        # A developer's real model server must not leak in: the isolated llm would try it and fail.
+        for name in ("DOCK_LLM_BASE_URL", "DOCK_LLM_API_KEY"):
+            cls.env.pop(name, None)
         plugins = [ROOT / "plugin" / "hello", FIXTURES / "jail", cls.jail_copy("jailcwd", ["fs:write:cwd"]),
-                   ROOT / "plugin" / "download"]
+                   ROOT / "plugin" / "download", ROOT / "plugin" / "llm", ROOT / "plugin" / "chat"]
         if NETWORK_CONTROL:
             plugins.append(cls.jail_copy("jailnet", ["network"]))
         for path in plugins:
@@ -97,8 +110,8 @@ class RealDocker(unittest.TestCase):
     def setUp(self):
         self.work = Path(tempfile.mkdtemp(prefix="dock-work-", dir=self.tmp))  # the user's cwd
 
-    def dock(self, *args, env=None):
-        return self.run_dock(*args, cwd=self.work, env=env)
+    def dock(self, *args, env=None, stdin=""):
+        return self.run_dock(*args, cwd=self.work, env=env, stdin=stdin)
 
     def jail(self, plugin_command: str, *args: str, plugin="jail", env=None) -> str:
         """Run a command of the jail fixture; its one line of output."""
@@ -139,6 +152,17 @@ class RealDocker(unittest.TestCase):
     def test_host_variable_outside_the_allowlist_is_not_visible(self):
         self.assertEqual(self.jail("env", "DOCK_TEST_HOST_SECRET"), "unset")
 
+    # AC10 / R7: a declared variable gets in by name; its undeclared neighbour does not
+    def test_declared_host_variable_is_visible(self):
+        self.assertEqual(self.jail("env", "DOCK_LLM_MODEL"), "set:test-model")
+
+    def test_declared_host_variable_that_is_unset_is_not_visible(self):
+        env = {k: v for k, v in self.env.items() if k != "DOCK_LLM_MODEL"}
+        self.assertEqual(self.jail("env", "DOCK_LLM_MODEL", env=env), "unset")
+
+    def test_declared_host_variable_set_to_empty_is_passed_empty(self):
+        self.assertEqual(self.jail("env", "DOCK_LLM_MODEL", env={**self.env, "DOCK_LLM_MODEL": ""}), "set:")
+
     def test_allowlisted_host_variable_is_visible(self):
         self.assertEqual(self.jail("env", "TZ", env={**self.env, "TZ": "Europe/Oslo"}), "set:Europe/Oslo")
 
@@ -176,6 +200,27 @@ class RealDocker(unittest.TestCase):
             self.assertEqual(left.returncode, 0, left.stderr)
         self.assertEqual([n for left in mine for n in left.stdout.split()], [])
 
+    # AC9 / R10, R11
+    def test_isolated_chat_gets_a_reply_from_the_isolated_toy_model_and_leaves_no_container(self):
+        self.calls.write_text("")
+        r = self.dock("chat", stdin="hi\n/exit\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("toy: toy-1", r.stdout)
+        # the banner comes from llm.info; the reply proves llm.generate worked across both containers
+        self.assertIn("Hello! I'm a toy model served by the dock llm plugin.", r.stdout)
+        self.assertNotIn("error", r.stderr.lower())
+        runs = [l for l in self.calls.read_text().splitlines() if l.startswith("run ")]
+        for image in ("dock/dev.dock.chat:", "dock/dev.dock.llm:"):
+            self.assertEqual(len([l for l in runs if f" {image}" in l]), 1, f"{image} not run once: {runs}")
+        left = docker("ps", "-a", "--filter", f"label=dev.dock.owner={socket.gethostname()}:{self.pids[-1]}",
+                      "--format", "{{.Names}}")
+        self.assertEqual(left.stdout.split(), [])
+
+    def test_isolated_chat_with_an_argument_is_refused_by_dock(self):
+        r = self.dock("chat", "extra")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stderr.strip(), "dock: chat: unexpected argument 'extra'")
+
     # AC13 / R14
     def test_isolated_download_of_a_file_url_writes_identical_bytes_in_cwd(self):
         payload = os.urandom(300_000)  # binary, several read chunks
@@ -184,6 +229,23 @@ class RealDocker(unittest.TestCase):
         r = self.dock("download", source.as_uri(), "-o", "copy.bin")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.work / "copy.bin").read_bytes(), payload)
+
+    def test_isolated_download_reads_its_typed_inputs_for_the_long_flag_and_the_default_name(self):
+        payload = os.urandom(1000)
+        (self.work / "sub").mkdir()
+        source = self.work / "sub" / "src.bin"
+        source.write_bytes(payload)
+        r = self.dock("download", source.as_uri(), "--output=copy2.bin")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.work / "copy2.bin").read_bytes(), payload)
+        r = self.dock("download", source.as_uri())  # no output: named after the last path segment, in the cwd
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.work / "src.bin").read_bytes(), payload)
+
+    def test_isolated_download_without_a_url_is_refused_by_dock_before_any_container_starts(self):
+        r = self.dock("download")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(r.stderr.strip(), "dock: download: missing required input 'url'")
 
 
 if __name__ == "__main__":

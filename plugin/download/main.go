@@ -71,9 +71,12 @@ func main() {
 			cancel()
 		case "invoke":
 			var p struct {
-				Command string   `json:"command"`
-				Args    []string `json:"args"`
-				Cwd     string   `json:"cwd"`
+				Command string `json:"command"`
+				Cwd     string `json:"cwd"`
+				Inputs  struct {
+					URL    string  `json:"url"`
+					Output *string `json:"output"`
+				} `json:"inputs"`
 			}
 			json.Unmarshal(m.Params, &p)
 			var ctx context.Context
@@ -85,7 +88,7 @@ func main() {
 					send(message{ID: id, Error: &rpcError{-32601, "unknown command " + p.Command}})
 					return
 				}
-				if err := download(ctx, p.Args, p.Cwd); err != nil {
+				if err := download(ctx, p.Inputs.URL, p.Inputs.Output, p.Cwd); err != nil {
 					code := -32000
 					if errors.Is(err, context.Canceled) {
 						code = -32800
@@ -108,28 +111,14 @@ func main() {
 	}
 }
 
-func download(ctx context.Context, args []string, cwd string) error {
-	var src, out string
-	for i := 0; i < len(args); i++ {
-		switch a := args[i]; {
-		case a == "-o" || a == "--output":
-			if i+1 >= len(args) {
-				return fmt.Errorf("-o needs a file name")
-			}
-			i++
-			out = args[i]
-		case src == "":
-			src = a
-		default:
-			return fmt.Errorf("unexpected argument %q", a)
-		}
-	}
-	if src == "" {
-		return fmt.Errorf("usage: download <url> [-o file]")
-	}
+func download(ctx context.Context, src string, dest *string, cwd string) error {
 	u, err := url.Parse(src)
 	if err != nil {
 		return err
+	}
+	out := ""
+	if dest != nil {
+		out = *dest
 	}
 	if out == "" {
 		out = path.Base(u.Path)

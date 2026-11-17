@@ -196,13 +196,23 @@ def container_env(m: Manifest) -> dict[str, str]:
     return env | {"HOME": "/tmp", "DOCK_PLUGIN_ID": m.id, "DOCK_API_VERSION": API_VERSION}
 
 
+def passthrough_env(m: Manifest) -> list[str]:
+    """The declared variables that are set on the host: handed to the runtime by name, never by value."""
+    return [n for n in m.env if n in os.environ]
+
+
 def owner_label() -> str:
     """Who owns a container: this dock process, on this machine (a pid means nothing on another host)."""
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
-def run_argv(cfg: Config, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env: dict[str, str]) -> list[str]:
-    """The `run` command line. uid_gid is None where there is no POSIX user (Windows)."""
+def run_argv(cfg: Config, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env: dict[str, str],
+             passthrough=()) -> list[str]:
+    """The `run` command line. uid_gid is None where there is no POSIX user (Windows).
+
+    `env` is set by value; `passthrough` names are given as a bare `-e NAME`, so the runtime client reads
+    the value from its own environment and a secret never shows up in the process list.
+    """
     assert m.container is not None
     return [
         cfg.runtime, "run", "-i", "--rm", "--pull", "never", "--name", name, "--label", f"{LABEL}={owner_label()}",
@@ -213,6 +223,7 @@ def run_argv(cfg: Config, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env
         *(["-v", f"{cwd}:{cwd}"] if "fs:write:cwd" in m.permissions else []),
         "--workdir", "/plugin",
         *[x for k, v in env.items() for x in ("-e", f"{k}={v}")],
+        *[x for n in passthrough for x in ("-e", n)],
         image_tag(m), m.container.cmd, *m.container.args,
     ]
 
@@ -352,10 +363,10 @@ def prepare(store, m: Manifest, cwd: str | None = None) -> Launch:
     argv = run_argv(
         cfg, m, name=name, data_dir=store.data_dir(m.id), cwd=cwd,
         uid_gid=(os.getuid(), os.getgid()) if hasattr(os, "getuid") else None,
-        env=container_env(m),
+        env=container_env(m), passthrough=passthrough_env(m),
     )
-    # The runtime client keeps the host environment (it needs DOCKER_HOST and friends);
-    # only the -e entries above reach the plugin.
+    # The runtime client keeps the host environment (it needs DOCKER_HOST and friends, and resolves the
+    # value-free `-e NAME` entries from it); only the -e entries above reach the plugin.
     return Launch(argv, dict(os.environ), runtime=cfg.runtime, container=name)
 
 

@@ -16,6 +16,10 @@ container      = { cmd = "/plugin/download" }
 [[commands]]
 name = "download"
 summary = "Download a URL: download <url> [-o file]"
+inputs = [
+  { name = "url",    type = "string", required = true },
+  { name = "output", type = "string", flag = "--output", short = "-o" },
+]
 
 [capabilities]
 permissions = ["network", "fs:write:cwd"]
