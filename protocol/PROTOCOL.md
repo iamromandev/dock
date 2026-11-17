@@ -71,6 +71,33 @@ the image on demand. With `container`, the `id` and `version` become the image
 tag `dock/<id>:<version>`, so they may only contain letters, digits, `.`, `_`
 and `-`, and must not start with `.` or `-`.
 
+### Running as WebAssembly
+
+A manifest may declare `wasm` in `[run]`; the host then runs the plugin with the
+`wasmtime` command line, whatever other entries or isolation settings there are:
+
+```toml
+[run]
+wasm = { module = "plugin.wasm" }                            # a WASI module in the plugin folder
+wasm = { python = "3.15", script = "main.py", args = [] }    # a script on the interpreter the host pins
+```
+
+Exactly one form; `module` and `script` must exist inside the plugin folder, `python` must be
+a version the host provides, and `args` (optional) follow the module or script. The protocol
+is unchanged: JSON-RPC on the module's stdin/stdout, with `DOCK_PLUGIN_ID` and
+`DOCK_API_VERSION` set. The guest sees only:
+
+- its plugin folder at `/plugin`, read-only (for Python, the standard library at `/python`, read-only);
+- `data_dir` at its host path, read-write;
+- `invoke.cwd` at its host path, read-write, only with `fs:write:cwd` (refused for `/`, the user's
+  home, or the dock home or something above or inside it, as with containers);
+- the environment `HOME` (a folder inside `data_dir`), `DOCK_PLUGIN_ID`, `DOCK_API_VERSION`, and the
+  `[capabilities] env` names that are set on the host (by name, never by value on the command line).
+
+There is no network: a manifest that declares `network` is rejected at install. WASI 0.1 has no
+threads, so a Python WASM plugin reads stdin in one loop and sees a `cancel` notification only between
+messages; the host's force kill after the cancel grace ends a step that does not return.
+
 ## Host → plugin requests
 
 | Method        | Params                                        | Result                | Notes |

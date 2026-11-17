@@ -19,8 +19,31 @@ import sys
 import tomllib
 from pathlib import Path
 
-from cli import isolation
+from cli import isolation, wasm
 from cli.manifest import Manifest, ManifestError
+
+
+def child(root: Path, name: str, what: str) -> Path:
+    """`root/name`, refusing a name that is not a plain single component (so never outside `root`)."""
+    path = root / name
+    if name in ("", ".", "..") or Path(name).name != name or path.parent != root:
+        raise ManifestError(f"{what} '{name}' is not a plain name and would leave {root}")
+    return path
+
+
+def _refuse_escaping_symlinks(root: Path, ignore) -> None:
+    """Refuse a plugin folder holding a symlink that points outside it: a copy would hand over the host file."""
+    real_root = Path(os.path.realpath(root))
+    for here, dirs, files in os.walk(root):  # os.walk does not descend into symlinked folders
+        skipped = ignore(here, dirs + files)
+        dirs[:] = [d for d in dirs if d not in skipped]
+        for name in dirs + [f for f in files if f not in skipped]:
+            entry = Path(here, name)
+            if entry.is_symlink() and not Path(os.path.realpath(entry)).is_relative_to(real_root):
+                raise ManifestError(
+                    f"{root}: symlink {entry.relative_to(root)} points outside the plugin folder "
+                    f"({os.readlink(entry)}); plugin folders must hold their files, not links to the host"
+                )
 
 
 class Store:
@@ -51,19 +74,24 @@ class Store:
     # install / remove ----------------------------------------------------
     def install(self, src: Path) -> Manifest:
         manifest = Manifest.load(src)
-        if manifest.container is None:
+        if manifest.container is None and manifest.wasm is None:
             manifest.entrypoint()  # fail early if it can't run on this machine
-        # With a container entry the plugin can run without a native build for this machine.
+        # With a container or wasm entry the plugin can run without a native build for this machine.
 
-        dest = self.plugin_dir / manifest.id / manifest.version
-        if dest.exists():
-            shutil.rmtree(dest)
+        dest = child(child(self.plugin_dir, manifest.id, "plugin id"), manifest.version, "plugin version")
         # The Dockerfile builds from the installed folder, so a container plugin keeps its sources.
         ignored = (".git", "__pycache__", "node_modules")
         if manifest.container is None:
             ignored += ("*.go", "go.mod")
-        shutil.copytree(manifest.root, dest, ignore=shutil.ignore_patterns(*ignored))
+        ignore = shutil.ignore_patterns(*ignored)
+        _refuse_escaping_symlinks(manifest.root, ignore)  # before anything is replaced
+        if dest.exists():
+            wasm.unseal(dest)  # a WASM plugin's folder is read-only
+            shutil.rmtree(dest)
+        shutil.copytree(manifest.root, dest, ignore=ignore, symlinks=True)  # links stay links: never followed
         installed = Manifest.load(dest)
+        if installed.wasm is not None:
+            wasm.seal(dest)  # the guest gets the folder through a read-write grant; permissions make it read-only
 
         idx = self.index()
         idx[installed.id] = {
@@ -82,6 +110,7 @@ class Store:
         idx = self.index()
         if plugin_id not in idx:
             raise ManifestError(f"{plugin_id} is not installed")
+        wasm.unseal(self.plugin_dir / plugin_id)
         shutil.rmtree(self.plugin_dir / plugin_id, ignore_errors=True)
         del idx[plugin_id]
         self._save_index(idx)
@@ -148,7 +177,7 @@ class Store:
 
     # per-plugin paths ----------------------------------------------------
     def data_dir(self, plugin_id: str) -> Path:
-        d = self.data_root / plugin_id
+        d = child(self.data_root, plugin_id, "plugin id")
         d.mkdir(parents=True, exist_ok=True)
         return d
 

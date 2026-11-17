@@ -51,7 +51,7 @@ Each line is an operation, split with shell-style quoting: `hello "Ada Lovelace"
 Plugins stay running between operations, so `llm` provisions once per shell.
 Built-ins: `help`, `version`, `plugin ...`, `status`, `exit`/`quit` (or Ctrl-D).
 `status` lists the running plugins with their idle time and what they provide,
-and `isolated: <runtime>` for those running in a container.
+`isolated: <runtime>` for those running in a container, and `wasm` for those running as WebAssembly.
 Tab completes commands, `plugin` subcommands and installed plugin ids.
 History is kept in `~/.dock/history` (last 1000 lines); set `DOCK_NO_READLINE=1`
 to run without readline (no completion or history).
@@ -172,6 +172,57 @@ Things to know:
   versions are not deleted (`docker image rm` them).
 - On macOS the runtime's VM must share the mounted paths (Docker Desktop shares
   `/Users` by default), otherwise the plugin sees an empty directory.
+
+### WASM runner
+
+A plugin can run as a WebAssembly (WASI) module under the [`wasmtime`](https://wasmtime.dev)
+command line instead of as a native process or a container. It is sandboxed by
+construction and needs no Docker. Declare it in `plugin.toml` in one of two forms:
+
+```toml
+[run]
+wasm = { module = "plugin.wasm" }                     # your own compiled module
+# or: Python scripts on the interpreter dock pins
+wasm = { python = "3.15", script = "main.py" }        # args = [...] is optional in both forms
+```
+
+A `wasm` entry wins over native and container entries and over `[isolation]`; there is
+no opt-in, and dock never falls back to running the plugin natively or in a container.
+Paths must stay inside the plugin folder and exist at install. The runtime is `wasmtime`
+from `PATH`, or set it in `~/.dock/config.toml` (an unknown key in `[wasm]` is an error):
+
+```toml
+[wasm]
+runtime = "/opt/wasmtime/wasmtime"
+```
+
+Without it, starting the plugin fails with `dock: WASM runtime 'wasmtime' not found
+(install wasmtime)`. Tested with wasmtime 50.0.2. What the plugin gets:
+
+| Grant | Detail |
+|-------|--------|
+| Files | its own plugin folder (read-only: dock removes the write bits when it installs it, and restores them before it removes or replaces it); its data dir read-write at the same path; your current directory read-write only with `fs:write:cwd`, never when it is `/`, your home directory, or the dock home or a directory above or inside it; for the Python form the interpreter's standard library, read-only. Nothing else on the machine is visible |
+| Network | none: a plugin that declares `network` fails to install (`dock: <id>: WASM plugins cannot use 'network'`), and dock never gives wasmtime a socket option |
+| Environment | only `HOME` (a folder inside the data dir), `DOCK_PLUGIN_ID`, `DOCK_API_VERSION` and the names in `[capabilities] env` that are set on the host, handed over by name so values stay off the command line (`PYTHONHOME`, and with the Python form any `PYTHON*` name, cannot be declared) |
+
+The stdio protocol, warm plugins in the shell, idle stop and the force kill after the
+cancel grace work as for other plugins. A single-threaded Python plugin only sees `cancel`
+between messages, so a long step is ended by the force kill. `dock plugin info <id>` shows
+`runner: wasm (wasmtime)` or `runner: wasm (wasmtime, python 3.15)`.
+
+For the Python form dock uses one pinned CPython build for WASI (3.15.2 from
+`brettcannon/cpython-wasi-build`; WASI 0.1, so no threads, sockets or subprocesses),
+kept in `~/.dock/wasm/python-<version>/` after its SHA-256 has been checked. The first
+start of a Python-form plugin downloads it (about 15.5 MB, with a `dock: fetching python
+...` line on stderr); later starts do not touch the network. A download whose hash does
+not match, or that fails, installs nothing and the plugin does not start. Because installed
+WASM folders are read-only, delete `~/.dock/wasm` or a plugin folder by hand only after
+`chmod -R u+w` on it. dock itself checks before every start that the plugin folder and the
+interpreter folder are still read-only and refuses to start the plugin if not (or when run
+as root, where permission bits do not apply): reinstall the plugin, or delete
+`~/.dock/wasm/python-<version>` (after `chmod -R u+w`) to fetch the interpreter again. The
+interpreter's `.verified` marker records the SHA-256 it was checked against, and a folder
+marked with another hash is fetched again. A download over 64 MiB is refused.
 
 ### LLM backends
 

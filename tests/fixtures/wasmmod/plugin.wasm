@@ -1,0 +1,68 @@
+"""Test fixture plugin for the WASM runner: single-threaded, like a Python plugin under WASI (stdlib only).
+
+Named *.wasm because the fake wasmtime treats a module as a Python file. It sees `cancel` only between
+messages, as a real single-threaded WASI plugin does.
+"""
+
+import json
+import os
+import sys
+import time
+
+data_dir = "."
+
+
+def send(msg):
+    sys.stdout.write(json.dumps({"jsonrpc": "2.0", **msg}) + "\n")
+    sys.stdout.flush()
+
+
+def output(text):
+    send({"method": "output", "params": {"text": text + "\n"}})
+
+
+def write_pid():
+    with open(os.path.join(data_dir, "pid"), "w") as f:
+        f.write(str(os.getpid()))
+
+
+def invoke(command, args, params):
+    if command == "code":
+        return int(args[0])
+    if command == "crash":
+        os._exit(7)
+    if command == "pid":
+        write_pid()
+        output(str(os.getpid()))
+    if command == "stubborn":
+        write_pid()
+        output("stubborn started")
+        time.sleep(float(args[0]))
+        output("stubborn late")
+    if command == "env":
+        output(f"{args[0]}={os.environ.get(args[0], '<unset>')}")
+    if command == "argv":
+        output(json.dumps(sys.argv[1:]))
+    if command == "typed":
+        output(json.dumps(params.get("inputs", "<absent>")))
+    return 0
+
+
+for line in sys.stdin:
+    if not line.strip():
+        continue
+    msg = json.loads(line)
+    method, msg_id, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
+    if method is None or msg_id is None:
+        continue
+    if method == "initialize":
+        data_dir = params.get("data_dir", ".")
+        send({"id": msg_id, "result": {"name": "wasmmod"}})
+    elif method == "invoke":
+        code = invoke(params["command"], list(params.get("args", [])), params)
+        send({"id": msg_id, "result": {"exit_code": code}})
+    elif method == "shutdown":
+        send({"id": msg_id, "result": {}})
+        break
+    else:
+        send({"id": msg_id, "error": {"code": -32601, "message": f"unknown method {method}"}})

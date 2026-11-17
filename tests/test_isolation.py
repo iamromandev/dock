@@ -101,7 +101,10 @@ class ManifestContainer(unittest.TestCase):
                 text = (root / "plugin.toml").read_text()
                 old = 'id = "dev.dock.sample"' if field == "id" else 'version = "1.2.3"'
                 (root / "plugin.toml").write_text(text.replace(old, f'{field} = "{value}"'))
-                with self.assertRaisesRegex(ManifestError, rf"container.*{field}|{field}.*container"):
+                # An id is now refused for every plugin by the general check (it names store folders);
+                # a version only matters for the image tag, so only container plugins refuse it.
+                pattern = r"id '.*' may only hold" if field == "id" else r"container.*version|version.*container"
+                with self.assertRaisesRegex(ManifestError, pattern):
                     Manifest.load(root)
 
     def test_plugin_without_container_keeps_its_free_form_id_and_version(self):

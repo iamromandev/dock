@@ -233,12 +233,12 @@ class Session:
                 reaped.append(proc.manifest.id)
         return reaped
 
-    def running(self) -> list[tuple[str, float, list[str], str | None]]:
-        """(id, idle seconds, provided capabilities, container runtime or None) per running plugin."""
+    def running(self) -> list[tuple[str, float, list[str], str | None, str]]:
+        """(id, idle seconds, provided capabilities, container runtime or None, runner) per running plugin."""
         now = time.monotonic()
         return [
             (p.manifest.id, now - self.last_used.get(p, now), list(p.manifest.provides),
-             p.launch.runtime)
+             p.launch.runtime, p.launch.runner)
             for p in self.procs
         ]
 
