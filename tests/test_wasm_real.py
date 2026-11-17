@@ -16,9 +16,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import urllib.request
 import uuid
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -90,9 +92,42 @@ class RealWasmtime(unittest.TestCase):
         return path
 
     @classmethod
+    def http_copy(cls, name: str, entries: list[str]) -> Path:
+        """The wasmpy fixture again under another id, declaring `http` hosts (their ports are random, so the fixture cannot)."""
+        path = cls.tmp / name
+        shutil.copytree(FIXTURES / "wasmpy", path, ignore=shutil.ignore_patterns("__pycache__"))
+        manifest = (path / "plugin.toml").read_text().replace("dev.dock.wasmpy", f"dev.dock.{name}")
+        listed = ", ".join(f'"{e}"' for e in entries)
+        (path / "plugin.toml").write_text(manifest + f"http = [{listed}]\n")  # [capabilities] is the last table
+        return path
+
+    @classmethod
+    def start_http_server(cls) -> int:
+        """A local server that answers every GET with a small body and records the paths it was asked for."""
+        cls.http_seen = seen = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                body = b"line one\nfrom the local server\n"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=httpd.serve_forever, args=(0.05,), daemon=True).start()
+        cls.addClassCleanup(lambda: (httpd.shutdown(), httpd.server_close()))
+        return httpd.server_address[1]
+
+    @classmethod
     def setUpClass(cls):
         cls.tmp = Path(tempfile.mkdtemp(prefix="dock-wasm-real-")).resolve()
         cls.addClassCleanup(remove, cls.tmp)
+        cls.http_port = cls.start_http_server()
         cls.store = Store(cls.tmp / "home")
         (cls.store.home / "config.toml").write_text(f'[wasm]\nruntime = "{WASMTIME}"\n')
         cls.host_home = cls.tmp / "host-home"
@@ -109,7 +144,8 @@ class RealWasmtime(unittest.TestCase):
             # Served through the test override, which only works with the pinned hash given beside the URL.
             cls.env["DOCK_TEST_WASM_PYTHON_URL"] = cached_zip(Path(cache)).as_uri()
             cls.env["DOCK_TEST_WASM_PYTHON_SHA256"] = PIN.sha256
-        for path in (FIXTURES / "wasmpy", cls.plugin_copy("wasmpycwd", ["fs:write:cwd"])):
+        for path in (FIXTURES / "wasmpy", cls.plugin_copy("wasmpycwd", ["fs:write:cwd"]),
+                     cls.http_copy("wasmpyhttp", [f"http://127.0.0.1:{cls.http_port}"])):
             cls.store.install(path)
         cls.work = cls.tmp / "work"
         cls.work.mkdir()
@@ -178,6 +214,30 @@ class RealWasmtime(unittest.TestCase):
 
     def test_the_plugin_has_no_network(self):
         self.assertEqual(self.command("net"), "blocked")
+
+    # R11: http through the host
+    def test_fetch_of_a_declared_local_url_prints_its_body(self):
+        r = self.run_dock("dev.dock.wasmpyhttp:fetch", f"http://127.0.0.1:{self.http_port}/declared")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["status:200", "line one", "from the local server"])
+        self.assertIn("/declared", self.http_seen)
+
+    def test_fetch_of_an_undeclared_url_prints_the_refusal_and_reaches_nothing(self):
+        url = f"http://localhost:{self.http_port}/undeclared-name"
+        self.assertEqual(self.command("fetch", url, plugin="wasmpyhttp"),
+                         "refused:host 'localhost' is not declared in [capabilities].http")
+        self.assertEqual(self.command("fetch", f"http://127.0.0.1:{self.http_port + 1}/undeclared-port", plugin="wasmpyhttp"),
+                         f"refused:port {self.http_port + 1} of '127.0.0.1' is not declared in [capabilities].http")
+        self.assertNotIn("/undeclared-name", self.http_seen)
+        self.assertNotIn("/undeclared-port", self.http_seen)
+
+    def test_a_plugin_that_declares_no_hosts_is_refused_every_fetch(self):
+        out = self.command("fetch", f"http://127.0.0.1:{self.http_port}/no-declaration")
+        self.assertTrue(out.startswith("refused:"), out)
+        self.assertNotIn("/no-declaration", self.http_seen)
+
+    def test_the_plugin_still_has_no_network_of_its_own_with_http_declared(self):
+        self.assertEqual(self.command("net", plugin="wasmpyhttp"), "blocked")
 
     # NFR1: environment
     def test_an_undeclared_host_variable_is_not_visible(self):

@@ -146,6 +146,16 @@ class ManifestWasm(unittest.TestCase):
             Manifest.load(root)
         self.assertEqual(str(cm.exception), "dev.dock.sample: WASM plugins cannot use 'network'")
 
+    def test_http_without_network_is_fine_for_a_wasm_plugin(self):
+        m = Manifest.load(make_plugin(MODULE, '\n[capabilities]\nhttp = ["api.example.com"]\n'))
+        self.assertEqual([r.host for r in m.http], ["api.example.com"])
+        self.assertEqual(m.permissions, [])
+
+    def test_network_is_still_refused_when_http_is_declared_too(self):
+        root = make_plugin(MODULE, '\n[capabilities]\npermissions = ["network"]\nhttp = ["api.example.com"]\n')
+        with self.assertRaisesRegex(ManifestError, "WASM plugins cannot use 'network'"):
+            Manifest.load(root)
+
     def test_other_permissions_are_fine(self):
         m = Manifest.load(make_plugin(MODULE, '\n[capabilities]\npermissions = ["fs:write:cwd"]\n'))
         self.assertEqual(m.permissions, ["fs:write:cwd"])
@@ -1018,6 +1028,75 @@ class OneShot(DockWasm):
         r = self.dock("crash")
         self.assertEqual(r.returncode, 1)
         self.assertIn("wasmmod", r.stderr)
+
+
+class FetchThroughWasm(DockWasm):
+    """AC8, AC10 with the fake runtime: the `wasmpy` fixture fetches through dock's `http` request, no `network`."""
+
+    def setUp(self):
+        super().setUp()
+        provide_python(self.store)
+        self.seen = []
+        seen = self.seen
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                seen.append(self.path)
+                body = b"line one\nfrom the local server\n"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, args=(0.01,), daemon=True).start()
+        self.addCleanup(lambda: (self.httpd.shutdown(), self.httpd.server_close()))
+
+    def install_wasmpy(self, *entries) -> Manifest:
+        src = temp_dir("dock-wasm-src-") / "wasmpy"
+        shutil.copytree(FIXTURES / "wasmpy", src, ignore=shutil.ignore_patterns("__pycache__"))
+        if entries:
+            with open(src / "plugin.toml", "a") as f:  # the fixture's last table is [capabilities]
+                f.write(f"http = {json.dumps(list(entries))}\n")
+        return self.store.install(src)
+
+    def test_a_declared_local_url_is_fetched_and_printed(self):
+        m = self.install_wasmpy(f"http://127.0.0.1:{self.port}")
+        self.assertEqual(m.permissions, [])  # no network, and none implied
+        r = self.dock("fetch", f"http://127.0.0.1:{self.port}/page?q=1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.splitlines(), ["status:200", "line one", "from the local server"])
+        self.assertEqual(self.seen, ["/page?q=1"])
+
+    def test_the_runtime_is_still_given_no_network_option(self):
+        self.install_wasmpy(f"http://127.0.0.1:{self.port}")
+        self.dock("fetch", f"http://127.0.0.1:{self.port}/")
+        argv = self.calls()[-1]
+        self.assertEqual({a for a in argv[:argv.index("--")] if a.startswith("-")}, {"--dir", "--env"})
+
+    def test_an_undeclared_url_prints_the_refusal_and_nothing_is_fetched(self):
+        self.install_wasmpy(f"http://127.0.0.1:{self.port}")
+        r = self.dock("fetch", f"http://localhost:{self.port}/")
+        self.assertEqual(r.stdout.splitlines(), ["refused:host 'localhost' is not declared in [capabilities].http"])
+        self.assertEqual(self.seen, [])
+
+    def test_without_any_declaration_every_fetch_is_refused(self):
+        self.install_wasmpy()
+        r = self.dock("fetch", f"http://127.0.0.1:{self.port}/")
+        self.assertTrue(r.stdout.startswith("refused:"), r.stdout)
+        self.assertEqual(self.seen, [])
+
+    def test_a_plugin_that_declares_http_and_network_still_fails_install(self):
+        src = temp_dir("dock-wasm-src-") / "wasmpy"
+        shutil.copytree(FIXTURES / "wasmpy", src, ignore=shutil.ignore_patterns("__pycache__"))
+        with open(src / "plugin.toml", "a") as f:
+            f.write('http = ["a.example"]\npermissions = ["network"]\n')
+        with self.assertRaisesRegex(ManifestError, "WASM plugins cannot use 'network'"):
+            self.store.install(src)
 
 
 class GuestEnvironment(DockWasm):

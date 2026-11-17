@@ -4,6 +4,7 @@ Runs on the WASI CPython interpreter, so it has no threads, no sockets and no su
 what it can reach. It sees `cancel` only between messages.
 """
 
+import base64
 import json
 import os
 import socket
@@ -39,6 +40,30 @@ def try_write(path, text="x"):
         return "denied"
 
 
+def fetch(url):
+    """Relay a GET through dock's `http` request. One thread, so it reads stdin until its own reply arrives."""
+    send({"id": "h1", "method": "http", "params": {"method": "GET", "url": url}})
+    status, body = None, b""
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        msg = json.loads(line)
+        if msg.get("method") == "http_event":
+            event = msg["params"]
+            if "status" in event:
+                status = event["status"]
+            if "chunk" in event:
+                body += base64.b64decode(event["chunk"])
+        elif msg.get("id") == "h1" and "method" not in msg:
+            if "error" in msg:
+                output("refused:" + msg["error"]["message"])
+            else:
+                output(f"status:{status}")
+                output(body.decode("utf-8", "replace").rstrip("\n"))
+            return
+        # anything else (such as `cancel`) is ignored here: the pending request answers it
+
+
 def invoke(command, args, cwd):
     global counter
     if command == "greet":
@@ -71,6 +96,8 @@ def invoke(command, args, cwd):
         output(try_write("/plugin/injected.py"))
     elif command == "writepython":
         output(try_write("/python/lib/injected.py"))
+    elif command == "fetch":
+        fetch(args[0])
     return 0
 
 

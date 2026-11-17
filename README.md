@@ -202,7 +202,7 @@ Without it, starting the plugin fails with `dock: WASM runtime 'wasmtime' not fo
 | Grant | Detail |
 |-------|--------|
 | Files | its own plugin folder (read-only: dock removes the write bits when it installs it, and restores them before it removes or replaces it); its data dir read-write at the same path; your current directory read-write only with `fs:write:cwd`, never when it is `/`, your home directory, or the dock home or a directory above or inside it; for the Python form the interpreter's standard library, read-only. Nothing else on the machine is visible |
-| Network | none: a plugin that declares `network` fails to install (`dock: <id>: WASM plugins cannot use 'network'`), and dock never gives wasmtime a socket option |
+| Network | none: a plugin that declares `network` fails to install (`dock: <id>: WASM plugins cannot use 'network'`), and dock never gives wasmtime a socket option. It can still ask dock to fetch from hosts it declares (see [HTTP through dock](#http-through-dock)) |
 | Environment | only `HOME` (a folder inside the data dir), `DOCK_PLUGIN_ID`, `DOCK_API_VERSION` and the names in `[capabilities] env` that are set on the host, handed over by name so values stay off the command line (`PYTHONHOME`, and with the Python form any `PYTHON*` name, cannot be declared) |
 
 The stdio protocol, warm plugins in the shell, idle stop and the force kill after the
@@ -223,6 +223,60 @@ as root, where permission bits do not apply): reinstall the plugin, or delete
 `~/.dock/wasm/python-<version>` (after `chmod -R u+w`) to fetch the interpreter again. The
 interpreter's `.verified` marker records the SHA-256 it was checked against, and a folder
 marked with another hash is fetched again. A download over 64 MiB is refused.
+
+### HTTP through dock
+
+Any plugin (native, container or WASM) can ask dock to make an HTTP request for it, to hosts its manifest
+declares, without a network of its own. This is how a WASM plugin, which has no sockets, talks to an API:
+
+```toml
+[capabilities]
+http = ["api.weather.example", "*.tiles.example", "http://localhost:8080", { host = "intranet.example", private = true }]
+```
+
+An entry is a host name, a wildcard `*.example.com` (any subdomain at any depth, not `example.com` itself) or an
+IP literal (`[::1]` in brackets for IPv6), optionally with `:port`; without a port only 443 matches (80 for an
+`http://` entry). Plain `http` needs the `http://` prefix. A path, another scheme, `*`, `*.com`, an empty string
+or an unknown key in a table entry fails the install, naming the entry. `dock plugin info <id>` shows an `http:`
+line with the entries. The plugin sends the protocol request `http` and gets `http_event` notifications with
+the body in chunks, then the result; see [protocol/PROTOCOL.md](protocol/PROTOCOL.md#http-through-the-host).
+
+Every request and every redirect hop is checked, and refused with error `-32001` (the reason in the message,
+nothing sent) when:
+
+- the host or port is not declared, the URL has `user:password@`, or it is `http` where the entry does not
+  say `http://`;
+- the name resolves to a private, loopback, link-local, reserved or multicast address, unless the entry is
+  `localhost`, an IP literal or `{ host = "...", private = true }`. Dock looks the name up once and connects to
+  the address it checked, so a name that answers differently the second time gains nothing;
+- a redirect leads anywhere that fails these checks (at most 5 redirects are followed; `authorization`,
+  `cookie` and `proxy-authorization` the plugin set are dropped when a redirect changes host. Any other header
+  the plugin set, such as a custom `x-api-key`, is kept and follows a redirect to any other host the plugin
+  declares: declare only hosts that may see those headers);
+- the request body is over 16 MiB or its headers over 64 KiB, the response is over 256 MiB, 30 seconds pass
+  with no bytes received, or the whole request (connect, headers and body, redirects included) takes longer than
+  10 minutes. Raise or lower the response cap and the total time in `~/.dock/config.toml` (an unknown key in
+  `[http]` is an error):
+
+```toml
+[http]
+max_response_bytes = 1073741824
+total_timeout = 600   # seconds, connect + headers + body
+```
+
+When several entries fit a URL, the most specific one decides (an exact host before a wildcard, a longer
+wildcard before a shorter one, an entry with a port before one without), whatever their order: a
+`private = true` entry for `lan.example.com` is not hidden by `*.example.com` listed before it. Small pieces of a
+slow body (a token stream) are sent together, at most every 50 ms, instead of one event per read.
+
+Ctrl-C closes the connection and ends the request with `-32800`. A plugin has one request in flight at a time.
+Dock sends only the headers the plugin sets: no cookies, credentials or environment. Each request is one line in
+`~/.dock/logs/<id>.log` without the query string, headers or body; the URL path is logged, so do not put a
+secret in a path. Certificates are checked against the system trust store, with no opt-out. Proxy environment
+variables (`HTTP_PROXY` and friends) are not used: dock connects straight to the address it checked. The TLS
+tests (skipped without the `openssl` command) check a local https server against a throwaway CA: a certificate
+from an unknown CA, or for another name, is refused. A plugin that stops reading its input cannot freeze dock:
+the request waits, and ends on Ctrl-C or at the total timeout.
 
 ### LLM backends
 

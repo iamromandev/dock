@@ -13,12 +13,13 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 
-from cli import API_VERSION, __version__, isolation
+from cli import API_VERSION, __version__, http_relay, isolation
 from cli.inputs import parse_for
 from cli.manifest import Manifest, ManifestError
-from cli.process import CANCELLED, Hub, PluginError, PluginProcess
+from cli.process import CANCELLED, DEFERRED, Hub, PluginError, PluginProcess, SendAborted
 from cli.store import Store
 from cli.ui import TerminalUI
 
@@ -44,6 +45,7 @@ class Session:
         launch = isolation.prepare(self.store, manifest)  # may build an image; raises before anything starts
         proc = PluginProcess(manifest, self.store.log_path(manifest.id), ui.handlers(), launch, self.hub)
         proc.handlers["call"] = lambda params: self._call(proc, params)
+        proc.id_handlers["http"] = lambda params, msg_id: self._http(proc, params, msg_id)
         proc.start()
         self.procs.append(proc)
         self.last_used[proc] = time.monotonic()
@@ -121,9 +123,78 @@ class Session:
             if provider in self.procs:
                 self.last_used[provider] = time.monotonic()
 
+    # relaying http -----------------------------------------------------------------
+    def _http(self, proc: PluginProcess, params: dict, msg_id):
+        """plugin -> host `http`: validate, then relay on a thread so other plugins keep being served.
+
+        The thread streams `http_event` notifications and sends the reply itself (a body can take a long
+        time; the hub must not be held up by it). Returns DEFERRED: the hub sends no reply of its own.
+        """
+        def log(line: str) -> None:
+            try:
+                proc._log.write(line)
+            except (OSError, ValueError):
+                pass  # the log is closed: the plugin was stopped
+
+        if not isinstance(params, dict):
+            raise PluginError("http params must be an object", -32602)
+        if not proc.manifest.http:
+            log(http_relay.refusal_line(params, "http is not declared"))
+            raise PluginError("http is not declared: list the hosts this plugin may reach in [capabilities].http",
+                              http_relay.REFUSED)
+        if proc.http_active is not None:
+            log(http_relay.refusal_line(params, "one http request at a time"))
+            raise PluginError("one http request at a time", http_relay.REFUSED)
+
+        def send_event(event: dict) -> None:
+            try:  # waits (up to the relay's end) while the plugin reads nothing: never the hub, which does not send these
+                proc.notify("http_event", {"id": msg_id, **event}, bulk=True, abort=lambda: relay.stopped)
+            except SendAborted:
+                relay.check_stopped()  # cancelled, or past the total deadline: that is the outcome
+                raise
+
+        relay = http_relay.Relay(proc.manifest.http, http_relay.config(self.store), send_event=send_event, log=log)
+
+        def work() -> None:
+            error = None
+            result = None
+            try:
+                result = relay.run(params)
+            except http_relay.Refused as e:
+                error = {"code": http_relay.REFUSED, "message": str(e)}
+            except http_relay.Cancelled:
+                error = {"code": CANCELLED, "message": "cancelled"}
+            except PluginError:
+                return  # the plugin is gone; nobody is left to answer
+            except Exception as e:  # noqa: BLE001 - whatever went wrong must still answer the plugin
+                error = {"code": -32000, "message": f"http failed: {e}"}
+            finally:
+                if proc.http_active is relay:
+                    proc.http_active = None  # before the reply: the plugin may send its next request at once
+            try:
+                proc.reply(msg_id, result=result, error=error)
+            except PluginError:
+                pass  # stopped meanwhile
+
+        thread = threading.Thread(target=work, name=f"http-{proc.manifest.id}", daemon=True)
+        proc.http_active = relay  # only now that it will run: work() is what clears it again
+        try:
+            thread.start()
+        except BaseException:
+            proc.http_active = None
+            raise
+        return DEFERRED
+
     # stopping ------------------------------------------------------------------
+    @staticmethod
+    def _abort_http(proc: PluginProcess) -> None:
+        relay = proc.http_active
+        if relay is not None:
+            relay.cancel()
+
     def cancel_all(self) -> None:
         for proc in self.procs:
+            self._abort_http(proc)
             try:
                 proc.notify("cancel")
             except PluginError:
@@ -136,6 +207,7 @@ class Session:
         marker stays, so a later unprovision or the next run cleans up.
         """
         unprovisioned = False
+        self._abort_http(proc)  # a stopped plugin has no use for the answer: close the connection
         try:
             if proc.provisioned and not force:
                 try:

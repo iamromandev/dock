@@ -3,7 +3,8 @@ version = "0.1.0"
 api_version = "1"
 description = "Test fixture: a single-threaded Python plugin on the WASI interpreter; reports what it can reach"
 
-# No permissions on purpose: under WASM it gets no cwd and no network.
+# No permissions on purpose: under WASM it gets no cwd and no network. `fetch` only works for hosts a test
+# declares by appending `http = [...]` to [capabilities] (their ports are random, so the manifest cannot).
 # It declares one variable, so tests can tell a declared host variable from an undeclared one.
 [run]
 wasm = { python = "3.15", script = "main.py" }
@@ -47,6 +48,10 @@ summary = "Try to write into the plugin folder; prints denied or written"
 [[commands]]
 name = "writepython"
 summary = "Try to write into the interpreter folder; prints denied or written"
+
+[[commands]]
+name = "fetch"
+summary = "fetch <url>: GET it through dock's http request; prints status:<n> and the body, or refused:<why>"
 
 [capabilities]
 env = ["DOCK_WASMPY_DECLARED"]
