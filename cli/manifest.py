@@ -34,6 +34,7 @@ class Command:
     inputs: list[InputSpec] | None = None  # None = undeclared; [] = declares none
 
 
+_PLUGIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # one path component: it names folders under the store
 _TAG_PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 RESERVED_ENV = {"HOME", "PATH", "LANG", "TZ", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"}  # dock sets these itself
@@ -79,6 +80,55 @@ def _container_run(path: Path, root: Path, spec) -> ContainerRun:
 
 
 @dataclass
+class WasmRun:
+    """How to run the plugin under a WASI runtime: its own module, or a script on the shared Python interpreter."""
+    module: str | None = None  # path inside the plugin folder
+    python: str | None = None  # a Python version dock pins, e.g. "3.15"
+    script: str | None = None  # path inside the plugin folder, run by that interpreter
+    args: list[str] = field(default_factory=list)
+
+
+def _inside(path: Path, root: Path, where: str, key: str, value) -> None:
+    if not isinstance(value, str) or not value:
+        raise ManifestError(f"{where} '{key}' must be a path")
+    target = (root / value).resolve()
+    if not target.is_relative_to(root):
+        raise ManifestError(f"{where} '{key}' must stay inside the plugin folder: {value}")
+    if not target.is_file():
+        raise ManifestError(f"{where} '{key}' {value} not found in the plugin folder")
+
+
+def _wasm_run(path: Path, root: Path, spec) -> WasmRun:
+    from cli.wasm import PYTHONS  # wasm imports isolation, which imports this module
+
+    where = f"{path}: [run].wasm"
+    if not isinstance(spec, dict):
+        raise ManifestError(f"{where} must be a table like {{ module = \"...\" }} or {{ python = \"3.15\", script = \"...\" }}")
+    unknown = sorted(set(spec) - {"module", "python", "script", "args"})
+    if unknown:
+        names = ", ".join(repr(k) for k in unknown)
+        raise ManifestError(f"{where} has unknown key{'s' if len(unknown) > 1 else ''} {names} "
+                            "(known: module, python, script, args)")
+    args = spec.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ManifestError(f"{where} 'args' must be a list of strings")
+    has_module, has_python = "module" in spec, "python" in spec or "script" in spec
+    if has_module == has_python:
+        raise ManifestError(
+            f"{where} needs exactly one form: {{ module = \"...\" }} or {{ python = \"3.15\", script = \"...\" }}")
+    if has_module:
+        _inside(path, root, where, "module", spec["module"])
+        return WasmRun(module=spec["module"], args=list(args))
+    if "python" not in spec or "script" not in spec:
+        raise ManifestError(f"{where} the python form needs both 'python' and 'script'")
+    version = spec["python"]
+    if not isinstance(version, str) or version not in PYTHONS:
+        raise ManifestError(f"{where} python '{version}' is not one dock provides (known: {', '.join(PYTHONS)})")
+    _inside(path, root, where, "script", spec["script"])
+    return WasmRun(python=version, script=spec["script"], args=list(args))
+
+
+@dataclass
 class Manifest:
     id: str
     version: str
@@ -93,6 +143,7 @@ class Manifest:
     requires: list[str] = field(default_factory=list)  # capabilities this plugin calls
     container: ContainerRun | None = None  # [run].container: how to run it in an isolated container
     env: list[str] = field(default_factory=list)  # host variables passed into the container (not native runs)
+    wasm: WasmRun | None = None  # [run].wasm: run it as a WASI module; wins over native and container entries
 
     @classmethod
     def load(cls, root: Path) -> Manifest:
@@ -112,8 +163,13 @@ class Manifest:
             raise ManifestError(
                 f"{data['id']} needs protocol v{data['api_version']}, this dock speaks v{API_VERSION}"
             )
-        if "." not in data["id"]:
+        if not isinstance(data["id"], str) or "." not in data["id"]:
             raise ManifestError(f"{path}: id must be namespaced, like 'vendor.name'")
+        if not _PLUGIN_ID.fullmatch(data["id"]):
+            raise ManifestError(
+                f"{path}: id '{data['id']}' may only hold letters, digits, '.', '_' and '-', "
+                "and must start with a letter or digit (it names folders in the store)"
+            )
 
         caps = data.get("capabilities", {})
         if not data.get("commands") and not caps.get("provides"):
@@ -141,6 +197,20 @@ class Manifest:
                         "only letters, digits, '.', '_' and '-', not starting with '.' or '-'"
                     )
 
+        wasm = None
+        if "wasm" in data["run"]:
+            wasm = _wasm_run(path, root, data["run"]["wasm"])
+            if "network" in caps.get("permissions", []):
+                raise ManifestError(f"{data['id']}: WASM plugins cannot use 'network'")
+            for n in env:  # the guest gets these by value from dock; a declared name would override them
+                if n == "PYTHONHOME":
+                    raise ManifestError(f"{path}: env entry '{n}' is set by dock already")
+                if wasm.python is not None and n.startswith("PYTHON"):
+                    raise ManifestError(
+                        f"{path}: env entry '{n}' is not allowed with the Python form: "
+                        "Python variables would change how the shared interpreter starts"
+                    )
+
         return cls(
             id=data["id"],
             version=str(data["version"]),
@@ -155,6 +225,7 @@ class Manifest:
             requires=list(caps.get("requires", [])),
             container=container,
             env=env,
+            wasm=wasm,
         )
 
     def command(self, name: str) -> Command | None:
@@ -163,7 +234,7 @@ class Manifest:
     def entrypoint(self) -> list[str]:
         """Pick the run entry for this machine: exact platform first, then 'any'."""
         key = platform_key()
-        native = {k: v for k, v in self.run.items() if k != "container"}  # container is not a native build
+        native = {k: v for k, v in self.run.items() if k not in ("container", "wasm")}  # neither is a native build
         if not native:
             raise ManifestError(f"{self.id} has no native build (only a container entry)")
         spec = native.get(key) or native.get("any")

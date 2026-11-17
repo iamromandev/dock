@@ -136,13 +136,15 @@ class Shell:
         procs = self.session.running()
         if not procs:
             print("no plugins running")
-        for plugin_id, idle, provides, runtime in procs:
+        for plugin_id, idle, provides, runtime, runner in procs:
             m, sec = divmod(int(idle), 60)
             line = f"{plugin_id:<20} running   idle {m}m{sec:02d}s"
             if provides:
                 line += "   provides: " + ", ".join(provides)
             if runtime:
                 line += "   isolated: " + isolation.runtime_label(runtime)
+            if runner == "wasm":
+                line += "   wasm"
             print(line)
 
     def _plugin(self, main, args: list[str]) -> None:

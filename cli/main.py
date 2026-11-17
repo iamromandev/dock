@@ -109,6 +109,7 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
         print(f"requires:    {', '.join(m.requires) or '-'}")
         print(f"permissions: {', '.join(m.permissions) or '-'}")
         print(f"env:         {', '.join(m.env) or '-'}")
+        print(f"runner:      {isolation.runner_line(store, m)}")
         print(f"isolation:   {isolation.describe(store, m)}")
         print(f"builds:      {', '.join(m.run)}  (this machine: {platform_key()})")
         print(f"location:    {m.root}")

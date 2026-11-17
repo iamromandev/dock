@@ -180,6 +180,7 @@ class Launch:
     env: dict[str, str]
     runtime: str | None = None   # set when the plugin runs in a container
     container: str | None = None  # its name, for `rm -f`
+    runner: str = "native"        # "native", "container" or "wasm": how it runs, for `status`
 
 
 def image_tag(m: Manifest) -> str:
@@ -278,7 +279,7 @@ def forget_image(store, m: Manifest) -> None:
     The tag is id:version, so reinstalling the same version (new sources, same number) would otherwise
     keep running the stale image. Only asks a runtime the user configured; a failure is not the install's.
     """
-    if m.container is None:
+    if m.container is None or m.wasm is not None:  # a WASM plugin never has an image
         return
     try:
         cfg = config(store)
@@ -308,8 +309,27 @@ def build(store, m: Manifest) -> str:
     return image_tag(m)
 
 
+def runner_line(store, m: Manifest) -> str:
+    """The `runner:` line of `plugin info`: how `prepare` would start the plugin; asks the runtime nothing."""
+    if m.wasm is not None:
+        from cli import wasm  # wasm imports this module
+
+        return wasm.runner_line(store, m)
+    try:
+        cfg = config(store)
+    except ManifestError as e:
+        return f"unknown ({e})"
+    if cfg is None or not cfg.isolates(m.id):
+        return "native"
+    if not has_container_build(m):
+        return "none (isolation is on, but the plugin has no container build)"
+    return f"container ({runtime_label(cfg.runtime)})"
+
+
 def describe(store, m: Manifest) -> str:
     """The `isolation:` line of `plugin info`; asks the runtime nothing."""
+    if m.wasm is not None:
+        return "not used (runs as wasm, sandboxed by its permissions)"
     try:
         cfg = config(store)
     except ManifestError as e:
@@ -343,7 +363,11 @@ def _check_cwd_mount(store, m: Manifest, cwd: str) -> None:
 
 
 def prepare(store, m: Manifest, cwd: str | None = None) -> Launch:
-    """Decide how to spawn `m`: natively, or in a container (building its image first if needed)."""
+    """Decide how to spawn `m`: as a WASM module, natively, or in a container (building its image first if needed)."""
+    if m.wasm is not None:  # wins over native and container entries, and over [isolation]: it is sandboxed anyway
+        from cli import wasm  # wasm imports this module
+
+        return wasm.prepare(store, m, cwd)
     cfg = config(store)
     if cfg is None or not cfg.isolates(m.id):
         return native_launch(m)
@@ -367,7 +391,7 @@ def prepare(store, m: Manifest, cwd: str | None = None) -> Launch:
     )
     # The runtime client keeps the host environment (it needs DOCKER_HOST and friends, and resolves the
     # value-free `-e NAME` entries from it); only the -e entries above reach the plugin.
-    return Launch(argv, dict(os.environ), runtime=cfg.runtime, container=name)
+    return Launch(argv, dict(os.environ), runtime=cfg.runtime, container=name, runner="container")
 
 
 def remove(launch: Launch, log=None, timeout: float = REMOVE_TIMEOUT) -> None:
