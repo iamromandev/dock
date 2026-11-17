@@ -11,7 +11,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cli import API_VERSION
+from cli import API_VERSION, http_relay
 from cli.inputs import InputSpec, specs_from_toml
 
 
@@ -144,6 +144,7 @@ class Manifest:
     container: ContainerRun | None = None  # [run].container: how to run it in an isolated container
     env: list[str] = field(default_factory=list)  # host variables passed into the container (not native runs)
     wasm: WasmRun | None = None  # [run].wasm: run it as a WASI module; wins over native and container entries
+    http: list[http_relay.HttpRule] = field(default_factory=list)  # [capabilities].http: hosts dock may fetch for it
 
     @classmethod
     def load(cls, root: Path) -> Manifest:
@@ -176,6 +177,10 @@ class Manifest:
             raise ManifestError(f"{path}: a plugin needs at least one command or one provided capability")
 
         env = _env_names(path, caps)
+        try:
+            http = http_relay.parse_rules(caps.get("http", []))
+        except ValueError as e:
+            raise ManifestError(f"{data['id']}: [capabilities].http: {e}") from e
 
         commands = []
         for c in data.get("commands", []):
@@ -226,6 +231,7 @@ class Manifest:
             container=container,
             env=env,
             wasm=wasm,
+            http=http,
         )
 
     def command(self, name: str) -> Command | None:

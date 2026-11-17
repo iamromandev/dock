@@ -94,7 +94,8 @@ is unchanged: JSON-RPC on the module's stdin/stdout, with `DOCK_PLUGIN_ID` and
 - the environment `HOME` (a folder inside `data_dir`), `DOCK_PLUGIN_ID`, `DOCK_API_VERSION`, and the
   `[capabilities] env` names that are set on the host (by name, never by value on the command line).
 
-There is no network: a manifest that declares `network` is rejected at install. WASI 0.1 has no
+There is no network: a manifest that declares `network` is rejected at install (the `http` request,
+see HTTP through the host, is how a WASM plugin reaches hosts it declares). WASI 0.1 has no
 threads, so a Python WASM plugin reads stdin in one loop and sees a `cancel` notification only between
 messages; the host's force kill after the cancel grace ends a step that does not return.
 
@@ -114,6 +115,7 @@ messages; the host's force kill after the cancel grace ends a step that does not
 |----------|--------|-------|
 | `cancel` | `{}`   | User pressed Ctrl-C. Abort the running `invoke` (or provider `call`) and reply to it with error code `-32800`. |
 | `call_event` | `{capability, data}` | A streamed event from a provider, during a `call` this plugin made. |
+| `http_event` | `{id, status, headers}` or `{id, chunk}` | The streamed answer to an `http` request this plugin made (see HTTP through the host). `id` is that request's id. |
 
 ## Plugin → host notifications
 
@@ -129,6 +131,82 @@ messages; the host's force kill after the cancel grace ends a step that does not
 |---------------|------------|----------------------------------|
 | `prompt_user` | `{prompt}` | `{text}` or `{eof: true}` when input has ended |
 | `call`        | `{capability, method, params}` | whatever the provider returns (see Capabilities) |
+| `http`        | `{method, url, headers?, body?}` | `{status, bytes}`, after `http_event` notifications (see HTTP through the host) |
+
+## HTTP through the host
+
+A plugin of any runner (native, container, WASM) can ask the host to make an HTTP request for it, to the
+hosts it declares in `plugin.toml`:
+
+```toml
+[capabilities]
+http = ["api.weather.example", "*.tiles.example", "http://localhost:8080", { host = "intranet.example", private = true }]
+```
+
+Each entry is a host name (`api.example.com`), a wildcard `*.example.com` (any subdomain at any depth,
+not `example.com` itself), or an IP literal (`10.0.0.5`, `[::1]`), optionally with `:port`; without a port
+only the scheme's default port matches. Plain `http` is refused unless the entry is written with an
+`http://` prefix. An entry is a string, or a table `{ host = "...", private = true }`. Paths, other
+schemes, `*`, single-label wildcards like `*.com`, empty strings and unknown table keys fail at install,
+naming the entry. `dock plugin info` lists the entries. `http` is independent of `network`; a WASM plugin
+declares `http` and still may not declare `network`.
+
+Request (plugin to host), at most one in flight per plugin:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"http","params":{"method":"GET","url":"https://api.weather.example/v1/now?city=Oslo","headers":{"accept":"application/json"}}}
+```
+
+`method` is one of `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`. `headers` is an object of string values
+(`host`, `content-length`, `transfer-encoding`, `connection` and a few other hop-by-hop headers are set by
+the host and ignored). `body` is base64 text. The host sends nothing the plugin did not set: no cookies,
+credentials or environment. The answer streams back as notifications, then the result:
+
+```json
+{"jsonrpc":"2.0","method":"http_event","params":{"id":7,"status":200,"headers":[["content-type","application/json"]]}}
+{"jsonrpc":"2.0","method":"http_event","params":{"id":7,"chunk":"eyJ0ZW1wIjo0fQ=="}}
+{"jsonrpc":"2.0","id":7,"result":{"status":200,"bytes":12}}
+```
+
+One head event (header names in lower case), then `chunk` events of at most 64 KiB of raw body each
+(base64), then the result. HEAD, 204 and 304 responses have no chunks. Any status is a result, not an
+error. The notifications of a request always arrive before its reply, and the host keeps serving the
+other plugins while a body streams.
+
+What the host checks, and answers with error `-32001` (and the reason in `message`) when it fails; nothing
+is sent on the network for a refused request, and the plugin gets no response from a refused redirect hop:
+
+- the scheme is `https`, or `http` where the entry says `http://`; the URL has no userinfo;
+- the host and port match an entry (case-insensitive, trailing dot ignored, IDNs compared in punycode); when
+  several entries match, the most specific wins: an exact host before a wildcard, a longer wildcard before a
+  shorter one, an entry with a port before one without, then the first listed;
+- the host does not resolve to a private, loopback, link-local, site-local, reserved, documentation or multicast
+  address (an IPv4-mapped, 6to4 or NAT64 IPv6 address counts as its IPv4 address; only global unicast `2000::/3`
+  IPv6 addresses pass; the verdict is the same on every Python version), unless the matching entry is `localhost`, an IP
+  literal, or has `private = true`;
+- the host connects to the address it checked, and does not look the name up a second time;
+- every redirect hop (at most 5) passes the same checks; `authorization`, `cookie` and
+  `proxy-authorization` set by the plugin are dropped when a redirect changes the origin; 303, and 301/302
+  for POST, continue as GET without a body;
+- the request body is at most 16 MiB and the headers at most 64 KiB in total;
+- the response body is at most 256 MiB (`[http] max_response_bytes` in `config.toml`; an unknown key in
+  `[http]` fails like one in `[isolation]`), and 30 seconds with no bytes received ends the request with
+  "timed out"; so does a request that takes longer than `[http] total_timeout` seconds (default 600) from the
+  start, connect, headers, body and redirects included;
+- TLS certificates are verified against the system trust store, with no opt-out; a failure is `-32001`.
+
+Small reads of a body are sent together (at most one `chunk` event per 50 ms unless a full 64 KiB is ready), so a
+server that sends a few bytes at a time does not cost one event per byte.
+
+A second `http` request while one is in flight gets `-32001`. A plugin that declares no `http` entries
+gets `-32001` for every request. On `cancel` (Ctrl-C) the host closes the connection and replies to the
+`http` request with `-32800`; when the plugin exits, it closes the connection too. A plugin must keep reading
+its stdin while an `http` request is in flight: the host queues what it sends, and the relay waits (it never
+blocks the host) while the plugin does not read, until `cancel`, the total timeout, or the plugin's exit.
+
+Each request is one line in the plugin's log, `http <METHOD> <scheme>://<host>[:port]<path> -> <status>` or
+`-> refused: <reason>`, with no query string, headers or body. Proxy environment variables are not used:
+connections go straight to the checked address.
 
 ## Typed inputs
 
@@ -241,8 +319,13 @@ Rules:
 |----------|---------|
 | `-32601` | Unknown method or command |
 | `-32602` | Bad arguments |
+| `-32001` | Refused by the host: an `http` request that is not allowed, or that hit a limit (`message` says why; it is shown to the plugin, not to the user) |
 | `-32800` | Cancelled |
 | `-32000` | Any other plugin error (`message` is shown to the user) |
+
+An error `code` that a plugin sends is passed on to whoever was waiting for it, for every kind of request: a
+provider that answers a `call` with `-32800` makes the host answer the calling plugin's `call` with `-32800`
+too. A `code` that is not an integer is replaced by `-32000`.
 
 ## Lifecycle
 
