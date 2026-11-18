@@ -19,6 +19,9 @@ cli/ (Python host)
  history, UI   host    toy or OpenAI-    progress, cancel   prompts, progress
                        compatible server
                        provision/unprovision
+                                         image (Rust → WASM)
+                                         resize, crop, rotate, flip,
+                                         convert, compress; wasmtime
 ```
 
 ## Try it
@@ -26,10 +29,12 @@ cli/ (Python host)
 Needs Python 3.11+, Go 1.22+ (to build the download plugin) and Node 18+ (for chat).
 On recent macOS use a current Go release: macOS 26's loader refuses binaries
 without an `LC_UUID` load command, which Go 1.22 builds lack.
+The optional image plugin needs Rust stable with the `wasm32-wasip1` target to build and
+[`wasmtime`](https://wasmtime.dev) to run; without that target `make build` skips it.
 
 ```sh
 make build        # build plugins for this machine
-make install      # install the 4 example plugins into ~/.dock
+make install      # install the example plugins into ~/.dock
 python3 -m cli help
 python3 -m cli hello Roman
 python3 -m cli hello "Ada Lovelace"                   # quote a name of several words
@@ -38,8 +43,14 @@ python3 -m cli chat                                   # built-in toy model
 DOCK_LLM_BASE_URL=http://localhost:11434/v1 \
 DOCK_LLM_MODEL=llama3.2 python3 -m cli chat           # real model via Ollama
 python3 -m cli download https://example.com/ -o page.html
+python3 -m cli image resize photo.jpg 50%             # also crop, rotate, flip, convert, compress, edit
 make test         # end-to-end tests in a throwaway DOCK_HOME
 ```
+
+The `image` plugin works on PNG, JPEG, WebP and GIF files in the current folder only (not the
+home folder itself) and writes `photo.edited.jpg` unless you give `-o`. WebP output is lossless
+(so `--quality` is for JPEG only), an animated GIF is read as its first frame, and metadata is
+dropped. See [plugin/image/README.md](plugin/image/README.md).
 
 `pip install -e .` gives you a real `dock` command. Set `DOCK_HOME` to use
 another plugin folder.
