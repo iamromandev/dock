@@ -9,10 +9,13 @@ __pycache__
 **/*.pyc
 *.egg-info
 plugin/download/bin/
+plugin/image/target/
+plugin/image/plugin.wasm
 
 ### project ###
 .env
 .env.**
 
 ### allow ###
+!plugin/image/Cargo.lock
 !.env.example

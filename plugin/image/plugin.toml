@@ -1,0 +1,14 @@
+id = "dev.dock.image"
+version = "0.1.0"
+api_version = "1"
+description = "Edit images: resize, crop, rotate, flip, convert, compress (WASM, current folder only)"
+
+[run]
+wasm = { module = "plugin.wasm" }
+
+[[commands]]
+name = "image"
+summary = "Edit an image: image <resize|crop|rotate|flip|convert|compress|edit> <in> ... (image --help)"
+
+[capabilities]
+permissions = ["fs:write:cwd"]

@@ -53,6 +53,12 @@ jobs:
           # The key is the SHA-256 pinned in cli/wasm.py: a new pin is a new cache entry. The tests check
           # the hash of the cached zip before they use it either way.
           key: wasm-python-b8a63559c56760bbdc310dedb74fd69d10bcbafae26b705bea0ad353ad256888
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: plugin/image
       - run: make test
         env:
           DOCK_TEST_WASM_CACHE: ${{ runner.temp }}/dock-wasm-cache
