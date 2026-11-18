@@ -82,7 +82,7 @@ class Store:
 
         dest = child(child(self.plugin_dir, manifest.id, "plugin id"), manifest.version, "plugin version")
         # The Dockerfile builds from the installed folder, so a container plugin keeps its sources.
-        ignored = (".git", "__pycache__", "node_modules")
+        ignored = (".git", "__pycache__", "node_modules", "target")  # target: a Rust plugin's build output
         if manifest.container is None:
             ignored += ("*.go", "go.mod")
         ignore = shutil.ignore_patterns(*ignored)

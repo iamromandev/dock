@@ -221,7 +221,7 @@ class DockE2E(unittest.TestCase):
         self.assertIn("DOCK_LLM_MODEL must be set", r.stderr)
         self.assertFalse(Path(self.home, "state", "dev.dock.llm.provisioned").exists())
 
-    def test_go_download_file_url(self):
+    def test_download_file_url(self):
         with tempfile.TemporaryDirectory() as tmp:
             src = Path(tmp, "src.bin")
             src.write_bytes(os.urandom(300_000))

@@ -1535,6 +1535,13 @@ class InstallKeepsBuildFiles(unittest.TestCase):
         names = sorted(p.name for p in m.root.iterdir())
         self.assertEqual(names, ["Dockerfile", "go.mod", "lib.go", "main.go", "plugin.toml"])
 
+    def test_a_rust_build_output_folder_is_never_installed(self):
+        root = self.plugin(NATIVE_AND_CONTAINER)
+        (root / "target").mkdir()
+        (root / "target" / "big").write_text("x")
+        m = self.store.install(root)
+        self.assertNotIn("target", {p.name for p in m.root.iterdir()})
+
     def test_plugin_without_container_keeps_todays_exclusions(self):
         m = self.store.install(self.plugin('any = { cmd = "python3", args = ["main.py"] }'))
         names = sorted(p.name for p in m.root.iterdir())
@@ -1559,7 +1566,8 @@ class InstallKeepsBuildFiles(unittest.TestCase):
     def test_bundled_download_plugin_installs_with_its_sources(self):
         m = self.store.install(ROOT / "plugin" / "download")
         names = {p.name for p in m.root.iterdir()}
-        self.assertTrue({"main.go", "go.mod", "Dockerfile", "plugin.toml"} <= names, names)
+        self.assertTrue({"Cargo.toml", "src", "Dockerfile", "plugin.toml"} <= names, names)
+        self.assertNotIn("target", names)
         self.assertIsNotNone(m.container)
 
 
