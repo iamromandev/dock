@@ -1,0 +1,12 @@
+id = "dev.dock.prompter"
+version = "0.1.0"
+api_version = "1"
+description = "Test fixture: asks the user a question through the host and echoes the answer"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+[[commands]]
+name = "ask"
+summary = "Ask a question (prompt_user) and print the answer: ask [question]"
+inputs = [{ name = "question", type = "string", default = "name? " }]

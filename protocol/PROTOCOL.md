@@ -105,7 +105,7 @@ messages; the host's force kill after the cancel grace ends a step that does not
 |---------------|-----------------------------------------------|-----------------------|-------|
 | `initialize`  | `{api_version, host:{name,version}, data_dir}` | `{name, ...}`         | Always first. `data_dir` is a private, persistent folder for the plugin. |
 | `provision`   | `{}`                                          | `{}`                  | Only if manifest says `lifecycle.provision = true`. Acquire resources (load a model, open a connection). |
-| `invoke`      | `{command, args: [string], cwd, inputs?}`     | `{exit_code: int}`    | Run one command. `args` are the raw CLI args after the command name; the plugin may parse them, or use `inputs` (see Typed inputs). Resolve relative paths in `args` against `cwd` (the user's directory), not the plugin's own. |
+| `invoke`      | `{command, args: [string], cwd, inputs?}`     | `{exit_code: int, ...}` | Run one command. The result may carry extra fields next to `exit_code` (for example the download plugin's `paths`); `exit_code` stays required, and a host that does not know a field ignores it. `args` are the raw CLI args after the command name; the plugin may parse them, or use `inputs` (see Typed inputs). Resolve relative paths in `args` against `cwd` (the user's directory), not the plugin's own. |
 | `unprovision` | `{}`                                          | `{}`                  | Release what `provision` acquired. **Must be idempotent** and must work in a fresh process (see Recovery). |
 | `shutdown`    | `{}`                                          | `{}`                  | Plugin should exit after replying. Host kills it after a timeout. |
 
@@ -123,7 +123,7 @@ messages; the host's force kill after the cancel grace ends a step that does not
 |------------|------------------------------|----------------|
 | `output`   | `{text}`                     | Written to stdout as-is (include your own `\n`; partial text allows streaming). |
 | `log`      | `{level, message}`           | `debug` / `info` / `warn` / `error`, written to stderr. |
-| `progress` | `{percent, message}`         | Progress bar on stderr. `percent` 0–100, or `null` if unknown. |
+| `progress` | `{percent, message, done?, total?, speed?, name?}` | Progress bar on stderr. `percent` 0–100, or `null` if unknown. The optional fields describe a transfer: `done` (integer bytes so far), `total` (integer bytes, or `null` if unknown), `speed` (bytes per second) and `name` (what is being transferred). A host that does not know them ignores them, so a plugin may always send them. |
 
 ## Plugin → host requests
 

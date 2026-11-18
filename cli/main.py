@@ -6,6 +6,7 @@ plugin index and forwarded, args untouched, to the plugin that owns it.
 
 from __future__ import annotations
 
+import signal
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ built-in:
   help                      show this help
   version                   show dock version
   shell                     open the interactive dock> prompt (default on a terminal)
+  serve                     serve another program over JSON-RPC on stdin/stdout (protocol/SERVE.md)
   plugin list               list installed plugins
   plugin info <id>          show a plugin's manifest details
   plugin install <path>     install a plugin from a folder
@@ -119,6 +121,20 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
     return 2
 
 
+def _serve_signals() -> None:
+    """`dock serve` outlives a Ctrl-C aimed at its client, and leaves cleanly on SIGTERM.
+
+    Python-level handlers (not SIG_IGN) so the plugins it starts do not inherit an ignored SIGINT.
+    """
+    signal.signal(signal.SIGINT, lambda *_: None)
+
+    def terminate(*_):
+        signal.signal(signal.SIGTERM, lambda *_: None)  # once: the cleanup that follows must not be interrupted
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, terminate)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     verbose = False
@@ -133,6 +149,14 @@ def main(argv: list[str] | None = None) -> int:
             from cli import shell
 
             return shell.start(store, verbose)
+        if argv[:1] == ["serve"]:
+            if len(argv) > 1:
+                print("dock: serve takes no arguments", file=sys.stderr)
+                return 2
+            from cli import serve
+
+            _serve_signals()
+            return serve.serve(store, verbose)
         if not argv or argv[0] in ("help", "-h", "--help"):
             return cmd_help(store)
         if argv[0] in ("version", "--version"):

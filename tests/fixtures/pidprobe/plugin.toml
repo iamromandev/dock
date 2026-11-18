@@ -1,0 +1,43 @@
+id = "dev.dock.pidprobe"
+version = "0.1.0"
+api_version = "1"
+description = "Test fixture for dock serve: reports its pid, cwd and progress; can sleep, crash or send late messages"
+
+[run]
+any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+
+[lifecycle]
+provision = true  # so a test can see that serve unprovisions what it started: state/ is empty afterwards
+
+[[commands]]
+name = "pid"
+summary = "Print pid and cwd, and return them: pid"
+inputs = []
+
+[[commands]]
+name = "work"
+summary = "Send n progress steps, honouring cancel: work [n] [--delay s]"
+inputs = [
+  { name = "n",     type = "int",    default = 3 },
+  { name = "delay", type = "string", flag = "--delay", default = "0.05" },
+]
+
+[[commands]]
+name = "sleep"
+summary = "Print the pid, then sleep s seconds, honouring cancel: sleep <s>"
+inputs = [{ name = "seconds", type = "string", required = true }]
+
+[[commands]]
+name = "stubborn"
+summary = "Print the pid, then sleep s seconds, ignoring cancel: stubborn <s>"
+inputs = [{ name = "seconds", type = "string", required = true }]
+
+[[commands]]
+name = "crash"
+summary = "Exit the process mid-invoke: crash"
+inputs = []
+
+[[commands]]
+name = "late-log"
+summary = "Reply, then send a log message a moment later: late-log"
+inputs = []
