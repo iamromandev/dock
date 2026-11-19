@@ -28,6 +28,16 @@ class SendAborted(PluginError):
 
 
 CANCELLED = -32800
+
+
+class Interrupted(PluginError):
+    """A wait ended because its `stop` callback said so (see PluginProcess.wait_for), not because of the plugin."""
+
+    def __init__(self, message: str = "cancelled"):
+        super().__init__(message, CANCELLED)
+
+
+STOP_SLICE = 0.1  # seconds a wait with a `stop` callback pumps at most before it asks again
 OUTBOX_BULK = 32       # streamed body events queued for a plugin before their sender has to wait for it to read
 OUTBOX_CONTROL = 1024  # every other message queued for a plugin that reads nothing; past this it is stuck
 OUTBOX_CONTROL_BYTES = 8 * 2**20  # ... or past this many bytes of them
@@ -95,11 +105,16 @@ class PluginProcess:
         self._out_cv = threading.Condition()
         self._writer: threading.Thread | None = None
         self.proc: subprocess.Popen | None = None
+        # stop() and kill() may come from two threads (a call that is closing, the server shutting down): one
+        # at a time, and whichever comes second finds everything done.
+        self._end_lock = threading.RLock()
+        self._ended = False
 
     # process -------------------------------------------------------------
     def start(self) -> None:
         launch = self.launch
         cmd = launch.argv
+        self._ended = False
         self._log = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 - closed in stop()
         self._log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} start {cmd}\n")
         self._log.flush()
@@ -209,39 +224,48 @@ class PluginProcess:
     def stop(self, timeout: float = 3.0) -> None:
         if not self.proc:
             return
-        try:
-            if self.proc.poll() is None:
-                try:
-                    self.request("shutdown", timeout=timeout)
-                except PluginError:
-                    pass
-                self._close_outbox()
-                self._writer.join(timeout=min(timeout, 1.0))  # a plugin that reads nothing is killed below
-                try:
-                    if self._writer.is_alive():
-                        raise OSError("the plugin does not read its input")
-                    self.proc.stdin.close()
-                    self.proc.wait(timeout=timeout)
-                except (subprocess.TimeoutExpired, OSError):
-                    self.proc.kill()
-                    self.proc.wait()
-        except BaseException:  # e.g. a second Ctrl-C: never leave the child running
-            self.kill()
-            raise
-        self._close_pipes()
-        self._remove_container()
-        self._log.close()
+        with self._end_lock:
+            if self._ended:
+                return
+            try:
+                if self.proc.poll() is None:
+                    try:
+                        self.request("shutdown", timeout=timeout)
+                    except PluginError:
+                        pass
+                    self._close_outbox()
+                    self._writer.join(timeout=min(timeout, 1.0))  # a plugin that reads nothing is killed below
+                    try:
+                        if self._writer.is_alive():
+                            raise OSError("the plugin does not read its input")
+                        self.proc.stdin.close()
+                        self.proc.wait(timeout=timeout)
+                    except (subprocess.TimeoutExpired, OSError):
+                        self.proc.kill()
+                        self.proc.wait()
+            except BaseException:  # e.g. a second Ctrl-C: never leave the child running
+                self.kill()
+                raise
+            self._finish()
 
     def kill(self) -> None:
         """Stop without asking: for a plugin that no longer answers."""
         if not self.proc:
             return
         if self.proc.poll() is None:
-            self.proc.kill()
-        self.proc.wait()
+            self.proc.kill()  # not under the lock: it also ends a stop() that is waiting for the plugin
+        with self._end_lock:
+            if self._ended:
+                return
+            self.proc.wait()
+            self._finish()
+
+    def _finish(self) -> None:
+        """The child is gone: release everything of ours, once."""
         self._close_pipes()
         self._remove_container()
         self._log.close()
+        self._ended = True
 
     # messaging -----------------------------------------------------------
     def _send(self, msg: dict, bulk: bool = False, abort: Callable[[], bool] | None = None) -> None:
@@ -293,11 +317,17 @@ class PluginProcess:
             raise PluginError(f"{self.manifest.id} is not running")
         self._send({"id": msg_id, **({"error": error} if error is not None else {"result": result})})
 
-    def request(self, method: str, params: dict | None = None, timeout: float | None = None) -> Any:
-        return self.wait_for(self.send_request(method, params), method, timeout)
+    def request(self, method: str, params: dict | None = None, timeout: float | None = None,
+                stop: Callable[[], bool] | None = None) -> Any:
+        return self.wait_for(self.send_request(method, params), method, timeout, stop)
 
-    def wait_for(self, req_id: int, method: str, timeout: float | None) -> Any:
-        """Wait for our reply to req_id, serving every plugin's messages meanwhile."""
+    def wait_for(self, req_id: int, method: str, timeout: float | None,
+                 stop: Callable[[], bool] | None = None) -> Any:
+        """Wait for our reply to req_id, serving every plugin's messages meanwhile.
+
+        stop: asked at least every STOP_SLICE seconds; once it is true (and the reply is not already here) the
+        wait ends with Interrupted. That is how another thread cancels a wait that Ctrl-C cannot reach.
+        """
         key = (self, req_id)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
@@ -313,8 +343,14 @@ class PluginProcess:
             if self.exited:
                 raise PluginError(f"{self.manifest.id} exited during '{method}' (see {self.log_path})")
 
+            if stop is not None and stop():
+                raise Interrupted()
             remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
+            if stop is not None:
+                remaining = STOP_SLICE if remaining is None else min(remaining, STOP_SLICE)
             if not self.hub.pump(remaining):
+                if stop is not None and (deadline is None or time.monotonic() < deadline):
+                    continue  # only the slice ended: ask `stop` again
                 raise PluginError(f"{self.manifest.id} did not answer '{method}' in {timeout}s") from None
 
     def _handle_incoming(self, msg: dict) -> None:

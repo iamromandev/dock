@@ -1,9 +1,11 @@
 # Built by `dock plugin build dev.dock.download` (or on first isolated start).
-# The binary is compiled inside the image, so no Go toolchain is needed on the host.
-FROM golang:1-alpine AS build
+# The binary is compiled inside the image, so no Rust toolchain is needed on the host.
+FROM rust:1-slim AS build
 WORKDIR /src
-COPY go.mod main.go ./
-RUN CGO_ENABLED=0 go build -o /out/download .
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+RUN cargo build --release --locked
 
-FROM alpine
-COPY --from=build /out/download /plugin/download
+FROM debian:stable-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/target/release/download /plugin/download

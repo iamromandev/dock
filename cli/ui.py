@@ -3,6 +3,34 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
+from typing import Protocol
+
+
+class UI(Protocol):
+    """What a Session needs from whoever shows a plugin's messages and asks its questions.
+
+    TerminalUI writes to the terminal; `dock serve` sends the same things to its client.
+    """
+
+    def output(self, p: dict) -> None: ...
+
+    def log(self, p: dict) -> None: ...
+
+    def progress(self, p: dict) -> None: ...
+
+    def prompt_user(self, p: dict) -> dict: ...
+
+    def warn(self, message: str) -> None: ...
+
+    def handlers(self) -> dict: ...
+
+
+UIFactory = Callable[[str], UI]  # plugin id -> the UI for that plugin's messages
+
+
+def terminal_factory(verbose: bool = False) -> UIFactory:
+    return lambda plugin_id: TerminalUI(plugin_id, verbose)
 
 
 class TerminalUI:

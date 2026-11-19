@@ -15,13 +15,15 @@ import json
 import os
 import threading
 import time
+from collections.abc import Callable
+from pathlib import Path
 
 from cli import API_VERSION, __version__, http_relay, isolation
 from cli.inputs import parse_for
 from cli.manifest import Manifest, ManifestError
-from cli.process import CANCELLED, DEFERRED, Hub, PluginError, PluginProcess, SendAborted
+from cli.process import CANCELLED, DEFERRED, Hub, Interrupted, PluginError, PluginProcess, SendAborted
 from cli.store import Store
-from cli.ui import TerminalUI
+from cli.ui import UI, TerminalUI, UIFactory, terminal_factory
 
 INIT_TIMEOUT = 10
 PROVISION_TIMEOUT = 120
@@ -29,20 +31,59 @@ UNPROVISION_TIMEOUT = 30
 CANCEL_GRACE = float(os.environ.get("DOCK_CANCEL_GRACE", 5))  # seconds a plugin gets to honour `cancel`
 
 
+class _Markers:
+    """Which live processes are provisioned, per crash-recovery marker, for the whole dock process.
+
+    The marker is one file per plugin id, but a `dock serve` runs many Sessions at once (one per concurrent call,
+    plus warm ones), each with its own process of the same plugin. The file must stay while any of them is
+    provisioned, whichever Session stops first, so the bookkeeping is shared and every change of it and of the
+    file happens under one lock.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._live: dict[str, set] = {}  # marker path -> provisioned processes
+
+    def add(self, path: Path, proc: PluginProcess, data: str) -> None:
+        with self._lock:
+            self._live.setdefault(str(path), set()).add(proc)
+            path.write_text(data)  # again for each: a cleanup that raced ahead of us cannot leave it missing
+
+    def drop(self, path: Path, proc: PluginProcess, unlink: bool) -> None:
+        """`proc` is no longer provisioned (`unlink`), or is gone with its unprovision owed (the marker stays)."""
+        with self._lock:
+            live = self._live.get(str(path))
+            if live is None or proc not in live:
+                return
+            live.discard(proc)
+            if not live:
+                del self._live[str(path)]
+                if unlink:
+                    path.unlink(missing_ok=True)
+
+
+_markers = _Markers()
+
+
 class Session:
-    def __init__(self, store: Store, verbose: bool = False):
+    def __init__(self, store: Store, verbose: bool = False, ui_factory: UIFactory | None = None,
+                 cwd: str | None = None):
         self.store = store
         self.verbose = verbose
+        self.ui_factory = ui_factory or terminal_factory(verbose)  # who shows each plugin's messages
+        self.cwd = cwd  # the folder fs:write:cwd mounts and `invoke` reports; None = os.getcwd() at each use
         self.hub = Hub()                             # all plugins of the session share one inbox
         self.procs: list[PluginProcess] = []        # start order
         self.providers: dict[str, PluginProcess] = {}  # capability -> running provider
         self.commands: dict[str, PluginProcess] = {}   # plugin id -> running command plugin
         self.last_used: dict[PluginProcess, float] = {}  # time.monotonic()
         self._active: list[str] = []                # capabilities mid-call, to catch cycles
+        self._stop: Callable[[], bool] | None = None  # the running call's cancel test, for every wait nested in it
+        self._stop_lock = threading.RLock()         # one orderly stop at a time (a close racing a close)
 
     # starting plugins ------------------------------------------------------
-    def start(self, manifest: Manifest, ui: TerminalUI) -> PluginProcess:
-        launch = isolation.prepare(self.store, manifest)  # may build an image; raises before anything starts
+    def start(self, manifest: Manifest, ui: UI) -> PluginProcess:
+        launch = isolation.prepare(self.store, manifest, cwd=self.cwd)  # may build an image; raises before anything starts
         proc = PluginProcess(manifest, self.store.log_path(manifest.id), ui.handlers(), launch, self.hub)
         proc.handlers["call"] = lambda params: self._call(proc, params)
         proc.id_handlers["http"] = lambda params, msg_id: self._http(proc, params, msg_id)
@@ -58,14 +99,14 @@ class Session:
                     "data_dir": str(self.store.data_dir(manifest.id)),
                 },
                 timeout=INIT_TIMEOUT,
+                stop=self._stop,
             )
             if manifest.provision:
                 # Marker first: if dock dies during or after provision, the next run cleans up.
-                self.store.marker(manifest.id).write_text(
-                    json.dumps({"version": manifest.version, "since": time.time()})
-                )
+                _markers.add(self.store.marker(manifest.id), proc,
+                             json.dumps({"version": manifest.version, "since": time.time()}))
                 proc.provisioned = True  # even a failed provision may have left something to release
-                proc.request("provision", timeout=PROVISION_TIMEOUT)
+                proc.request("provision", timeout=PROVISION_TIMEOUT, stop=self._stop)
         except BaseException as e:
             # A half-started plugin must not stay registered: it would be orphaned
             # (never mapped as command or provider) and a retry would start another.
@@ -87,7 +128,7 @@ class Session:
             self.last_used[proc] = time.monotonic()
         else:
             manifest = self.store.provider(capability)
-            proc = self.start(manifest, TerminalUI(manifest.id, self.verbose))
+            proc = self.start(manifest, self.ui_factory(manifest.id))
             proc.handlers.pop("prompt_user", None)  # only the command's plugin talks to the user
             self.providers[capability] = proc
         return proc
@@ -116,6 +157,7 @@ class Session:
             return provider.request(
                 "call",
                 {"capability": capability, "method": params.get("method"), "params": params.get("params") or {}},
+                stop=self._stop,  # a cancel must reach this wait too: it is not the invoke's wait
             )
         finally:
             self._active.pop()
@@ -205,7 +247,18 @@ class Session:
 
         force: the plugin stopped answering; kill it without unprovisioning. The
         marker stays, so a later unprovision or the next run cleans up.
+
+        Safe to call from two threads for one process: orderly stops take turns (the second finds it gone),
+        and a forced one does not wait for them, so it can end an orderly stop that is stuck.
         """
+        if force:
+            self._stop_one(proc, force=True)
+            return
+        with self._stop_lock:
+            if not proc.forgotten:
+                self._stop_one(proc, force=False)
+
+    def _stop_one(self, proc: PluginProcess, force: bool) -> None:
         unprovisioned = False
         self._abort_http(proc)  # a stopped plugin has no use for the answer: close the connection
         try:
@@ -215,31 +268,27 @@ class Session:
                     proc.provisioned = False
                     unprovisioned = True
                 except PluginError as e:
-                    TerminalUI(proc.manifest.id).warn(f"unprovision failed ({e}); will retry on next run")
+                    self.ui_factory(proc.manifest.id).warn(f"unprovision failed ({e}); will retry on next run")
         finally:  # still stop the process if unprovisioning was interrupted
             try:
                 proc.kill() if force else proc.stop()
             finally:
                 self._forget(proc)
-                if unprovisioned:
-                    self._release_marker(proc.manifest.id)
+                _markers.drop(self.store.marker(proc.manifest.id), proc, unlink=unprovisioned)
 
     def _forget(self, proc: PluginProcess) -> None:
         if proc in self.procs:
-            self.procs.remove(proc)
+            try:
+                self.procs.remove(proc)
+            except ValueError:
+                pass  # a stop from another thread was first
         self.last_used.pop(proc, None)
         for registry in (self.commands, self.providers):
-            for key in [k for k, v in registry.items() if v is proc]:
-                del registry[key]
+            for key in [k for k, v in list(registry.items()) if v is proc]:
+                registry.pop(key, None)
         proc.forgotten = True
-        for key in [k for k in self.hub.replies if k[0] is proc]:
-            del self.hub.replies[key]
-
-    def _release_marker(self, plugin_id: str) -> None:
-        """Drop the crash-recovery marker once no live process of this plugin is provisioned."""
-        if any(p.manifest.id == plugin_id and p.provisioned for p in self.procs):
-            return
-        self.store.marker(plugin_id).unlink(missing_ok=True)
+        for key in [k for k in list(self.hub.replies) if k[0] is proc]:
+            self.hub.replies.pop(key, None)
 
     def drain_pending(self, deadline: float) -> bool:
         """Serve the plugins until none owes a reply, or `deadline` (time.monotonic()) passes.
@@ -268,18 +317,20 @@ class Session:
         for proc in list(self.procs):
             if proc.pending:
                 if proc.alive():
-                    TerminalUI(proc.manifest.id).warn("did not stop on cancel; stopped it")
+                    self.ui_factory(proc.manifest.id).warn("did not stop on cancel; stopped it")
                 self.stop_proc(proc, force=True)
         self.hub.replies.clear()
 
-    def _interrupted(self, ui: TerminalUI) -> None:
-        """Ctrl-C during an invoke: cancel, give everyone one shared grace period, kill the stuck.
+    def _interrupted(self, ui: UI, announce: bool = True) -> None:
+        """Ctrl-C (or a cancel from another thread) during an invoke: cancel, give everyone one shared grace
+        period, kill the stuck.
 
         A second Ctrl-C ends the wait early. The kill step runs on every path.
         """
         deadline = time.monotonic() + CANCEL_GRACE
         try:
-            ui.warn("interrupted, cancelling…")
+            if announce:
+                ui.warn("interrupted, cancelling…")
             self.cancel_all()
             self.drain_pending(deadline)
         except (PluginError, KeyboardInterrupt):
@@ -326,11 +377,23 @@ class Session:
             raise first
 
     # running a command -----------------------------------------------------------
-    def invoke(self, manifest: Manifest, command: str, args: list[str]) -> int:
+    def invoke_result(self, manifest: Manifest, command: str, args: list[str],
+                      cancel: threading.Event | None = None) -> dict:
+        """Run one command and return the plugin's whole `invoke` result (`exit_code` and any extra fields).
+
+        Failures raise: UsageError for bad args (before anything starts), PluginError for a plugin that
+        failed or died (with its code). `cancel`, set from another thread, cancels the call: the plugin gets
+        `cancel`, everyone gets CANCEL_GRACE to wind down, the stuck are killed, and PluginError(CANCELLED)
+        is raised. Without `cancel`, Ctrl-C does that and the result is {"exit_code": 130}.
+        """
+        return self._invoke(manifest, command, args, cancel, self.ui_factory(manifest.id))
+
+    def _invoke(self, manifest: Manifest, command: str, args: list[str], cancel: threading.Event | None,
+                ui: UI) -> dict:
         # Parse first: a usage error (UsageError) must surface before anything starts.
         inputs = parse_for(manifest, command, args)
-        ui = TerminalUI(manifest.id, self.verbose)
         proc = self.commands.get(manifest.id)
+        self._stop = cancel.is_set if cancel is not None else None  # nested waits (provider calls, startup) honour it too
         try:
             # Bring up required providers first, so a missing one fails before the
             # command starts and its provisioning (e.g. loading a model) happens up front.
@@ -344,30 +407,44 @@ class Session:
                 self.commands[manifest.id] = proc
 
             self.last_used[proc] = time.monotonic()
-            params = {"command": command, "args": args, "cwd": os.getcwd()}  # the one prepare() mounts for fs:write:cwd
+            params = {"command": command, "args": args, "cwd": self.cwd or os.getcwd()}  # the one prepare() mounts for fs:write:cwd
             if inputs is not None:
                 params["inputs"] = inputs
             invoke_id = proc.send_request("invoke", params)
             try:
-                result = proc.wait_for(invoke_id, "invoke", timeout=None)
+                result = proc.wait_for(invoke_id, "invoke", timeout=None,
+                                       stop=cancel.is_set if cancel is not None else None)
+            except Interrupted:
+                self._interrupted(ui, announce=False)  # asked for by the caller, not Ctrl-C: no notice
+                raise
             except KeyboardInterrupt:
                 self._interrupted(ui)
-                return 130
+                return {"exit_code": 130}
             finally:
                 if proc in self.procs:
                     self.last_used[proc] = time.monotonic()
-            return int((result or {}).get("exit_code", 0))
+            return result if isinstance(result, dict) else {"exit_code": 0}
 
         except KeyboardInterrupt:  # during startup (provider, initialize, provision)
             ui.warn("interrupted")
-            return 130
-        except PluginError as e:
-            if e.code != CANCELLED:
-                ui.warn(f"{manifest.id}: {e}")
+            return {"exit_code": 130}
+        except PluginError:
             for p in list(self.procs):
                 if not p.alive():
                     self.stop_proc(p)
+            raise
+        finally:
+            self._stop = None
+
+    def invoke(self, manifest: Manifest, command: str, args: list[str]) -> int:
+        ui = self.ui_factory(manifest.id)
+        try:
+            result = self._invoke(manifest, command, args, None, ui)
+        except PluginError as e:
+            if e.code != CANCELLED:
+                ui.warn(f"{manifest.id}: {e}")
             return 1
+        return int(result.get("exit_code", 0))
 
 
 def run(store: Store, manifest: Manifest, command: str, args: list[str], verbose: bool = False) -> int:

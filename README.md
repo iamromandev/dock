@@ -14,7 +14,7 @@ cli/ (Python host)
  └─ ui.py         the host owns the terminal: output, logs, progress, prompts
         │  stdio
    ┌────┴──────────────┬─────────────────┬──────────────────┐
- chat (Node)  ─call─▶  llm (Python)      download (Go)      hello (Python)
+ chat (Node)  ─call─▶  llm (Python)      download (Rust)    hello (Python)
  conversation, via     provides "llm";   5 native builds,   2 commands,
  history, UI   host    toy or OpenAI-    progress, cancel   prompts, progress
                        compatible server
@@ -26,11 +26,26 @@ cli/ (Python host)
 
 ## Try it
 
-Needs Python 3.11+, Go 1.22+ (to build the download plugin) and Node 18+ (for chat).
-On recent macOS use a current Go release: macOS 26's loader refuses binaries
-without an `LC_UUID` load command, which Go 1.22 builds lack.
-The optional image plugin needs Rust stable with the `wasm32-wasip1` target to build and
+Needs Python 3.11+, Rust stable (to build the download plugin) and Node 18+ (for chat).
+The optional image plugin also needs the `wasm32-wasip1` target to build and
 [`wasmtime`](https://wasmtime.dev) to run; without that target `make build` skips it.
+`make dist` (all 5 download builds) also needs the rustup targets `x86_64-apple-darwin`, `aarch64-apple-darwin`,
+`x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` and `x86_64-pc-windows-gnu`, plus
+[zig](https://ziglang.org) and `cargo install cargo-zigbuild`. The plugin uses rustls, so no openssl is needed.
+
+### Behaviour change: `.part` files and `dock download`
+
+`dock download` now keeps its `<name>.part` file (and a `<name>.part.json` sidecar with the URL and validators)
+when it is cancelled or fails, instead of deleting it. Running the same download again resumes it (`Range` with
+`If-Range`, http(s) only); if the server ignores the range, the file changed or there is no validator, it restarts and
+says why. A `<name>.part.lock` file stops two runs of the same download (`already downloading <name>`). `-o file`
+still overwrites the file; `--dir folder` (`-d`) saves into a folder and picks `name (1)`, `name (2)` ... when the
+name is taken. The progress messages now carry bytes, speed and the name, and the result lists the saved `paths`.
+
+### `dock serve`
+
+`python3 -m cli serve` runs dock as a JSON-RPC server on stdin/stdout so another program can run commands, many at a
+time, with progress, cancel and prompts. See [protocol/SERVE.md](protocol/SERVE.md).
 
 ```sh
 make build        # build plugins for this machine
@@ -103,8 +118,8 @@ enabled = true          # every plugin; or list some: plugins = ["dev.dock.hello
 ```
 
 A plugin takes part when it has a `Dockerfile` and `[run].container` in its
-`plugin.toml` (the bundled `hello` (which also serves `count`), `download`, `chat` and `llm` do; `download` compiles its Go
-binary inside the image, so isolated use needs no Go on the host). With isolation on, a plugin without
+`plugin.toml` (the bundled `hello` (which also serves `count`), `download`, `chat` and `llm` do; `download` compiles its Rust
+binary inside the image, so isolated use needs no Rust on the host). With isolation on, a plugin without
 them is refused (`dock: <id>: isolation is on but the plugin has no container
 build ...`), never run unisolated. The image `dock/<id>:<version>` is built
 from the installed folder on first use (the build log goes to
@@ -147,7 +162,7 @@ whether or not isolation is on (for example after editing its Dockerfile without
 a version bump). `dock plugin info <id>` shows an `isolation:` line: `off`,
 `docker (no network, no cwd access)` / `docker (network, cwd)` and so on, or
 `on, but not supported by this plugin`. A plugin that declares `[run].container`
-is installed with its build files (such as `main.go` and `go.mod`); other plugins
+is installed with its build files (such as `Cargo.toml` and `src/`, but never a `target/` folder); other plugins
 keep leaving out `*.go` and `go.mod`.
 
 Dock removes a plugin's container whenever it stops or kills the plugin, and at
