@@ -12,7 +12,7 @@ from pathlib import Path
 
 from cli import __version__, isolation, lifecycle
 from cli.inputs import UsageError, parse_for
-from cli.manifest import ManifestError, platform_key
+from cli.manifest import ManifestError
 from cli.store import Store
 
 BUILTIN_HELP = """\
@@ -73,8 +73,6 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
             parts = []
             if e["commands"]:
                 parts.append("commands: " + ", ".join(e["commands"]))
-            if e.get("provides"):
-                parts.append("provides: " + ", ".join(e["provides"]))
             print(f"{pid:<22} {e['version']:<8} {'  '.join(parts)}")
         return 0
     if sub == "install" and len(args) == 2:
@@ -82,17 +80,10 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
         print(f"installed {m.id} {m.version}")
         if m.commands:
             print(f"  commands:    {', '.join(c.name for c in m.commands)}")
-        if m.provides:
-            print(f"  provides:    {', '.join(m.provides)}")
-        if m.requires:
-            print(f"  requires:    {', '.join(m.requires)}")
         if m.permissions:
             print(f"  permissions: {', '.join(m.permissions)}")
         if m.env:
             print(f"  env:         {', '.join(m.env)}")
-        for cap in m.requires:
-            if not store.providers_of(cap):
-                print(f"  note: nothing installed provides '{cap}' yet; install a plugin that does")
         return 0
     if sub == "remove" and len(args) == 2:
         store.remove(args[1])
@@ -105,16 +96,11 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
     if sub == "info" and len(args) == 2:
         m = store.get(args[1])
         print(f"id:          {m.id}\nversion:     {m.version}\nprotocol:    v{m.api_version}")
-        print(f"description: {m.description}\nprovision:   {m.provision}")
+        print(f"description: {m.description}")
         print(f"commands:    {', '.join(c.name for c in m.commands) or '-'}")
-        print(f"provides:    {', '.join(m.provides) or '-'}")
-        print(f"requires:    {', '.join(m.requires) or '-'}")
         print(f"permissions: {', '.join(m.permissions) or '-'}")
         print(f"env:         {', '.join(m.env) or '-'}")
-        print(f"http:        {', '.join(r.raw + (' (private)' if r.private else '') for r in m.http) or '-'}")
-        print(f"runner:      {isolation.runner_line(store, m)}")
-        print(f"isolation:   {isolation.describe(store, m)}")
-        print(f"builds:      {', '.join(m.run)}  (this machine: {platform_key()})")
+        print(f"runtime:     {isolation.describe(store, m)}")
         print(f"location:    {m.root}")
         return 0
     print(BUILTIN_HELP, file=sys.stderr)
@@ -166,9 +152,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_plugin(store, argv[1:])
 
         manifest, command = store.resolve(argv[0])
-        parse_for(manifest, command, argv[1:])  # a bad invocation must start no process, not even recovery
+        parse_for(manifest, command, argv[1:])  # a bad invocation must start no process
         isolation.sweep(store)
-        lifecycle.recover(store)
         return lifecycle.run(store, manifest, command, argv[1:], verbose=verbose)
     except ManifestError as e:
         print(f"dock: {e}", file=sys.stderr)

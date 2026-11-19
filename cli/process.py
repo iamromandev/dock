@@ -1,4 +1,4 @@
-"""One running plugin: a child process spoken to with JSON-RPC over stdio."""
+"""One running plugin: a container (`<runtime> run -i`) spoken to with JSON-RPC over stdio."""
 
 from __future__ import annotations
 
@@ -23,10 +23,6 @@ class PluginError(Exception):
         self.code = code
 
 
-class SendAborted(PluginError):
-    """A sender that was waiting for a plugin to read gave up (see PluginProcess.notify, `abort`)."""
-
-
 CANCELLED = -32800
 
 
@@ -38,19 +34,15 @@ class Interrupted(PluginError):
 
 
 STOP_SLICE = 0.1  # seconds a wait with a `stop` callback pumps at most before it asks again
-OUTBOX_BULK = 32       # streamed body events queued for a plugin before their sender has to wait for it to read
-OUTBOX_CONTROL = 1024  # every other message queued for a plugin that reads nothing; past this it is stuck
+OUTBOX_CONTROL = 1024  # messages queued for a plugin that reads nothing; past this it is stuck
 OUTBOX_CONTROL_BYTES = 8 * 2**20  # ... or past this many bytes of them
-DEFERRED = object()  # an id handler's answer: "I reply myself, later" (see PluginProcess.reply)
 
 
 class Hub:
     """One inbox for every plugin in a session.
 
-    Whatever the host is waiting for, it keeps serving all plugins. Example:
-    while the host waits for the llm plugin to finish `generate`, chat is
-    already sending `output` for the tokens it was forwarded; those must reach
-    the terminal now, not after the reply completes.
+    Whatever the host is waiting for, it keeps serving all plugins: a message from one plugin (an `output`,
+    a `log`) is handled now, even while the host waits for the reply of another.
     """
 
     def __init__(self):
@@ -70,7 +62,7 @@ class Hub:
         elif kind == "junk":
             proc._log.write(f"[non-protocol stdout] {msg}\n")
         elif "method" in msg:
-            proc._handle_incoming(msg)  # may itself wait (e.g. a relayed call): re-entrant by design
+            proc._handle_incoming(msg)  # may itself wait (e.g. prompt_user, for the user): re-entrant by design
         else:
             proc.pending.discard(msg.get("id"))
             self.replies[(proc, msg.get("id"))] = msg  # ours, or someone else's: picked up by its waiter
@@ -83,24 +75,19 @@ class PluginProcess:
         launch: isolation.Launch, hub: Hub | None = None,
     ):
         self.manifest = manifest
-        self.launch = launch  # what to spawn: always decided by isolation.prepare, never defaulted here
+        self.launch = launch  # the `<runtime> run` command to spawn: decided by isolation.prepare, never defaulted here
         self._container_removed = False
         self.log_path = log_path
-        self.handlers = handlers  # plugin -> host methods (output, log, progress, prompt_user, call)
-        # Requests whose handler needs the request id and may answer later: (params, msg_id) -> result | DEFERRED.
-        self.id_handlers: dict[str, Callable[[dict, Any], Any]] = {}
-        self.http_active: Any = None  # the http_relay.Relay of this plugin's one relayed request, while it runs
+        self.handlers = handlers  # plugin -> host methods (output, log, progress, prompt_user)
         self.hub = hub or Hub()
         self.exited = False
-        self.provisioned = False        # provision was requested; unprovision is owed
         self.forgotten = False          # the session dropped it: its late messages are ignored
         self.pending: set[int] = set()  # ids of requests sent and not yet answered
         self._ids = itertools.count(1)
         # Everything for the plugin's stdin goes through this queue to one writer thread, so a plugin that stops
         # reading can block that thread only: the hub (cancel, shutdown, replies) just queues and carries on.
-        self._out: collections.deque = collections.deque()  # (line, bulk)
-        self._out_bulk = 0              # bulk entries in _out
-        self._out_bytes = 0             # bytes of the other entries
+        self._out: collections.deque = collections.deque()  # lines
+        self._out_bytes = 0             # bytes queued
         self._out_closed = False        # no more messages are accepted (stopped, or the pipe broke)
         self._out_cv = threading.Condition()
         self._writer: threading.Thread | None = None
@@ -125,18 +112,21 @@ class PluginProcess:
             {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
             if sys.platform == "win32" else {"start_new_session": True}
         )
-        self.proc = subprocess.Popen(
-            cmd,
-            cwd=self.manifest.root,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=self._log,
-            text=True,
-            encoding="utf-8",
-            bufsize=1,
-            env=launch.env,
-            **group,
-        )
+        try:
+            self.proc = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=self._log,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+                env=launch.env,
+                **group,
+            )
+        except BaseException:
+            self._log.close()  # no process, so no stop() will ever close it
+            raise
         self._reader = threading.Thread(target=self._read_loop, daemon=True)
         self._reader.start()
         self._writer = threading.Thread(target=self._write_loop, daemon=True)
@@ -169,9 +159,8 @@ class PluginProcess:
                     self._out_cv.wait()
                 if not self._out:
                     return  # closed and everything queued was written
-                line, bulk = self._out.popleft()
-                if not bulk:
-                    self._out_bytes -= len(line)
+                line = self._out.popleft()
+                self._out_bytes -= len(line)
             try:
                 self.proc.stdin.write(line)
                 self.proc.stdin.flush()
@@ -179,13 +168,9 @@ class PluginProcess:
                 with self._out_cv:
                     self._out_closed = True
                     self._out.clear()
-                    self._out_bulk = self._out_bytes = 0
+                    self._out_bytes = 0
                     self._out_cv.notify_all()
                 return
-            if bulk:
-                with self._out_cv:
-                    self._out_bulk -= 1
-                    self._out_cv.notify_all()
 
     def _close_outbox(self, discard: bool = False) -> None:
         """Accept no more messages; the writer finishes what is queued, unless `discard`."""
@@ -193,7 +178,7 @@ class PluginProcess:
             self._out_closed = True
             if discard:
                 self._out.clear()
-                self._out_bulk = self._out_bytes = 0
+                self._out_bytes = 0
             self._out_cv.notify_all()
 
     def _close_pipes(self) -> None:
@@ -217,7 +202,7 @@ class PluginProcess:
 
     def _remove_container(self) -> None:
         """The child is gone, but killing a container's runtime client may leave the container: remove it."""
-        if self.launch and self.launch.container and not self._container_removed:
+        if not self._container_removed:
             self._container_removed = True
             isolation.remove(self.launch, self._log)
 
@@ -268,37 +253,21 @@ class PluginProcess:
         self._ended = True
 
     # messaging -----------------------------------------------------------
-    def _send(self, msg: dict, bulk: bool = False, abort: Callable[[], bool] | None = None) -> None:
-        """Queue a message for the plugin; it never waits for the plugin to read, except `bulk` when `abort` is given.
-
-        A bulk message (a piece of a streamed body) waits while OUTBOX_BULK of them are already queued, and gives up
-        with SendAborted as soon as `abort()` says so. Any other message is queued at once.
-        """
+    def _send(self, msg: dict) -> None:
+        """Queue a message for the plugin; it never waits for the plugin to read."""
         assert self.proc and self.proc.stdin
         line = json.dumps({"jsonrpc": "2.0", **msg}) + "\n"
         with self._out_cv:
-            while True:
-                if self._out_closed:
-                    raise PluginError(f"{self.manifest.id} is not running")
-                if not bulk:
-                    if len(self._out) - self._out_bulk >= OUTBOX_CONTROL or self._out_bytes >= OUTBOX_CONTROL_BYTES:
-                        raise PluginError(f"{self.manifest.id} is not reading its input")
-                    break
-                if self._out_bulk < OUTBOX_BULK:
-                    break
-                if abort is not None and abort():
-                    raise SendAborted(f"gave up sending to {self.manifest.id}: it is not reading its input")
-                self._out_cv.wait(0.05)
-            self._out.append((line, bulk))
-            if bulk:
-                self._out_bulk += 1
-            else:
-                self._out_bytes += len(line)
+            if self._out_closed:
+                raise PluginError(f"{self.manifest.id} is not running")
+            if len(self._out) >= OUTBOX_CONTROL or self._out_bytes >= OUTBOX_CONTROL_BYTES:
+                raise PluginError(f"{self.manifest.id} is not reading its input")
+            self._out.append(line)
+            self._out_bytes += len(line)
             self._out_cv.notify_all()
 
-    def notify(self, method: str, params: dict | None = None, bulk: bool = False,
-               abort: Callable[[], bool] | None = None) -> None:
-        self._send({"method": method, "params": params or {}}, bulk, abort)
+    def notify(self, method: str, params: dict | None = None) -> None:
+        self._send({"method": method, "params": params or {}})
 
     def send_request(self, method: str, params: dict | None = None) -> int:
         """Send a request without waiting; wait_for(id, ...) collects the reply."""
@@ -310,12 +279,6 @@ class PluginProcess:
             self.pending.discard(req_id)
             raise
         return req_id
-
-    def reply(self, msg_id, result: Any = None, error: dict | None = None) -> None:
-        """Answer a plugin's request from another thread. Raises PluginError if the plugin is gone."""
-        if self.forgotten:
-            raise PluginError(f"{self.manifest.id} is not running")
-        self._send({"id": msg_id, **({"error": error} if error is not None else {"result": result})})
 
     def request(self, method: str, params: dict | None = None, timeout: float | None = None,
                 stop: Callable[[], bool] | None = None) -> Any:
@@ -356,19 +319,15 @@ class PluginProcess:
     def _handle_incoming(self, msg: dict) -> None:
         method, params, msg_id = msg["method"], msg.get("params") or {}, msg.get("id")
         handler = self.handlers.get(method)
-        with_id = self.id_handlers.get(method) if msg_id is not None else None
         if msg_id is None:  # notification
             if handler:
                 handler(params)
             return
-        if handler is None and with_id is None:
+        if handler is None:
             self._send({"id": msg_id, "error": {"code": -32601, "message": f"host has no '{method}'"}})
             return
         try:
-            result = with_id(params, msg_id) if with_id is not None else handler(params)
-            if result is DEFERRED:
-                return
-            self._send({"id": msg_id, "result": result})
+            self._send({"id": msg_id, "result": handler(params)})
         except Exception as e:  # noqa: BLE001 - report any host-side failure to the plugin
             code = e.code if isinstance(e, PluginError) else -32000
             self._send({"id": msg_id, "error": {"code": code, "message": str(e)}})

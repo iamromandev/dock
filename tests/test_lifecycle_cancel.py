@@ -11,7 +11,9 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
+import dockenv  # noqa: E402
 from cli import lifecycle  # noqa: E402
 from cli.inputs import UsageError  # noqa: E402
 from cli.lifecycle import Session  # noqa: E402
@@ -20,7 +22,7 @@ from cli.store import Store  # noqa: E402
 
 
 class QuietUI:
-    """Keeps the output text and swallows the rest, so a test can read the pid the plugin printed."""
+    """Keeps the output text and swallows the rest, so a test can read the container id the plugin printed."""
 
     def __init__(self, plugin_id, texts):
         self.texts = texts
@@ -44,39 +46,46 @@ class QuietUI:
         return {"output": self.output, "log": self.log, "progress": self.progress, "prompt_user": self.prompt_user}
 
 
-def pid_alive(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
+PIDPROBE = ROOT / "tests" / "fixtures" / "pidprobe"
 
 
-def wait_gone(pid, timeout=5.0):
-    end = time.monotonic() + timeout
-    while time.monotonic() < end and pid_alive(pid):
-        time.sleep(0.02)
-    return not pid_alive(pid)
+def store_with(prefix, *plugin_dirs):
+    return Store(dockenv.make_home(prefix, *plugin_dirs))
 
 
 class InvokeResultCancel(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        dockenv.prebuild_plugins(PIDPROBE)
+
     def setUp(self):
-        self.store = Store(Path(tempfile.mkdtemp(prefix="dock-cancel-")))
-        self.store.install(ROOT / "tests" / "fixtures" / "pidprobe")
+        self.store = store_with("dock-cancel-", PIDPROBE)
         self.manifest = self.store.get("dev.dock.pidprobe")
         self.texts = []
         self.session = Session(self.store, ui_factory=lambda pid: QuietUI(pid, self.texts))
         self.addCleanup(self.session.close)
         self.cancel = threading.Event()
 
-    def pid(self):
-        return int("".join(self.texts).split("pid ")[1].split()[0])
+    def cid(self):
+        return "".join(self.texts).split(" cid ")[1].split()[0]
+
+    def cancel_once_started(self):
+        """Set the cancel event once the plugin has printed (so it runs in its container); note when."""
+        def watch():
+            end = time.monotonic() + 60
+            while " cid " not in "".join(self.texts) and time.monotonic() < end:
+                time.sleep(0.02)
+            self.cancelled_at = time.monotonic()
+            self.cancel.set()
+
+        threading.Thread(target=watch, daemon=True).start()
 
     def test_returns_the_whole_result_including_extra_fields(self):
         project = tempfile.mkdtemp(prefix="dock-cancel-cwd-")
         self.session.cwd = project
         result = self.session.invoke_result(self.manifest, "pid", [])
-        self.assertEqual(result, {"exit_code": 0, "pid": self.pid(), "cwd": project})
+        self.assertEqual({k: result[k] for k in ("exit_code", "cid", "cwd")},
+                         {"exit_code": 0, "cid": self.cid(), "cwd": project})
 
     def test_invoke_still_returns_just_the_exit_code(self):
         self.assertEqual(self.session.invoke(self.manifest, "pid", []), 0)
@@ -91,25 +100,23 @@ class InvokeResultCancel(unittest.TestCase):
         self.assertEqual(result["exit_code"], 0)
 
     def test_event_set_during_the_call_cancels_it_and_no_process_is_left(self):
-        threading.Timer(0.4, self.cancel.set).start()
-        started = time.monotonic()
+        self.cancel_once_started()
         with self.assertRaises(PluginError) as caught:
             self.session.invoke_result(self.manifest, "sleep", ["30"], cancel=self.cancel)
         self.assertEqual(caught.exception.code, CANCELLED)
-        self.assertLess(time.monotonic() - started, lifecycle.CANCEL_GRACE + 1)
-        pid = self.pid()
+        self.assertLess(time.monotonic() - self.cancelled_at, lifecycle.CANCEL_GRACE + 5)
+        cid = self.cid()
         self.session.close()
-        self.assertTrue(wait_gone(pid), "the plugin process is still running")
+        self.assertTrue(dockenv.wait_container_gone(cid), "the plugin container is still running")
 
     def test_a_plugin_that_ignores_cancel_is_killed_after_the_grace_period(self):
-        threading.Timer(0.4, self.cancel.set).start()
-        started = time.monotonic()
+        self.cancel_once_started()
         with mock.patch.object(lifecycle, "CANCEL_GRACE", 0.5):
             with self.assertRaises(PluginError) as caught:
                 self.session.invoke_result(self.manifest, "stubborn", ["30"], cancel=self.cancel)
         self.assertEqual(caught.exception.code, CANCELLED)
-        self.assertLess(time.monotonic() - started, 0.4 + 0.5 + 1)
-        self.assertTrue(wait_gone(self.pid()), "the stuck plugin was not killed")
+        self.assertLess(time.monotonic() - self.cancelled_at, 0.5 + 5)
+        self.assertTrue(dockenv.wait_container_gone(self.cid()), "the stuck plugin was not killed")
         self.assertEqual(self.session.procs, [])  # force-stopped: nothing to reuse
 
     def test_an_event_that_is_already_set_cancels_at_once(self):
@@ -118,7 +125,7 @@ class InvokeResultCancel(unittest.TestCase):
         with self.assertRaises(PluginError) as caught:
             self.session.invoke_result(self.manifest, "sleep", ["30"], cancel=self.cancel)
         self.assertEqual(caught.exception.code, CANCELLED)
-        self.assertLess(time.monotonic() - started, lifecycle.CANCEL_GRACE + 1)
+        self.assertLess(time.monotonic() - started, lifecycle.CANCEL_GRACE + 5)
 
     def test_a_crash_is_an_error_not_a_hang(self):
         with self.assertRaises(PluginError) as caught:
@@ -129,13 +136,16 @@ class InvokeResultCancel(unittest.TestCase):
     def test_the_session_serves_another_call_after_a_normal_one(self):
         first = self.session.invoke_result(self.manifest, "pid", [], cancel=self.cancel)
         second = self.session.invoke_result(self.manifest, "pid", [], cancel=self.cancel)
-        self.assertEqual(first["pid"], second["pid"])
+        self.assertEqual(first["cid"], second["cid"])
 
 
 class WaitForStop(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        dockenv.prebuild_plugins(PIDPROBE)
+
     def setUp(self):
-        self.store = Store(Path(tempfile.mkdtemp(prefix="dock-stop-")))
-        self.store.install(ROOT / "tests" / "fixtures" / "pidprobe")
+        self.store = store_with("dock-stop-", PIDPROBE)
         self.manifest = self.store.get("dev.dock.pidprobe")
         self.session = Session(self.store, ui_factory=lambda pid: QuietUI(pid, []))
         self.addCleanup(self.session.close)
@@ -156,7 +166,7 @@ class WaitForStop(unittest.TestCase):
             proc.wait_for(req, "invoke", timeout=None, stop=stop.is_set)
         self.assertEqual(caught.exception.code, CANCELLED)
         self.assertIsInstance(caught.exception, PluginError)
-        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertLess(time.monotonic() - started, 3.0)
 
     def test_a_reply_that_is_already_there_wins_over_stop(self):
         proc, req = self.start_sleep("0")
@@ -174,76 +184,21 @@ class WaitForStop(unittest.TestCase):
         self.assertIn("did not answer", str(caught.exception))
 
 
-class CancelDuringCapabilityCall(unittest.TestCase):
-    """A cancel must reach a command that is blocked on a capability provider, not only the invoke's own wait."""
+class CancelTestLifetime(unittest.TestCase):
+    """The running call's cancel test is only kept while the call runs."""
+
+    @classmethod
+    def setUpClass(cls):
+        dockenv.prebuild_plugins(ROOT / "plugin" / "hello")
 
     def setUp(self):
-        self.store = Store(Path(tempfile.mkdtemp(prefix="dock-capcancel-")))
-        for name in ("capcaller", "capprovider"):
-            self.store.install(ROOT / "tests" / "fixtures" / name)
+        self.store = store_with("dock-capcancel-", ROOT / "plugin" / "hello")
         self.session = Session(self.store, ui_factory=lambda pid: QuietUI(pid, []))
         self.addCleanup(self.session.close)
 
-    def test_cancel_ends_the_call_within_the_grace_period_not_when_the_provider_is_done(self):
-        cancel = threading.Event()
-        threading.Timer(0.8, cancel.set).start()
-        started = time.monotonic()
-        with mock.patch.object(lifecycle, "CANCEL_GRACE", 1.0):
-            with self.assertRaises(PluginError) as caught:
-                self.session.invoke_result(self.store.get("dev.dock.capcaller"), "callcap", [], cancel=cancel)
-        self.assertEqual(caught.exception.code, CANCELLED)
-        self.assertLess(time.monotonic() - started, 0.8 + 1.0 + 1)  # the provider's call would run for 30 s
-
     def test_the_cancel_test_is_forgotten_when_the_call_ends(self):
-        self.session.invoke_result(self.store.get("dev.dock.capcaller"), "quick", [], cancel=threading.Event())
+        self.session.invoke_result(self.store.get("dev.dock.hello"), "count", ["1"], cancel=threading.Event())
         self.assertIsNone(self.session._stop)
-
-
-class SharedMarker(unittest.TestCase):
-    """One marker file per plugin id, whatever number of Sessions have it provisioned."""
-
-    def setUp(self):
-        self.store = Store(Path(tempfile.mkdtemp(prefix="dock-marker-")))
-        self.store.install(ROOT / "tests" / "fixtures" / "pidprobe")
-        self.manifest = self.store.get("dev.dock.pidprobe")
-        self.marker = self.store.marker(self.manifest.id)
-
-    def session(self):
-        session = Session(self.store, ui_factory=lambda pid: QuietUI(pid, []))
-        self.addCleanup(session.close)
-        proc = session.start(self.manifest, session.ui_factory(self.manifest.id))
-        return session, proc
-
-    def test_it_stays_while_another_session_is_provisioned_and_goes_with_the_last(self):
-        first, first_proc = self.session()
-        second, second_proc = self.session()
-        self.assertTrue(self.marker.exists())
-        first.stop_proc(first_proc)
-        self.assertTrue(self.marker.exists())
-        second.stop_proc(second_proc)
-        self.assertFalse(self.marker.exists())
-
-    def test_a_killed_process_leaves_it_in_place_until_another_unprovisions(self):
-        first, first_proc = self.session()
-        second, second_proc = self.session()
-        first.stop_proc(first_proc, force=True)  # unprovision owed: the marker stays
-        self.assertTrue(self.marker.exists())
-        second.stop_proc(second_proc)  # which unprovisions the plugin as a whole
-        self.assertFalse(self.marker.exists())
-
-    def test_a_killed_last_process_leaves_it_for_the_next_run(self):
-        only, proc = self.session()
-        only.stop_proc(proc, force=True)
-        self.assertTrue(self.marker.exists())
-
-    def test_a_session_started_after_the_marker_went_writes_it_again(self):
-        first, first_proc = self.session()
-        first.stop_proc(first_proc)
-        self.assertFalse(self.marker.exists())
-        second, second_proc = self.session()
-        self.assertTrue(self.marker.exists())
-        second.stop_proc(second_proc)
-        self.assertFalse(self.marker.exists())
 
 
 class CountingLog:
@@ -264,9 +219,12 @@ class CountingLog:
 
 
 class StopTwice(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        dockenv.prebuild_plugins(PIDPROBE)
+
     def setUp(self):
-        self.store = Store(Path(tempfile.mkdtemp(prefix="dock-stoptwice-")))
-        self.store.install(ROOT / "tests" / "fixtures" / "pidprobe")
+        self.store = store_with("dock-stoptwice-", PIDPROBE)
         self.manifest = self.store.get("dev.dock.pidprobe")
         self.session = Session(self.store, ui_factory=lambda pid: QuietUI(pid, []))
         self.addCleanup(self.session.close)
@@ -305,7 +263,6 @@ class StopTwice(unittest.TestCase):
         for t in threads:
             t.join(10)
         self.assertEqual(self.session.procs, [])
-        self.assertFalse(self.store.marker(self.manifest.id).exists())
 
 
 if __name__ == "__main__":

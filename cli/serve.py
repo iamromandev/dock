@@ -2,7 +2,7 @@
 
 The main thread reads the client's requests. Every `run` gets its own worker thread. Nothing but protocol lines
 may reach stdout, so the real stdout is only ever written by the Writer, and `sys.stdout` is pointed at stderr
-while serving (recovery and plugin cleanup print through TerminalUI).
+while serving (plugin cleanup prints through TerminalUI).
 """
 
 from __future__ import annotations
@@ -128,8 +128,6 @@ class RoutingUI:
 class ClientUI:
     """One call's UI: what its plugins say becomes notifications to the client, tagged with the call id."""
 
-    PROGRESS_FIELDS = ("done", "total", "speed", "name")  # a plugin's optional extras: passed on as they are
-
     PROMPT_POLL = 0.05  # seconds between looks at the call's cancel event while a prompt waits for its answer
 
     def __init__(self, call_id, writer: Writer, server: Server, cancel: threading.Event, verbose: bool = False):
@@ -151,9 +149,6 @@ class ClientUI:
 
     def progress(self, p: dict) -> None:
         params = {"call": self.call_id, "percent": p.get("percent"), "message": p.get("message", "")}
-        for field in self.PROGRESS_FIELDS:
-            if field in p:
-                params[field] = p[field]
         self.writer.notify("progress", params)
 
     def prompt_user(self, p: dict) -> dict:
@@ -183,7 +178,8 @@ class Entry:
     def __init__(self, session: Session, slot: Slot, key: tuple[str, str]):
         self.session = session
         self.slot = slot
-        self.key = key  # (plugin id, cwd): isolation fixes the cwd mount when a process starts
+        # (plugin id, cwd): the cwd mount is fixed when a container starts
+        self.key = key
         self.last_used = 0.0
 
 
@@ -196,7 +192,7 @@ class Pool:
     leaves the pool's books until it is closed, so that `close()` can wait for it.
     """
 
-    CLOSE_WAIT = lifecycle.UNPROVISION_TIMEOUT + 15  # seconds close() waits for closes that other threads are in
+    CLOSE_WAIT = 20  # seconds close() waits for closes that other threads are in
 
     def __init__(self, store: Store, verbose: bool, idle_timeout: float = 300, max_idle: int = 8,
                  reap_interval: float = 5.0, clock=time.monotonic):
@@ -228,7 +224,8 @@ class Pool:
         return proc is not None and proc.alive()
 
     def lease(self, plugin_id: str, cwd: str, ui: ClientUI) -> Session:
-        """A warm Session for this plugin and cwd, or a new one; `ui` becomes where its plugins' messages go."""
+        """A warm Session for this plugin and cwd, or a new one; `ui` becomes where its plugins'
+        messages go."""
         key = (plugin_id, cwd)
         stale: list[Entry] = []
         with self._lock:
@@ -631,7 +628,6 @@ def serve(store: Store, verbose: bool = False, stdin: BinaryIO | None = None, st
     with contextlib.redirect_stdout(sys.stderr):  # a stray print must not corrupt the protocol
         try:
             isolation.sweep(store)
-            lifecycle.recover(store)
             while True:
                 line = read_line(stdin)
                 if line is None:

@@ -1,24 +1,20 @@
-"""Running a plugin in a container instead of as a native process.
+"""Running a plugin in a container: the only way dock starts one.
 
-The runtime (docker, podman, kiri, ...) is driven only through its command line.
-With isolation on, the container gets what the plugin's declared permissions
-allow and nothing else; the stdio protocol is unchanged, because `<runtime> run -i`
+The runtime (docker, podman, ...) is driven only through its command line. The container gets what the
+plugin's declared permissions allow and nothing else; the stdio protocol is plain, because `<runtime> run -i`
 forwards stdin/stdout.
 """
 
 from __future__ import annotations
 
-import codecs
 import difflib
 import itertools
 import os
-import re
 import shutil
 import socket
 import subprocess
 import sys
 import time
-import tomllib
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -33,46 +29,36 @@ SWEEP_TIMEOUT = 5   # all of the startup sweep, so a stuck runtime cannot hold u
 _names = itertools.count(1)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Config:
-    runtime: str = "docker"
-    enabled: bool = False
-    plugins: tuple[str, ...] = ()
-
-    def isolates(self, plugin_id: str) -> bool:
-        return self.enabled or plugin_id in self.plugins
+    runtime: str | None = None  # as written in [container] runtime; None = docker, else podman, from PATH
 
 
-KNOWN_KEYS = ("enabled", "plugins", "runtime")
-_NAME = "isolation"
+KNOWN_KEYS = ("runtime",)
+_NAME = "container"
+NO_RUNTIME = ("no container runtime found (install docker or podman, "
+              "or set [container] runtime in {config_path})")
 
 
-def _looks_like_isolation(name: str, partial: bool = False) -> bool:
-    """`isolation`, however it is cased, a close misspelling of it, or (partial) the start of the word."""
+def _looks_like_container(name: str) -> bool:
+    """`container`, however it is cased, or a close misspelling of it."""
     n = name.strip().lower()
-    if n == _NAME or (partial and n and _NAME.startswith(n)):
-        return True
-    return bool(difflib.get_close_matches(n, [_NAME], n=1, cutoff=0.75))
+    return n == _NAME or bool(difflib.get_close_matches(n, [_NAME], n=1, cutoff=0.75))
 
 
-def config(store) -> Config | None:
-    """The [isolation] table of config.toml; None when there is none (nothing then calls a runtime).
+def config(store) -> Config:
+    """The [container] table of config.toml; Config() when there is none (the runtime is then found on PATH).
 
-    Fails closed: a mistake that could mean "isolation was wanted" (an unknown key, a misspelt table,
-    a broken [isolation] section) is an error, never a quiet native run.
+    Fails closed: a config.toml that does not parse, a table of a removed feature, an unknown key or a
+    misspelt table is an error, never a quiet fallback to some other runtime.
     """
     path = store.home / "config.toml"
-    try:
-        data = store.config()
-    except ManifestError as e:
-        # A config.toml that does not parse never stopped plugins from running, and still must not,
-        # unless the damage is in (or may be) the isolation settings. Judge section by section.
-        data = _salvage(path, e)
-    where = f"{path}: [isolation]"
+    data = store.config()  # a file that does not parse, or a removed table, raises here
+    where = f"{path}: [container]"
     table = data.get(_NAME)
     if table is None:
         _reject_lookalikes(data, path)
-        return None
+        return Config()
     if not isinstance(table, dict):
         raise ManifestError(f"{where} must be a table")
     unknown = sorted(set(table) - set(KNOWN_KEYS))
@@ -82,95 +68,19 @@ def config(store) -> Config | None:
             f"{where} has unknown key{'s' if len(unknown) > 1 else ''} {names} "
             f"(known: {', '.join(KNOWN_KEYS)})"
         )
-    runtime = table.get("runtime", "docker")
-    enabled = table.get("enabled", False)
-    plugins = table.get("plugins", [])
-    if not isinstance(runtime, str) or not runtime:
+    runtime = table.get("runtime")
+    if runtime is not None and (not isinstance(runtime, str) or not runtime):
         raise ManifestError(f"{where} runtime must be a command name or path")
-    if not isinstance(enabled, bool):
-        raise ManifestError(f"{where} enabled must be true or false")
-    if not isinstance(plugins, list) or not all(isinstance(p, str) for p in plugins):
-        raise ManifestError(f"{where} plugins must be a list of plugin ids")
-    _warn_unknown_plugins(store, plugins)
-    return Config(runtime, enabled, tuple(plugins))
+    return Config(runtime)
 
 
 def _reject_lookalikes(data: dict, path) -> None:
-    """No [isolation] table: refuse what is plainly meant as one (a typo must not mean 'off')."""
+    """No [container] table: refuse what is plainly meant as one (a typo must not mean 'the default runtime')."""
     for key in data:
         if key.lower() in KNOWN_KEYS:
-            raise ManifestError(f"{path}: '{key}' is at the top level; isolation settings belong in an [isolation] table")
-        if key != _NAME and _looks_like_isolation(key):
-            raise ManifestError(f"{path}: [{key}] is not a known table; did you mean [isolation]?")
-
-
-def _warn_unknown_plugins(store, plugins: list[str]) -> None:
-    try:
-        installed = store.index()
-    except (OSError, ValueError):
-        return
-    for plugin_id in plugins:
-        if plugin_id not in installed and plugin_id not in store.isolation_warned:
-            store.isolation_warned.add(plugin_id)  # every command asks; say it once
-            print(f"dock: [isolation] plugins lists '{plugin_id}', which is not an installed plugin", file=sys.stderr)
-
-
-def _sections(text: str) -> list[tuple[str, str]]:
-    """(header line, text) per top-level section; the first has no header (keys before any table)."""
-    out: list[tuple[str, str]] = []
-    header, lines = "", []
-    for line in text.splitlines(keepends=True):
-        if line.lstrip().startswith("["):
-            out.append((header, "".join(lines)))
-            header, lines = line, []
-        lines.append(line)
-    out.append((header, "".join(lines)))
-    return out
-
-
-def _header_names(header: str) -> list[str]:
-    """What table a header line names, even a broken one: the parsed key, else best guesses at it."""
-    try:
-        return list(tomllib.loads(header))
-    except tomllib.TOMLDecodeError:
-        pass
-    head = header.strip().lstrip("[").split("]")[0].split("#")[0]
-    names = [re.sub(r"""["'\s]""", "", head).split(".")[0]]
-    try:  # ["i\u0073olation" and friends
-        names.append(codecs.decode(names[0], "unicode_escape"))
-    except (UnicodeDecodeError, ValueError):
-        pass
-    return names
-
-
-def _salvage(path, error: ManifestError) -> dict:
-    """What can be trusted of a config.toml that does not parse (or decode) as a whole.
-
-    Each top-level section is parsed on its own. Returns the sections that parse; raises `error`
-    when one that is, or looks like, the isolation settings does not.
-    """
-    try:
-        text = path.read_bytes().decode("utf-8", errors="replace")
-    except OSError:
-        raise error from None  # cannot even read it: cannot tell
-    refuse = ManifestError(f"{error} (it may hold isolation settings, so no plugin is started unisolated)")
-    data: dict = {}
-    for header, chunk in _sections(text):
-        try:
-            parsed = tomllib.loads(chunk)
-        except tomllib.TOMLDecodeError:
-            if header:
-                broken = any(_looks_like_isolation(n, partial=True) for n in _header_names(header))
-            else:  # keys before the first table
-                broken = bool(re.search(rf"""(?im)^\s*["']?({'|'.join(KNOWN_KEYS)}|{_NAME})\b""", chunk))
-            if broken:
-                raise refuse from None
-            continue
-        for key, value in parsed.items():
-            if isinstance(value, dict) and isinstance(data.get(key), dict):
-                value = {**data[key], **value}
-            data[key] = value
-    return data
+            raise ManifestError(f"{path}: '{key}' is at the top level; container settings belong in a [container] table")
+        if key != _NAME and _looks_like_container(key):
+            raise ManifestError(f"{path}: [{key}] is not a known table; did you mean [container]?")
 
 
 @dataclass
@@ -178,9 +88,8 @@ class Launch:
     """What to spawn for a plugin: argv, the environment of that process, and the container to clean up."""
     argv: list[str]
     env: dict[str, str]
-    runtime: str | None = None   # set when the plugin runs in a container
-    container: str | None = None  # its name, for `rm -f`
-    runner: str = "native"        # "native", "container" or "wasm": how it runs, for `status`
+    runtime: str     # the container runtime
+    container: str   # the container's name, for `rm -f`
 
 
 def image_tag(m: Manifest) -> str:
@@ -207,21 +116,36 @@ def owner_label() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
-def run_argv(cfg: Config, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env: dict[str, str],
+MOUNT_UNSAFE = (":", ",", '"')  # they would end or split the fields of `--mount type=bind,src=...,dst=...`
+
+
+def _mountable(m: Manifest, path, what: str) -> str:
+    """The path as a bind-mount source; refused when a character of it would be read as part of the mount option."""
+    text = str(path)
+    bad = next((c for c in MOUNT_UNSAFE if c in text), None)
+    if bad:
+        raise ManifestError(f"{m.id}: cannot mount the {what} {text}: its path contains '{bad}'; use a path without it")
+    return text
+
+
+def _bind(path: str) -> list[str]:
+    return ["--mount", f"type=bind,src={path},dst={path}"]
+
+
+def run_argv(runtime: str, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env: dict[str, str],
              passthrough=()) -> list[str]:
     """The `run` command line. uid_gid is None where there is no POSIX user (Windows).
 
     `env` is set by value; `passthrough` names are given as a bare `-e NAME`, so the runtime client reads
     the value from its own environment and a secret never shows up in the process list.
     """
-    assert m.container is not None
     return [
-        cfg.runtime, "run", "-i", "--rm", "--pull", "never", "--name", name, "--label", f"{LABEL}={owner_label()}",
+        runtime, "run", "-i", "--rm", "--pull", "never", "--name", name, "--label", f"{LABEL}={owner_label()}",
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp",
         *(["--user", f"{uid_gid[0]}:{uid_gid[1]}"] if uid_gid else []),
         *(["--network", "none"] if "network" not in m.permissions else []),
-        "-v", f"{data_dir}:{data_dir}",
-        *(["-v", f"{cwd}:{cwd}"] if "fs:write:cwd" in m.permissions else []),
+        *_bind(_mountable(m, data_dir, "data directory")),
+        *(_bind(_mountable(m, cwd, "current directory (fs:write:cwd)")) if "fs:write:cwd" in m.permissions else []),
         "--workdir", "/plugin",
         *[x for k, v in env.items() for x in ("-e", f"{k}={v}")],
         *[x for n in passthrough for x in ("-e", n)],
@@ -229,15 +153,34 @@ def run_argv(cfg: Config, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env
     ]
 
 
-def native_launch(m: Manifest) -> Launch:
-    return Launch(m.entrypoint(), {**os.environ, "DOCK_PLUGIN_ID": m.id, "DOCK_API_VERSION": API_VERSION})
+def resolve_runtime(cfg: Config, store=None) -> str:
+    """The container runtime to call: the configured one (an absolute path, or a name looked up on PATH), else docker, else podman.
+
+    Always an absolute path. A relative one would be resolved by Popen against whatever folder it runs in, and a
+    plugin folder could then ship its own `docker`. Asks the runtime nothing. `store` only names the config file
+    in the message for a missing runtime.
+    """
+    if cfg.runtime:
+        if not os.path.isabs(cfg.runtime) and os.path.basename(cfg.runtime) != cfg.runtime:
+            raise ManifestError(
+                f"container runtime '{cfg.runtime}' is a relative path: use an absolute path or a command name"
+            )
+        found = shutil.which(cfg.runtime)
+        if found is None:
+            raise ManifestError(f"container runtime '{cfg.runtime}' not found")
+        return os.path.abspath(found)  # PATH may hold `.` or an empty entry: which() then answers relatively
+    for name in ("docker", "podman"):
+        found = shutil.which(name)
+        if found:
+            return os.path.abspath(found)
+    config_path = store.home / "config.toml" if store is not None else "~/.dock/config.toml"
+    raise ManifestError(NO_RUNTIME.format(config_path=config_path))
 
 
-def _find_runtime(cfg: Config) -> Config:
-    found = shutil.which(cfg.runtime)
-    if found is None:
-        raise ManifestError(f"isolation runtime '{cfg.runtime}' not found")
-    return replace(cfg, runtime=found)
+def _resolved(store) -> Config:
+    """The [container] settings with the runtime resolved to a path."""
+    cfg = config(store)
+    return replace(cfg, runtime=resolve_runtime(cfg, store))
 
 
 def ensure_image(cfg: Config, store, m: Manifest, force: bool = False) -> None:
@@ -247,13 +190,12 @@ def ensure_image(cfg: Config, store, m: Manifest, force: bool = False) -> None:
         try:
             probe = subprocess.run([cfg.runtime, "image", "inspect", tag], capture_output=True, check=False)
         except OSError as e:
-            raise ManifestError(f"isolation runtime '{cfg.runtime}' failed: {e}") from e
+            raise ManifestError(f"container runtime '{cfg.runtime}' failed: {e}") from e
         if probe.returncode == 0:
             return
 
     log_path = store.log_path(m.id)
     print(f"dock: building image {tag} …", file=sys.stderr, flush=True)
-    assert m.container is not None
     with open(log_path, "a", encoding="utf-8") as log:
         log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} build {tag}\n")
         log.flush()
@@ -269,30 +211,29 @@ def ensure_image(cfg: Config, store, m: Manifest, force: bool = False) -> None:
         raise ManifestError(f"{m.id}: image build failed (see {log_path})")
 
 
-def has_container_build(m: Manifest) -> bool:
-    return m.container is not None and (m.root / m.container.dockerfile).is_file()
+def _require_dockerfile(m: Manifest) -> None:
+    if not (m.root / m.container.dockerfile).is_file():
+        raise ManifestError(f"{m.id}: the plugin has no Dockerfile ({m.container.dockerfile}): add one and reinstall it")
 
 
 def forget_image(store, m: Manifest) -> None:
-    """Best effort: drop the image of a plugin that was just (re)installed, so the next run rebuilds it.
+    """Best effort: drop the image of a plugin that was just (re)installed or removed, so a later run rebuilds it.
 
     The tag is id:version, so reinstalling the same version (new sources, same number) would otherwise
-    keep running the stale image. Only asks a runtime the user configured; a failure is not the install's.
+    keep running the stale image. A failure is not the install's problem; when no runtime can be asked at all,
+    one line on stderr says the image may be stale and how to rebuild it.
     """
-    if m.container is None or m.wasm is not None:  # a WASM plugin never has an image
+    tag = image_tag(m)
+    stale = f"dock: old image {tag} may be stale ({{why}}); fix the runtime, then run: dock plugin build {m.id}"
+    try:
+        runtime = resolve_runtime(config(store), store)
+    except ManifestError as e:
+        print(stale.format(why=str(e).replace("\n", " ")), file=sys.stderr)
         return
     try:
-        cfg = config(store)
-    except ManifestError:
-        return
-    runtime = shutil.which(cfg.runtime) if cfg else None
-    if runtime is None:
-        return
-    try:
-        subprocess.run([runtime, "image", "rm", "-f", image_tag(m)],
-                       capture_output=True, timeout=REMOVE_TIMEOUT, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        pass
+        subprocess.run([runtime, "image", "rm", "-f", tag], capture_output=True, timeout=REMOVE_TIMEOUT, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        print(stale.format(why=f"{runtime_label(runtime)} did not answer: {e}"), file=sys.stderr)
 
 
 def runtime_label(runtime: str) -> str:
@@ -301,60 +242,55 @@ def runtime_label(runtime: str) -> str:
 
 
 def build(store, m: Manifest) -> str:
-    """`dock plugin build`: (re)build the image whether or not isolation is on. Returns the tag."""
-    cfg = _find_runtime(config(store) or Config())
-    if not has_container_build(m):
-        raise ManifestError(f"{m.id}: the plugin has no container build (add [run].container and a Dockerfile)")
+    """`dock plugin build`: (re)build the plugin's image. Returns the tag."""
+    cfg = _resolved(store)
+    _require_dockerfile(m)
     ensure_image(cfg, store, m, force=True)
     return image_tag(m)
 
 
-def runner_line(store, m: Manifest) -> str:
-    """The `runner:` line of `plugin info`: how `prepare` would start the plugin; asks the runtime nothing."""
-    if m.wasm is not None:
-        from cli import wasm  # wasm imports this module
-
-        return wasm.runner_line(store, m)
-    try:
-        cfg = config(store)
-    except ManifestError as e:
-        return f"unknown ({e})"
-    if cfg is None or not cfg.isolates(m.id):
-        return "native"
-    if not has_container_build(m):
-        return "none (isolation is on, but the plugin has no container build)"
-    return f"container ({runtime_label(cfg.runtime)})"
-
-
 def describe(store, m: Manifest) -> str:
-    """The `isolation:` line of `plugin info`; asks the runtime nothing."""
-    if m.wasm is not None:
-        return "not used (runs as wasm, sandboxed by its permissions)"
+    """How a plugin would run, for `plugin info`; asks the runtime nothing."""
     try:
         cfg = config(store)
     except ManifestError as e:
         return f"unknown ({e})"
-    if cfg is None or not cfg.isolates(m.id):
-        return "off"
-    if not has_container_build(m):
-        return "on, but not supported by this plugin"
+    try:
+        runtime = resolve_runtime(cfg, store)
+    except ManifestError:
+        return "none found (install docker or podman, or set [container] runtime)"
     net = "network" if "network" in m.permissions else "no network"
     cwd = "cwd" if "fs:write:cwd" in m.permissions else "no cwd access"
-    return f"{runtime_label(cfg.runtime)} ({net}, {cwd})"
+    return f"{runtime_label(runtime)} ({net}, {cwd})"
+
+
+def _same(a: Path, b: Path) -> bool:
+    """Do these name one directory? `samefile` sees through case-insensitive filesystems (`/users/me` is `/Users/me`)."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return os.path.normcase(a) == os.path.normcase(b)
+
+
+def _chain(path: Path) -> list[Path]:
+    """The path and every folder above it, up to the root."""
+    return [path, *path.parents]
 
 
 def _check_cwd_mount(store, m: Manifest, cwd: str) -> None:
     """The cwd is mounted read-write, so refuse one that would hand over more than a project directory."""
     real = Path(os.path.realpath(cwd))
+    home = Path(os.path.realpath(Path.home()))
+    dock_home = Path(os.path.realpath(store.home))
     reason = None
-    if real == Path(real.anchor):
+    if _same(real, Path(real.anchor)):
         reason = "the filesystem root"
-    elif real == Path(os.path.realpath(Path.home())):
+    elif _same(real, home):
         reason = "your home directory"
-    else:
-        dock_home = Path(os.path.realpath(store.home))
-        if dock_home.is_relative_to(real) or real.is_relative_to(dock_home):
-            reason = f"inside or above the dock home ({store.home}), which holds every plugin's data"
+    elif any(_same(real, d) for d in _chain(dock_home)) or any(_same(d, dock_home) for d in _chain(real)):
+        reason = f"inside or above the dock home ({store.home}), which holds every plugin's data"
+    elif any(_same(real, d) for d in home.parents):
+        reason = "above your home directory"
     if reason:
         raise ManifestError(
             f"{m.id}: refusing to mount {cwd} read-write (fs:write:cwd): it is {reason}; "
@@ -363,41 +299,30 @@ def _check_cwd_mount(store, m: Manifest, cwd: str) -> None:
 
 
 def prepare(store, m: Manifest, cwd: str | None = None) -> Launch:
-    """Decide how to spawn `m`: as a WASM module, natively, or in a container (building its image first if needed)."""
-    if m.wasm is not None:  # wins over native and container entries, and over [isolation]: it is sandboxed anyway
-        from cli import wasm  # wasm imports this module
-
-        return wasm.prepare(store, m, cwd)
-    cfg = config(store)
-    if cfg is None or not cfg.isolates(m.id):
-        return native_launch(m)
-
-    cfg = _find_runtime(cfg)
-    if not has_container_build(m):
-        raise ManifestError(
-            f"{m.id}: isolation is on but the plugin has no container build "
-            "(add [run].container and a Dockerfile, or exclude it in [isolation])"
-        )
+    """Decide how to spawn `m`: in a container, building its image first if needed."""
+    cfg = _resolved(store)
+    _require_dockerfile(m)
     cwd = cwd or os.getcwd()
+    data_dir = store.data_dir(m.id)
+    _mountable(m, data_dir, "data directory")  # refused before the image is built or anything is started
     if "fs:write:cwd" in m.permissions:
         _check_cwd_mount(store, m, cwd)
+        _mountable(m, cwd, "current directory (fs:write:cwd)")
     ensure_image(cfg, store, m)
 
     name = container_name(m)
     argv = run_argv(
-        cfg, m, name=name, data_dir=store.data_dir(m.id), cwd=cwd,
+        cfg.runtime, m, name=name, data_dir=data_dir, cwd=cwd,
         uid_gid=(os.getuid(), os.getgid()) if hasattr(os, "getuid") else None,
         env=container_env(m), passthrough=passthrough_env(m),
     )
     # The runtime client keeps the host environment (it needs DOCKER_HOST and friends, and resolves the
     # value-free `-e NAME` entries from it); only the -e entries above reach the plugin.
-    return Launch(argv, dict(os.environ), runtime=cfg.runtime, container=name, runner="container")
+    return Launch(argv, dict(os.environ), runtime=cfg.runtime, container=name)
 
 
 def remove(launch: Launch, log=None, timeout: float = REMOVE_TIMEOUT) -> None:
     """Best effort `rm -f` of the launch's container, so it does not outlive its process."""
-    if not launch.container or not launch.runtime:
-        return
     try:
         r = subprocess.run(
             [launch.runtime, "rm", "-f", launch.container],
@@ -442,17 +367,14 @@ def sweep(store) -> list[str]:
     """Remove containers owned by dock processes that no longer exist; returns their names.
 
     Runs at every start, so it is cheap and capped: no runtime to ask means no call at all (the runtime
-    is the configured one, else `docker` if it is on PATH), and the whole sweep gets SWEEP_TIMEOUT seconds.
+    is the configured one, else docker or podman from PATH), and the whole sweep gets SWEEP_TIMEOUT seconds.
     """
     if sys.platform == "win32":
         return []  # os.kill(pid, 0) does not probe a process there; never judge liveness
     try:
-        cfg = config(store) or Config()
+        runtime = resolve_runtime(config(store), store)
     except ManifestError:
-        return []  # reported when a plugin is started
-    runtime = shutil.which(cfg.runtime)
-    if runtime is None:
-        return []  # reported when a plugin is started, not here
+        return []  # a damaged config or no runtime: reported when a plugin is started, not here
     deadline = time.monotonic() + SWEEP_TIMEOUT
     try:
         listing = subprocess.run(

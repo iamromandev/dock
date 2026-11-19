@@ -1,6 +1,5 @@
 """`dock serve`: the JSON-RPC host mode. Real `python -m cli serve` children over pipes. Run `make test`."""
 
-import hashlib
 import io
 import os
 import signal
@@ -16,9 +15,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 from cli import SERVE_VERSION, __version__, serve  # noqa: E402
-from cli.manifest import platform_key  # noqa: E402
 from cli.store import Store  # noqa: E402
-from serve_client import GRACE, ServeCase, make_home, pid_alive, wait_gone  # noqa: E402
+from dockenv import container_running, kill_container, wait_container_gone  # noqa: E402
+from serve_client import GRACE, ServeCase, make_home, require_images  # noqa: E402
 
 
 class ServeSkeleton(ServeCase):
@@ -46,12 +45,9 @@ class ServeSkeleton(ServeCase):
     def test_commands_lists_installed_commands_with_plugin_and_inputs(self):
         c = self.hello_client()
         commands = {cmd["name"]: cmd for cmd in c.request("commands")["result"]["commands"]}
-        download = commands["download"]
-        self.assertEqual(download["plugin"], "dev.dock.download")
-        self.assertIn("Download", download["summary"])
-        self.assertEqual(download["inputs"][0], {"name": "url", "type": "string", "required": True})
-        self.assertEqual(download["inputs"][1],
-                         {"name": "output", "type": "string", "required": False, "flag": "--output", "short": "-o"})
+        sleep = commands["sleep"]
+        self.assertEqual(sleep["plugin"], "dev.dock.pidprobe")
+        self.assertEqual(sleep["inputs"][0], {"name": "seconds", "type": "string", "required": True})
         self.assertEqual(commands["hello"]["plugin"], "dev.dock.hello")
         self.assertEqual(commands["count"]["inputs"], [{"name": "n", "type": "int", "required": False}])
 
@@ -104,17 +100,14 @@ class ServeRun(ServeCase):
         log = Path(self.home, "logs", f"{plugin_id}.log")
         return log.read_text().count(" start ") if log.exists() else 0
 
-    def state_files(self):
-        return sorted(p.name for p in Path(self.home, "state").iterdir())
-
     # refused before anything starts (R3) -------------------------------------
     def test_a_missing_required_input_is_an_error_and_no_plugin_starts(self):
         c = self.hello_client()
-        before = self.starts("dev.dock.download")
-        error = c.wait_reply(self.run_call(c, "download"))["error"]
+        before = self.starts("dev.dock.pidprobe")
+        error = c.wait_reply(self.run_call(c, "sleep"))["error"]
         self.assertEqual(error["code"], -32602)
-        self.assertEqual(error["message"], "missing required input 'url'")
-        self.assertEqual(self.starts("dev.dock.download"), before)
+        self.assertEqual(error["message"], "missing required input 'seconds'")
+        self.assertEqual(self.starts("dev.dock.pidprobe"), before)
 
     def test_an_unknown_command_is_not_found(self):
         c = self.hello_client()
@@ -151,12 +144,12 @@ class ServeRun(ServeCase):
         c = self.hello_client()
         call = self.run_call(c, "work", "3", "--delay", "0.05")
         reply = c.wait_reply(call)
-        self.assertEqual(reply["result"], {"exit_code": 0, "pid": c.pid_of(call), "cwd": self.cwd})
+        result = reply["result"]  # the plugin's own extra fields ride along; its pid is whatever the container gives it
+        self.assertEqual({k: result[k] for k in ("exit_code", "cid", "cwd")},
+                         {"exit_code": 0, "cid": c.cid_of(call), "cwd": self.cwd})
         progress = c.notes("progress", call)
         self.assertEqual([round(n["params"]["percent"], 1) for n in progress], [33.3, 66.7, 100.0])
         self.assertEqual(progress[0]["params"]["message"], "1/3")
-        self.assertEqual(progress[-1]["params"]["done"], 3)  # a plugin's extra fields pass through
-        self.assertEqual(progress[-1]["params"]["total"], 3)
         self.assertEqual(len(c.notes("progress")), 3)  # and nothing came untagged
 
     def test_two_calls_keep_their_notifications_apart(self):
@@ -166,7 +159,7 @@ class ServeRun(ServeCase):
         c.wait_reply(b)
         self.assertEqual(len(c.notes("progress", a)), 4)
         self.assertEqual(len(c.notes("progress", b)), 2)
-        self.assertNotEqual(c.pid_of(a), c.pid_of(b))  # a process per call that runs
+        self.assertNotEqual(c.cid_of(a), c.cid_of(b))  # a process per call that runs
 
     def test_plugins_without_the_new_fields_still_work(self):
         c = self.hello_client()
@@ -183,20 +176,6 @@ class ServeRun(ServeCase):
         again = self.run_call(c, "pid")  # serve is unharmed
         self.assertEqual(c.wait_reply(again)["result"]["exit_code"], 0)
 
-    def test_download_a_file_through_serve(self):
-        binary = ROOT / "plugin" / "download" / "bin" / f"download-{platform_key()}"
-        if not binary.exists():
-            self.skipTest("the download plugin is not built (make build)")
-        source = Path(self.cwd, "source.bin")
-        source.write_bytes(os.urandom(300_000))
-        dest = Path(self.cwd, "copy.bin")
-        c = self.hello_client()
-        call = self.run_call(c, "download", source.as_uri(), "-o", str(dest))
-        self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 0)
-        self.assertEqual(hashlib.sha256(dest.read_bytes()).hexdigest(), hashlib.sha256(source.read_bytes()).hexdigest())
-        for n in c.notes("progress", call):
-            self.assertIn("percent", n["params"])
-
     # cancel (R6, R7) ---------------------------------------------------------
     def test_cancelling_one_of_three_calls_leaves_the_others_and_leaves_no_process(self):
         c = self.hello_client()
@@ -204,32 +183,32 @@ class ServeRun(ServeCase):
         victim = self.run_call(c, "sleep", "60")
         keep2 = self.run_call(c, "work", "20", "--delay", "0.1")
         c.wait_until(lambda: all(c.notes("output", k) for k in (keep1, victim, keep2)), what="the calls to start")
-        pids = [c.pid_of(k) for k in (keep1, victim, keep2)]
-        self.assertEqual(len(set(pids)), 3)
+        cids = [c.cid_of(k) for k in (keep1, victim, keep2)]
+        self.assertEqual(len(set(cids)), 3)
         started = time.monotonic()
         c.notify("cancel", {"id": victim})
         error = c.wait_reply(victim, timeout=10)["error"]
         self.assertEqual(error["code"], -32800)
-        self.assertLess(time.monotonic() - started, float(GRACE) + 1)
+        self.assertLess(time.monotonic() - started, float(GRACE) + 5)
         for keep in (keep1, keep2):
             self.assertEqual(c.wait_reply(keep)["result"]["exit_code"], 0)
             self.assertEqual(len(c.notes("progress", keep)), 20)
-        self.assertTrue(wait_gone(pids[1]), "the cancelled call's process is still running")
+        self.assertTrue(wait_container_gone(cids[1]), "the cancelled call's process is still running")
         c.close_stdin()
         self.assertEqual(c.wait(), 0)
-        for pid in pids:
-            self.assertTrue(wait_gone(pid), f"plugin process {pid} is still running")
+        for cid in cids:
+            self.assertTrue(wait_container_gone(cid), f"plugin process {cid} is still running")
 
     def test_a_plugin_that_ignores_cancel_is_killed_and_the_call_still_ends_in_time(self):
         c = self.hello_client()
         call = self.run_call(c, "stubborn", "60")
         c.wait_until(lambda: c.notes("output", call), what="the call to start")
-        pid = c.pid_of(call)
+        cid = c.cid_of(call)
         started = time.monotonic()
         c.notify("cancel", {"id": call})
         self.assertEqual(c.wait_reply(call, timeout=10)["error"]["code"], -32800)
-        self.assertLess(time.monotonic() - started, float(GRACE) + 1)
-        self.assertTrue(wait_gone(pid), "the stuck plugin is still running")
+        self.assertLess(time.monotonic() - started, float(GRACE) + 5)
+        self.assertTrue(wait_container_gone(cid), "the stuck plugin is still running")
 
     def test_cancelling_an_unknown_id_is_ignored(self):
         c = self.hello_client()
@@ -245,7 +224,7 @@ class ServeRun(ServeCase):
         doomed = self.run_call(c, "sleep", "3")
         other = self.run_call(c, "sleep", "3")
         c.wait_until(lambda: c.notes("output", doomed) and c.notes("output", other), what="both to start")
-        os.kill(c.pid_of(doomed), signal.SIGKILL)
+        kill_container(c.cid_of(doomed))
         self.assertIn("error", c.wait_reply(doomed))
         self.assertEqual(c.wait_reply(other)["result"]["exit_code"], 0)
 
@@ -254,36 +233,33 @@ class ServeRun(ServeCase):
         c = self.hello_client()
         calls = [self.run_call(c, "sleep", "60") for _ in range(2)]
         c.wait_until(lambda: all(c.notes("output", k) for k in calls), what="the calls to start")
-        pids = [c.pid_of(k) for k in calls]
+        cids = [c.cid_of(k) for k in calls]
         started = time.monotonic()
         c.close_stdin()
-        self.assertEqual(c.wait(timeout=float(GRACE) + 3), 0)
-        self.assertLess(time.monotonic() - started, float(GRACE) + 3)
-        for pid in pids:
-            self.assertFalse(pid_alive(pid), f"plugin process {pid} is still running")
-        self.assertEqual(self.state_files(), [])
+        self.assertEqual(c.wait(timeout=float(GRACE) + 10), 0)
+        self.assertLess(time.monotonic() - started, float(GRACE) + 10)
+        for cid in cids:
+            self.assertFalse(container_running(cid), f"plugin process {cid} is still running")
         self.assertEqual(c.bad_lines, [])
 
     def test_shutdown_answers_after_cancelling_the_calls(self):
         c = self.hello_client()
         call = self.run_call(c, "sleep", "60")
         c.wait_until(lambda: c.notes("output", call), what="the call to start")
-        pid = c.pid_of(call)
-        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 3)["result"], {})
+        cid = c.cid_of(call)
+        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 10)["result"], {})
         self.assertEqual(c.replies[call]["error"]["code"], -32800)  # the call was answered before shutdown was
         self.assertEqual(c.wait(), 0)
-        self.assertFalse(pid_alive(pid))
-        self.assertEqual(self.state_files(), [])
+        self.assertFalse(container_running(cid))
 
     def test_sigterm_leaves_like_end_of_input(self):
         c = self.hello_client()
         call = self.run_call(c, "sleep", "60")
         c.wait_until(lambda: c.notes("output", call), what="the call to start")
-        pid = c.pid_of(call)
+        cid = c.cid_of(call)
         c.proc.send_signal(signal.SIGTERM)
-        self.assertEqual(c.wait(timeout=float(GRACE) + 3), 0)
-        self.assertFalse(pid_alive(pid))
-        self.assertEqual(self.state_files(), [])
+        self.assertEqual(c.wait(timeout=float(GRACE) + 10), 0)
+        self.assertFalse(container_running(cid))
 
     def test_sigint_does_not_stop_serve(self):
         c = self.hello_client()
@@ -292,29 +268,15 @@ class ServeRun(ServeCase):
         self.assertIsNone(c.proc.poll())
         self.assertIn("commands", c.request("commands")["result"])
 
-    def test_after_a_sigkilled_serve_the_next_one_cleans_up(self):
-        first = self.hello_client()
-        call = self.run_call(first, "sleep", "60")
-        first.wait_until(lambda: first.notes("output", call), what="the call to start")
-        pid = first.pid_of(call)
-        self.addCleanup(lambda: pid_alive(pid) and os.kill(pid, signal.SIGKILL))
-        self.assertEqual(self.state_files(), ["dev.dock.pidprobe.provisioned"])
-        first.kill()
-        second = self.hello_client()  # recovery runs before it answers
-        self.assertEqual(self.state_files(), [])
-        second.close_stdin()
-        self.assertEqual(second.wait(), 0)
-
     # permissions are the CLI's (NFR2) -----------------------------------------------
-    def test_a_plugin_without_a_declared_host_has_its_http_request_refused(self):
-        c = self.hello_client()
-        call = self.run_call(c, "fetch", "http://127.0.0.1:9/")
-        self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 1)  # the plugin reports its failed request
-        self.assertIn("error:-32001", c.output_text(call))
 
 
 class RunIdReuse(unittest.TestCase):
     """The reply is out before the call is forgotten; the id must still be free the moment a client reads it."""
+
+    @classmethod
+    def setUpClass(cls):
+        require_images()
 
     def test_a_run_id_may_be_used_again_from_the_moment_its_reply_is_sent(self):
         home = make_home("dock-serve-reuse-")
@@ -406,7 +368,7 @@ class ServePrompts(ServeCase):
         started = time.monotonic()
         c.notify("cancel", {"id": call})
         self.assertEqual(c.wait_reply(call)["error"]["code"], -32800)
-        self.assertLess(time.monotonic() - started, float(GRACE) + 1)
+        self.assertLess(time.monotonic() - started, float(GRACE) + 5)
         self.assertEqual(c.output_text(call), "answer: <eof>\n")  # the plugin was given eof, not left waiting
 
     def test_an_answer_that_comes_after_the_prompt_was_withdrawn_is_ignored(self):
@@ -423,7 +385,7 @@ class ServePrompts(ServeCase):
         call = self.ask(c)
         c.wait_until(lambda: c.prompts, what="the prompt")
         c.close_stdin()
-        self.assertEqual(c.wait(timeout=float(GRACE) + 3), 0)
+        self.assertEqual(c.wait(timeout=float(GRACE) + 10), 0)
         self.assertEqual(c.replies[call]["error"]["code"], -32800)
 
     def test_replies_to_unknown_prompt_ids_are_ignored(self):
@@ -431,6 +393,30 @@ class ServePrompts(ServeCase):
         c.send({"id": "p99", "result": {"text": "x"}})
         c.send({"id": 5, "result": {}})
         self.assertIn("commands", c.request("commands")["result"])
+
+
+class ClientUIProgress(unittest.TestCase):
+    """Progress to a serve client is `{call, percent, message}`; whatever else a plugin sends is dropped."""
+
+    def notified(self, p: dict) -> dict:
+        sent = []
+
+        class Writer:
+            def notify(self, method, params):
+                sent.append((method, params))
+
+        serve.ClientUI(7, Writer(), None, threading.Event()).progress(p)
+        self.assertEqual([m for m, _ in sent], ["progress"])
+        return sent[0][1]
+
+    def test_transfer_fields_are_dropped_and_only_percent_and_message_remain(self):
+        got = self.notified({"percent": 100.0, "message": "seeding", "phase": "seeding", "uploaded": 5, "peers": 2,
+                             "done": 9, "total": 9, "speed": 1.5, "name": "x"})
+        self.assertEqual(got, {"call": 7, "percent": 100.0, "message": "seeding"})
+
+    def test_a_field_dock_does_not_know_is_dropped(self):
+        got = self.notified({"percent": None, "message": "m", "surprise": 1})
+        self.assertEqual(got, {"call": 7, "percent": None, "message": "m"})
 
 
 if __name__ == "__main__":

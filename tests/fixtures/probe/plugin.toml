@@ -4,7 +4,6 @@ api_version = "1"
 description = "Test fixture: exit codes, crashes, pids, cancellable sleep"
 
 [run]
-any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
 container = { cmd = "python3", args = ["/plugin/main.py"] }
 
 [[commands]]
@@ -17,7 +16,7 @@ summary = "Exit the process mid-invoke"
 
 [[commands]]
 name = "pid"
-summary = "Write pid to data_dir/pid and print it"
+summary = "Write pid and container id to data_dir/pid and data_dir/cid, and print the pid"
 
 [[commands]]
 name = "sleep"

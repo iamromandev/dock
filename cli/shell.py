@@ -7,7 +7,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from cli import __version__, isolation, lifecycle
+from cli import __version__, isolation
 from cli.inputs import UsageError
 from cli.lifecycle import Session
 from cli.manifest import Manifest, ManifestError
@@ -136,16 +136,9 @@ class Shell:
         procs = self.session.running()
         if not procs:
             print("no plugins running")
-        for plugin_id, idle, provides, runtime, runner in procs:
+        for plugin_id, idle, runtime in procs:
             m, sec = divmod(int(idle), 60)
-            line = f"{plugin_id:<20} running   idle {m}m{sec:02d}s"
-            if provides:
-                line += "   provides: " + ", ".join(provides)
-            if runtime:
-                line += "   isolated: " + isolation.runtime_label(runtime)
-            if runner == "wasm":
-                line += "   wasm"
-            print(line)
+            print(f"{plugin_id:<20} running   idle {m}m{sec:02d}s   {isolation.runtime_label(runtime)}")
 
     def _plugin(self, main, args: list[str]) -> None:
         if len(args) == 2 and args[0] == "remove":
@@ -180,7 +173,6 @@ def _setup_readline(store: Store):
 
 def start(store: Store, verbose: bool) -> int:
     isolation.sweep(store)
-    lifecycle.recover(store)
     readline = _setup_readline(store)
     shell = Shell(store, Session(store, verbose), readline=readline, verbose=verbose)
     if readline is not None:
