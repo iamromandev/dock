@@ -1,2 +1,2 @@
-# Native builds (bin/) are not part of the image.
+# Build leftovers are not part of the image.
 bin/

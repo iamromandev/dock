@@ -1,6 +1,7 @@
 """The warm pool of `dock serve`: Sessions are reused per (plugin, cwd), and closed when they should be."""
 
 import io
+import shutil
 import sys
 import tempfile
 import time
@@ -14,11 +15,13 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 from cli import serve  # noqa: E402
 from cli.store import Store  # noqa: E402
-from serve_client import GRACE, ServeCase, make_home, pid_alive, wait_gone  # noqa: E402
+import dockenv  # noqa: E402
+from dockenv import container_running, kill_container, wait_container_gone  # noqa: E402
+from serve_client import GRACE, ServeCase, make_home, require_images  # noqa: E402
 
 
 class PoolOverServe(ServeCase):
-    """Reuse as a client sees it: which process id served each call."""
+    """Reuse as a client sees it: which container served each call."""
 
     def setUp(self):
         super().setUp()
@@ -28,26 +31,39 @@ class PoolOverServe(ServeCase):
     def call(self, c, command, *args, cwd=None):
         return c.start("run", {"command": command, "args": list(args), "cwd": cwd or self.cwd})
 
-    def pid(self, c, *args, command="pid", cwd=None):
-        """Run a call to the end and return the pid of the process that served it."""
+    def cid(self, c, *args, command="pid", cwd=None):
+        """Run a call to the end and return the cid of the process that served it."""
         call = self.call(c, command, *args, cwd=cwd)
         reply = c.wait_reply(call)
         self.assertIn("result", reply)
-        return reply["result"]["pid"]
+        return reply["result"]["cid"]
 
     def test_runs_one_after_the_other_with_the_same_cwd_share_one_process(self):
         c = self.hello_client()
-        first, second, third = (self.pid(c) for _ in range(3))
+        first, second, third = (self.cid(c) for _ in range(3))
         self.assertEqual(first, second)
         self.assertEqual(second, third)
 
+    def test_two_hello_runs_with_the_same_cwd_start_one_container_only(self):
+        # AC16: the second run reuses the warm container; the runtime was asked for one `run`, not two
+        wrapper, log = dockenv.recording_runtime(Path(tempfile.mkdtemp(prefix="dock-pool-rec-")))
+        self.addCleanup(shutil.rmtree, wrapper.parent, True)
+        dockenv.write_config(self.home, wrapper)
+        c = self.hello_client()
+        for name in ("Ada", "Bob"):
+            reply = c.wait_reply(self.call(c, "hello", name))
+            self.assertEqual(reply["result"]["exit_code"], 0, reply)
+        self.assertEqual("".join(n["params"]["text"] for n in c.notes("output")), "hello, Ada!\nhello, Bob!\n")
+        runs = [argv for argv in dockenv.calls_in(log) if argv[0] == "run"]
+        self.assertEqual(len(runs), 1, runs)
+
     def test_runs_with_different_cwds_get_different_processes(self):
         c = self.hello_client()
-        a, b = self.pid(c, cwd=self.cwd), self.pid(c, cwd=self.other_cwd)
+        a, b = self.cid(c, cwd=self.cwd), self.cid(c, cwd=self.other_cwd)
         self.assertNotEqual(a, b)
-        self.assertEqual(self.pid(c, cwd=self.cwd), a)  # each cwd has its own warm one
-        self.assertEqual(self.pid(c, cwd=self.other_cwd), b)
-        self.assertTrue(pid_alive(a) and pid_alive(b))
+        self.assertEqual(self.cid(c, cwd=self.cwd), a)  # each cwd has its own warm one
+        self.assertEqual(self.cid(c, cwd=self.other_cwd), b)
+        self.assertTrue(container_running(a) and container_running(b))
 
     def test_the_plugin_is_told_the_cwd_of_the_call_it_serves(self):
         c = self.hello_client()
@@ -57,74 +73,69 @@ class PoolOverServe(ServeCase):
     def test_runs_at_the_same_time_get_two_processes_and_both_go_back_to_the_pool(self):
         c = self.hello_client()
         a, b = self.call(c, "sleep", "1"), self.call(c, "sleep", "1")
-        pids = {c.wait_reply(a)["result"]["pid"], c.wait_reply(b)["result"]["pid"]}
-        self.assertEqual(len(pids), 2)
+        cids = {c.wait_reply(a)["result"]["cid"], c.wait_reply(b)["result"]["cid"]}
+        self.assertEqual(len(cids), 2)
         both = [self.call(c, "sleep", "1"), self.call(c, "sleep", "1")]
-        later = {c.wait_reply(x)["result"]["pid"] for x in both}
-        self.assertEqual(later, pids)  # the same two warm processes served the next pair
+        later = {c.wait_reply(x)["result"]["cid"] for x in both}
+        self.assertEqual(later, cids)  # the same two warm processes served the next pair
 
     def test_a_run_after_a_cancel_gets_a_new_process(self):
         c = self.hello_client()
-        warm = self.pid(c)
+        warm = self.cid(c)
         victim = self.call(c, "sleep", "60")
         c.wait_until(lambda: c.notes("output", victim), what="the call to start")
-        self.assertEqual(c.pid_of(victim), warm)  # it was served by the warm one
+        self.assertEqual(c.cid_of(victim), warm)  # it was served by the warm one
         c.notify("cancel", {"id": victim})
         self.assertEqual(c.wait_reply(victim)["error"]["code"], -32800)
-        fresh = self.pid(c)
+        fresh = self.cid(c)
         self.assertNotEqual(fresh, warm)
-        self.assertTrue(wait_gone(warm), "the cancelled call's process is still running")
+        self.assertTrue(wait_container_gone(warm), "the cancelled call's process is still running")
 
     def test_a_run_after_a_crash_gets_a_new_process(self):
         c = self.hello_client()
-        warm = self.pid(c)
+        warm = self.cid(c)
         crashed = self.call(c, "crash")
         self.assertIn("error", c.wait_reply(crashed))
-        self.assertNotEqual(self.pid(c), warm)
+        self.assertNotEqual(self.cid(c), warm)
 
     def test_a_process_killed_while_idle_is_not_handed_out_again(self):
-        import os
-        import signal
-
         c = self.hello_client()
-        warm = self.pid(c)
-        os.kill(warm, signal.SIGKILL)
-        wait_gone(warm)
-        self.assertNotEqual(self.pid(c), warm)
+        warm = self.cid(c)
+        kill_container(warm)
+        self.assertTrue(wait_container_gone(warm))
+        self.assertTrue(dockenv.wait_clients_gone(self.home), "dock was never going to notice: the client is still up")
+        self.assertNotEqual(self.cid(c), warm)
 
     def test_an_idle_process_is_closed_after_the_idle_timeout_and_the_next_run_starts_afresh(self):
-        Path(self.home, "config.toml").write_text("[serve]\nidle_timeout = 1\n")
+        dockenv.add_config(self.home, "[serve]\nidle_timeout = 1\n")
         c = self.hello_client()
-        old = self.pid(c)
+        old = self.cid(c)
         time.sleep(2)
-        fresh = self.pid(c)
+        fresh = self.cid(c)
         self.assertNotEqual(fresh, old)
-        self.assertTrue(wait_gone(old), "the idle process is still running")
+        self.assertTrue(wait_container_gone(old), "the idle process is still running")
 
-    def test_shutdown_stops_every_pooled_process_and_leaves_state_empty(self):
+    def test_shutdown_stops_every_pooled_process(self):
         c = self.hello_client()
-        pids = [self.pid(c, cwd=self.cwd), self.pid(c, cwd=self.other_cwd)]
-        self.assertEqual(len(list(Path(self.home, "state").iterdir())), 1)  # provisioned and warm
-        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 3)["result"], {})
+        cids = [self.cid(c, cwd=self.cwd), self.cid(c, cwd=self.other_cwd)]
+        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 10)["result"], {})
         self.assertEqual(c.wait(), 0)
-        for pid in pids:
-            self.assertFalse(pid_alive(pid))
-        self.assertEqual(list(Path(self.home, "state").iterdir()), [])
+        for cid in cids:
+            self.assertFalse(container_running(cid))
 
     def test_end_of_stdin_stops_every_pooled_process_too(self):
         c = self.hello_client()
-        pids = [self.pid(c, cwd=self.cwd), self.pid(c, cwd=self.other_cwd)]
+        cids = [self.cid(c, cwd=self.cwd), self.cid(c, cwd=self.other_cwd)]
         c.close_stdin()
         self.assertEqual(c.wait(), 0)
-        for pid in pids:
-            self.assertFalse(pid_alive(pid))
-        self.assertEqual(list(Path(self.home, "state").iterdir()), [])
+        for cid in cids:
+            self.assertFalse(container_running(cid))
 
     def test_a_stray_message_from_a_pooled_process_with_no_call_does_not_hurt_serve(self):
         c = self.hello_client()
-        self.pid(c, command="late-log")  # the plugin sends a log 0.3 s after answering
+        self.cid(c, command="late-log")  # the plugin sends a log 0.3 s after answering
         time.sleep(1)
-        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 3)["result"], {})
+        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 10)["result"], {})
         self.assertEqual(c.wait(), 0)
         self.assertEqual(c.bad_lines, [])
         self.assertEqual(c.notes("log"), [])  # it belonged to no call: nothing is sent to the client
@@ -154,7 +165,11 @@ class FakeClientUI:
 
 
 class PoolUnit(unittest.TestCase):
-    """The Pool itself, with real Sessions and plugin processes."""
+    """The Pool itself, with real Sessions and plugin containers."""
+
+    @classmethod
+    def setUpClass(cls):
+        require_images()
 
     def setUp(self):
         self.home = make_home("dock-pool-unit-")
@@ -170,19 +185,19 @@ class PoolUnit(unittest.TestCase):
         return pool
 
     def run_once(self, pool, cwd=None, command="pid", args=(), reusable=True):
-        """Lease, run to the end, release. Returns (session, pid)."""
+        """Lease, run to the end, release. Returns (session, cid)."""
         session = pool.lease(self.manifest.id, cwd or self.cwd, FakeClientUI([]))
         result = session.invoke_result(self.manifest, command, list(args))
         proc = session.commands[self.manifest.id].proc
         pool.release(session, reusable and session.commands[self.manifest.id].alive())
-        return session, result["pid"], proc
+        return session, result["cid"], proc
 
     def test_a_released_session_is_leased_again_for_the_same_plugin_and_cwd(self):
         pool = self.pool()
-        first, pid1, _ = self.run_once(pool)
-        second, pid2, _ = self.run_once(pool)
+        first, cid1, _ = self.run_once(pool)
+        second, cid2, _ = self.run_once(pool)
         self.assertIs(first, second)
-        self.assertEqual(pid1, pid2)
+        self.assertEqual(cid1, cid2)
 
     def test_a_session_for_another_cwd_or_plugin_is_not_handed_out(self):
         pool = self.pool()
@@ -192,9 +207,9 @@ class PoolUnit(unittest.TestCase):
 
     def test_a_session_that_is_not_reusable_is_closed_on_release(self):
         pool = self.pool()
-        first, pid, proc = self.run_once(pool, reusable=False)
+        first, cid, proc = self.run_once(pool, reusable=False)
         self.assertEqual(first.procs, [])
-        self.assertTrue(wait_gone(pid))
+        self.assertTrue(wait_container_gone(cid))
         second, _, _ = self.run_once(pool)
         self.assertIsNot(first, second)
 
@@ -207,46 +222,45 @@ class PoolUnit(unittest.TestCase):
     def test_reap_closes_sessions_idle_longer_than_the_timeout_and_keeps_the_others(self):
         clock = [100.0]
         pool = self.pool(idle_timeout=10, reap_interval=3600, clock=lambda: clock[0])
-        old, old_pid, _ = self.run_once(pool, cwd=self.cwd)
+        old, old_cid, _ = self.run_once(pool, cwd=self.cwd)
         clock[0] += 8
-        recent, recent_pid, _ = self.run_once(pool, cwd=tempfile.mkdtemp(prefix="dock-pool-unit-r-"))
+        recent, recent_cid, _ = self.run_once(pool, cwd=tempfile.mkdtemp(prefix="dock-pool-unit-r-"))
         clock[0] += 5  # old: idle 13 s, recent: idle 5 s
         pool.reap()
-        self.assertTrue(wait_gone(old_pid))
+        self.assertTrue(wait_container_gone(old_cid))
         self.assertEqual(old.procs, [])
-        self.assertTrue(pid_alive(recent_pid))
+        self.assertTrue(container_running(recent_cid))
 
     def test_an_idle_timeout_of_zero_never_reaps(self):
         clock = [100.0]
         pool = self.pool(idle_timeout=0, reap_interval=3600, clock=lambda: clock[0])
-        _, pid, _ = self.run_once(pool)
+        _, cid, _ = self.run_once(pool)
         clock[0] += 10**6
         pool.reap()
-        self.assertTrue(pid_alive(pid))
+        self.assertTrue(container_running(cid))
         _, again, _ = self.run_once(pool)
-        self.assertEqual(again, pid)
+        self.assertEqual(again, cid)
 
     def test_the_reaper_thread_closes_idle_sessions_by_itself(self):
         pool = self.pool(idle_timeout=0.5, reap_interval=0.1)
-        _, pid, _ = self.run_once(pool)
-        self.assertTrue(wait_gone(pid, timeout=5), "the reaper did not stop the idle process")
+        _, cid, _ = self.run_once(pool)
+        self.assertTrue(wait_container_gone(cid, timeout=5), "the reaper did not stop the idle process")
 
     def test_past_max_idle_the_oldest_idle_session_is_closed(self):
         pool = self.pool(max_idle=1)
         _, oldest, _ = self.run_once(pool, cwd=self.cwd)
         _, newest, _ = self.run_once(pool, cwd=tempfile.mkdtemp(prefix="dock-pool-unit-n-"))
-        self.assertTrue(wait_gone(oldest))
-        self.assertTrue(pid_alive(newest))
+        self.assertTrue(wait_container_gone(oldest))
+        self.assertTrue(container_running(newest))
 
     def test_close_stops_idle_and_leased_sessions_and_refuses_new_leases(self):
         pool = self.pool()
-        _, idle_pid, _ = self.run_once(pool, cwd=self.cwd)
+        _, idle_cid, _ = self.run_once(pool, cwd=self.cwd)
         leased = pool.lease(self.manifest.id, tempfile.mkdtemp(prefix="dock-pool-unit-l-"), FakeClientUI([]))
-        leased.invoke_result(self.manifest, "pid", [])
-        leased_pid = leased.commands[self.manifest.id].proc.pid
+        leased_cid = leased.invoke_result(self.manifest, "pid", [])["cid"]
         pool.close()
-        self.assertTrue(wait_gone(idle_pid))
-        self.assertTrue(wait_gone(leased_pid))
+        self.assertTrue(wait_container_gone(idle_cid))
+        self.assertTrue(wait_container_gone(leased_cid))
         from cli.process import PluginError
 
         with self.assertRaises(PluginError):

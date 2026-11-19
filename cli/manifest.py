@@ -3,15 +3,12 @@ without running any plugin code."""
 
 from __future__ import annotations
 
-import platform
 import re
-import shutil
-import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from cli import API_VERSION, http_relay
+from cli import API_VERSION
 from cli.inputs import InputSpec, specs_from_toml
 
 
@@ -19,12 +16,22 @@ class ManifestError(Exception):
     pass
 
 
-def platform_key() -> str:
-    """e.g. linux-x86_64, darwin-arm64, windows-x86_64"""
-    os_name = {"linux": "linux", "darwin": "darwin", "win32": "windows"}.get(sys.platform, sys.platform)
-    arch = platform.machine().lower()
-    arch = {"amd64": "x86_64", "aarch64": "arm64"}.get(arch, arch)
-    return f"{os_name}-{arch}"
+class NotAContainerPlugin(ManifestError):
+    """A `[run]` table with no `container` entry, or with an entry for something other than a container."""
+
+
+REMOVED_TABLES = {  # config.toml tables of features dock no longer has: no plugin may be started with one
+    "isolation": "[isolation] was replaced by [container] runtime = \"docker\" (or podman, or a path)",
+    "wasm": "[wasm] is no longer supported: dock runs plugins only in a container",
+    "http": "[http] is no longer supported: HTTP through dock was removed",
+    "providers": "[providers] is no longer supported: capabilities were removed",
+}
+
+
+def check_removed_tables(data: dict, path) -> None:
+    for table, message in REMOVED_TABLES.items():
+        if table in data:
+            raise ManifestError(f"{path}: {message}")
 
 
 @dataclass
@@ -80,71 +87,16 @@ def _container_run(path: Path, root: Path, spec) -> ContainerRun:
 
 
 @dataclass
-class WasmRun:
-    """How to run the plugin under a WASI runtime: its own module, or a script on the shared Python interpreter."""
-    module: str | None = None  # path inside the plugin folder
-    python: str | None = None  # a Python version dock pins, e.g. "3.15"
-    script: str | None = None  # path inside the plugin folder, run by that interpreter
-    args: list[str] = field(default_factory=list)
-
-
-def _inside(path: Path, root: Path, where: str, key: str, value) -> None:
-    if not isinstance(value, str) or not value:
-        raise ManifestError(f"{where} '{key}' must be a path")
-    target = (root / value).resolve()
-    if not target.is_relative_to(root):
-        raise ManifestError(f"{where} '{key}' must stay inside the plugin folder: {value}")
-    if not target.is_file():
-        raise ManifestError(f"{where} '{key}' {value} not found in the plugin folder")
-
-
-def _wasm_run(path: Path, root: Path, spec) -> WasmRun:
-    from cli.wasm import PYTHONS  # wasm imports isolation, which imports this module
-
-    where = f"{path}: [run].wasm"
-    if not isinstance(spec, dict):
-        raise ManifestError(f"{where} must be a table like {{ module = \"...\" }} or {{ python = \"3.15\", script = \"...\" }}")
-    unknown = sorted(set(spec) - {"module", "python", "script", "args"})
-    if unknown:
-        names = ", ".join(repr(k) for k in unknown)
-        raise ManifestError(f"{where} has unknown key{'s' if len(unknown) > 1 else ''} {names} "
-                            "(known: module, python, script, args)")
-    args = spec.get("args", [])
-    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
-        raise ManifestError(f"{where} 'args' must be a list of strings")
-    has_module, has_python = "module" in spec, "python" in spec or "script" in spec
-    if has_module == has_python:
-        raise ManifestError(
-            f"{where} needs exactly one form: {{ module = \"...\" }} or {{ python = \"3.15\", script = \"...\" }}")
-    if has_module:
-        _inside(path, root, where, "module", spec["module"])
-        return WasmRun(module=spec["module"], args=list(args))
-    if "python" not in spec or "script" not in spec:
-        raise ManifestError(f"{where} the python form needs both 'python' and 'script'")
-    version = spec["python"]
-    if not isinstance(version, str) or version not in PYTHONS:
-        raise ManifestError(f"{where} python '{version}' is not one dock provides (known: {', '.join(PYTHONS)})")
-    _inside(path, root, where, "script", spec["script"])
-    return WasmRun(python=version, script=spec["script"], args=list(args))
-
-
-@dataclass
 class Manifest:
     id: str
     version: str
     api_version: str
     description: str
-    run: dict
     root: Path
+    container: ContainerRun  # [run].container: how to run it in the container built from its Dockerfile
     commands: list[Command] = field(default_factory=list)
-    provision: bool = False
     permissions: list[str] = field(default_factory=list)
-    provides: list[str] = field(default_factory=list)  # capabilities other plugins can call
-    requires: list[str] = field(default_factory=list)  # capabilities this plugin calls
-    container: ContainerRun | None = None  # [run].container: how to run it in an isolated container
-    env: list[str] = field(default_factory=list)  # host variables passed into the container (not native runs)
-    wasm: WasmRun | None = None  # [run].wasm: run it as a WASI module; wins over native and container entries
-    http: list[http_relay.HttpRule] = field(default_factory=list)  # [capabilities].http: hosts dock may fetch for it
+    env: list[str] = field(default_factory=list)  # host variables passed into the container, by name
 
     @classmethod
     def load(cls, root: Path) -> Manifest:
@@ -172,18 +124,35 @@ class Manifest:
                 "and must start with a letter or digit (it names folders in the store)"
             )
 
+        run = data["run"]
+        if not isinstance(run, dict):
+            raise ManifestError(f"{path}: [run] must be a table")
+        only = "dock runs plugins only in a container ([run].container)"
+        if "wasm" in run:
+            raise NotAContainerPlugin(f"{data['id']}: [run].wasm: WASM plugins are no longer supported; {only}")
+        for key in run:  # before `container` is read: `any` next to `container` is refused, not quietly accepted
+            if key != "container":
+                raise NotAContainerPlugin(f"{data['id']}: [run].{key}: native plugins are no longer supported; {only}")
+        if "container" not in run:
+            raise NotAContainerPlugin(f"{data['id']}: [run].container is required: dock runs plugins only in a container")
+
         caps = data.get("capabilities", {})
-        if not data.get("commands") and not caps.get("provides"):
-            raise ManifestError(f"{path}: a plugin needs at least one command or one provided capability")
+        if "provision" in data.get("lifecycle", {}):
+            raise ManifestError(f"{data['id']}: [lifecycle].provision is no longer supported")
+        for key in ("provides", "requires"):
+            if key in caps:
+                raise ManifestError(f"{data['id']}: [capabilities].{key}: capabilities are no longer supported")
+        if not data.get("commands"):
+            raise ManifestError(f"{path}: a plugin needs at least one command")
 
         env = _env_names(path, caps)
-        try:
-            http = http_relay.parse_rules(caps.get("http", []))
-        except ValueError as e:
-            raise ManifestError(f"{data['id']}: [capabilities].http: {e}") from e
+        if "http" in caps:
+            raise ManifestError(f"{data['id']}: [capabilities].http: HTTP through dock is no longer supported")
 
         commands = []
         for c in data.get("commands", []):
+            if "requires_permission" in c:
+                raise ManifestError(f"{data['id']}: {c['name']}: requires_permission is no longer supported")
             inputs = None
             if "inputs" in c:
                 try:
@@ -192,68 +161,28 @@ class Manifest:
                     raise ManifestError(f"{path}: {e}") from e
             commands.append(Command(c["name"], c.get("summary", ""), inputs))
 
-        container = None
-        if "container" in data["run"]:
-            container = _container_run(path, root, data["run"]["container"])
-            for part in ("id", "version"):  # they become the image tag dock/<id>:<version>
-                if not _TAG_PART.fullmatch(str(data[part])):
-                    raise ManifestError(
-                        f"{path}: {part} '{data[part]}' cannot be used with [run].container: "
-                        "only letters, digits, '.', '_' and '-', not starting with '.' or '-'"
-                    )
+        container = _container_run(path, root, run["container"])
+        for part in ("id", "version"):  # they become the image tag dock/<id>:<version>
+            if not _TAG_PART.fullmatch(str(data[part])):
+                raise ManifestError(
+                    f"{path}: {part} '{data[part]}' cannot be used with [run].container: "
+                    "only letters, digits, '.', '_' and '-', not starting with '.' or '-'"
+                )
 
-        wasm = None
-        if "wasm" in data["run"]:
-            wasm = _wasm_run(path, root, data["run"]["wasm"])
-            if "network" in caps.get("permissions", []):
-                raise ManifestError(f"{data['id']}: WASM plugins cannot use 'network'")
-            for n in env:  # the guest gets these by value from dock; a declared name would override them
-                if n == "PYTHONHOME":
-                    raise ManifestError(f"{path}: env entry '{n}' is set by dock already")
-                if wasm.python is not None and n.startswith("PYTHON"):
-                    raise ManifestError(
-                        f"{path}: env entry '{n}' is not allowed with the Python form: "
-                        "Python variables would change how the shared interpreter starts"
-                    )
+        if "network:listen" in caps.get("permissions", []):
+            raise ManifestError(f"{data['id']}: permission 'network:listen' is no longer supported")
 
         return cls(
             id=data["id"],
             version=str(data["version"]),
             api_version=str(data["api_version"]),
             description=data.get("description", ""),
-            run=data["run"],
             root=root,
-            commands=commands,
-            provision=bool(data.get("lifecycle", {}).get("provision", False)),
-            permissions=list(caps.get("permissions", [])),
-            provides=list(caps.get("provides", [])),
-            requires=list(caps.get("requires", [])),
             container=container,
+            commands=commands,
+            permissions=list(caps.get("permissions", [])),
             env=env,
-            wasm=wasm,
-            http=http,
         )
 
     def command(self, name: str) -> Command | None:
         return next((c for c in self.commands if c.name == name), None)
-
-    def entrypoint(self) -> list[str]:
-        """Pick the run entry for this machine: exact platform first, then 'any'."""
-        key = platform_key()
-        native = {k: v for k, v in self.run.items() if k not in ("container", "wasm")}  # neither is a native build
-        if not native:
-            raise ManifestError(f"{self.id} has no native build (only a container entry)")
-        spec = native.get(key) or native.get("any")
-        if spec is None:
-            raise ManifestError(f"{self.id} has no build for {key} (has: {', '.join(native)})")
-
-        for tool in spec.get("requires", []):
-            if shutil.which(tool) is None:
-                raise ManifestError(f"{self.id} needs '{tool}' on PATH")
-
-        cmd = spec["cmd"]
-        if "/" in cmd or "\\" in cmd:  # a path inside the plugin, not a tool on PATH
-            cmd = str(self.root / cmd)
-            if not Path(cmd).exists():
-                raise ManifestError(f"{self.id}: {spec['cmd']} not found (did you build it?)")
-        return [cmd, *spec.get("args", [])]

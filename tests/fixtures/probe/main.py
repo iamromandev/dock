@@ -3,6 +3,7 @@
 import json
 import os
 import queue
+import socket
 import sys
 import threading
 import time
@@ -21,6 +22,14 @@ def output(text):
     send({"method": "output", "params": {"text": text + "\n"}})
 
 
+def write_ids():
+    """The pid (as the plugin sees it) and the container id (the hostname Docker sets), for tests to read."""
+    with open(os.path.join(data_dir, "pid"), "w") as f:
+        f.write(str(os.getpid()))
+    with open(os.path.join(data_dir, "cid"), "w") as f:
+        f.write(socket.gethostname())
+
+
 def invoke(command, args, params):
     if command in ("fetch", "echoargs", "noargs"):
         output(json.dumps({"args": args, "inputs": params.get("inputs", "<absent>")}))
@@ -29,12 +38,10 @@ def invoke(command, args, params):
     if command == "crash":
         os._exit(7)
     if command == "pid":
-        with open(os.path.join(data_dir, "pid"), "w") as f:
-            f.write(str(os.getpid()))
+        write_ids()
         output(str(os.getpid()))
     if command == "stubborn":  # ignores cancel: keeps going until the time is up
-        with open(os.path.join(data_dir, "pid"), "w") as f:
-            f.write(str(os.getpid()))
+        write_ids()
         output("stubborn started")
         time.sleep(float(args[0]))
         output("stubborn late")

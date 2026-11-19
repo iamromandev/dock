@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,7 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
+import dockenv  # noqa: E402
 from cli.store import Store  # noqa: E402
 
 
@@ -28,7 +31,7 @@ class ServeClient:
         full_env = {**os.environ, "DOCK_HOME": self.home, "PYTHONPATH": str(ROOT), **(env or {})}
         self.proc = subprocess.Popen(
             [sys.executable, "-m", "cli", "serve"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, env=full_env, cwd=cwd,
+            stderr=subprocess.PIPE, env=full_env, cwd=cwd, **dockenv.SIGINT_DEFAULT,
         )
         self.answer_prompts = answer_prompts
         self.cond = threading.Condition()
@@ -126,10 +129,9 @@ class ServeClient:
     def output_text(self, call) -> str:
         return "".join(n["params"]["text"] for n in self.notes("output", call))
 
-    def pid_of(self, call) -> int:
-        """The pid a pidprobe command printed through `output`."""
-        text = self.output_text(call)
-        return int(text.split("pid ")[1].split()[0])
+    def cid_of(self, call) -> str:
+        """The container id (hostname) a pidprobe command printed through `output`."""
+        return self.output_text(call).split(" cid ")[1].split()[0]
 
     # ending ------------------------------------------------------------------
     def close_stdin(self):
@@ -167,38 +169,48 @@ class ServeClient:
                 pass
 
 
-def pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
-def wait_gone(pid: int, timeout=8.0) -> bool:
-    end = time.monotonic() + timeout
-    while time.monotonic() < end and pid_alive(pid):
-        time.sleep(0.02)
-    return not pid_alive(pid)
-
-
-PLUGINS = ("hello", "download")
-FIXTURES = ("pidprobe", "httpnative", "prompter")
+PLUGINS = ("hello",)
+FIXTURES = ("pidprobe", "prompter")
 GRACE = "2"  # DOCK_CANCEL_GRACE for the children: a stuck plugin is killed after 2 s, so tests stay quick
 
 
+PLUGIN_IDS = ("dev.dock.hello", "dev.dock.pidprobe", "dev.dock.prompter")
+_images_ready = False
+
+
 def make_home(prefix="dock-serve-home-"):
+    """A throwaway DOCK_HOME with hello and the serve fixtures, set to run them in the real runtime."""
     home = Path(tempfile.mkdtemp(prefix=prefix))
     store = Store(home)
     for name in PLUGINS:
         store.install(ROOT / "plugin" / name)
     for name in FIXTURES:
         store.install(ROOT / "tests" / "fixtures" / name)
+    rt = dockenv.runtime()
+    if rt:  # classes that start a plugin call require_images() first, which fails clearly without one
+        dockenv.write_config(home, rt)  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
     return home
+
+
+def require_images():
+    """For setUpClass: a runtime is there (else an error, never a skip) and the plugin images are built."""
+    global _images_ready
+    dockenv.require_runtime()
+    if not _images_ready:
+        home = make_home("dock-serve-prebuild-")
+        try:
+            dockenv.prebuild(home, list(PLUGIN_IDS))
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+        _images_ready = True
 
 
 class ServeCase(unittest.TestCase):
     """A throwaway DOCK_HOME per test, and a client factory that always cleans up."""
+
+    @classmethod
+    def setUpClass(cls):
+        require_images()
 
     def setUp(self):
         self.home = make_home()

@@ -1,5 +1,6 @@
 """Session seams that `dock serve` relies on: a UI factory and an explicit cwd. Run `make test`."""
 
+import os
 import sys
 import tempfile
 import unittest
@@ -8,9 +9,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
+import dockenv  # noqa: E402
 from cli import isolation  # noqa: E402
 from cli.lifecycle import Session  # noqa: E402
+from cli.process import PluginProcess  # noqa: E402
 from cli.store import Store  # noqa: E402
 from cli.ui import TerminalUI  # noqa: E402
 
@@ -42,12 +46,16 @@ class RecordingUI:
         return {"output": self.output, "log": self.log, "progress": self.progress, "prompt_user": self.prompt_user}
 
 
+PLUGINS = (ROOT / "plugin" / "hello", ROOT / "tests" / "fixtures" / "pidprobe")
+
+
 class SessionSeams(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        dockenv.prebuild_plugins(*PLUGINS)
+
     def setUp(self):
-        self.store = Store(Path(tempfile.mkdtemp(prefix="dock-seams-")))
-        for name in ("hello", "llm"):
-            self.store.install(ROOT / "plugin" / name)
-        self.store.install(ROOT / "tests" / "fixtures" / "pidprobe")
+        self.store = Store(dockenv.make_home("dock-seams-", *PLUGINS))
         self.events = []
         self.made = []
 
@@ -74,12 +82,6 @@ class SessionSeams(unittest.TestCase):
         self.assertIn(("dev.dock.hello", "progress", 100.0), self.events)
         self.assertIn(("dev.dock.hello", "output", "counted to 2\n"), self.events)
 
-    def test_a_provider_gets_its_own_ui_from_the_factory(self):
-        session = self.session()
-        proc = session.provider_for("llm")
-        self.assertEqual(self.made, ["dev.dock.llm"])
-        self.assertNotIn("prompt_user", proc.handlers)  # only the command's plugin talks to the user
-
     def test_a_stuck_plugin_is_reported_through_the_factorys_ui(self):
         session = self.session()
         manifest = self.store.get("dev.dock.hello")
@@ -98,10 +100,11 @@ class SessionSeams(unittest.TestCase):
         session = self.session(cwd=project)
         manifest = self.store.get("dev.dock.pidprobe")
         with mock.patch.object(isolation, "prepare", wraps=isolation.prepare) as prepare:
-            session.invoke(manifest, "pid", [])
+            result = session.invoke_result(manifest, "pid", [])
         self.assertEqual(prepare.call_args.kwargs["cwd"], project)
-        self.assertIn(("dev.dock.pidprobe", "output", f"pid {session.commands[manifest.id].proc.pid}\n"),
-                      self.events)
+        self.assertEqual(result["cwd"], project)  # what the plugin was told in `invoke`
+        self.assertTrue(any(who == "dev.dock.pidprobe" and kind == "output" and " cid " in text
+                            for who, kind, text in self.events))
         self.assertEqual(session.cwd, project)
 
     def test_without_a_cwd_the_process_cwd_is_used_as_before(self):
@@ -110,6 +113,48 @@ class SessionSeams(unittest.TestCase):
         with mock.patch.object(isolation, "prepare", wraps=isolation.prepare) as prepare:
             session.invoke(manifest, "pid", [])
         self.assertIsNone(prepare.call_args.kwargs["cwd"])
+
+
+class PluginRequests(unittest.TestCase):
+    """A plugin may only ask the host for output, log, progress and prompt_user: nothing else is answered."""
+
+    def test_a_plugin_request_for_call_or_http_gets_method_not_found(self):
+        store = Store(Path(tempfile.mkdtemp(prefix="dock-seams-")))
+        store.install(ROOT / "plugin" / "hello")
+        proc = PluginProcess(store.get("dev.dock.hello"), os.devnull, {"output": lambda p: None},
+                             isolation.Launch(argv=[], env={}, runtime="docker", container="c"))
+        for method in ("call", "http"):
+            with self.subTest(method=method), mock.patch.object(proc, "_send") as send:
+                proc._handle_incoming({"id": 7, "method": method, "params": {"x": 1}})
+                send.assert_called_once_with({"id": 7, "error": {"code": -32601, "message": f"host has no '{method}'"}})
+
+
+class PluginAsksTheHost(unittest.TestCase):
+    """AC12: a real plugin that sends `call` and `http` requests gets -32601 for each, and `provision` is never sent."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pidprobe = ROOT / "tests" / "fixtures" / "pidprobe"
+        dockenv.prebuild_plugins(cls.pidprobe)
+
+    def test_call_and_http_get_method_not_found_and_the_host_never_sends_provision(self):
+        store = Store(dockenv.make_home("dock-seams-ask-", self.pidprobe))
+        texts = []
+        events = []
+
+        class UI(RecordingUI):
+            def output(self, p):
+                texts.append(p.get("text"))
+
+        session = Session(store, ui_factory=lambda plugin_id: UI(plugin_id, events))
+        manifest = store.get("dev.dock.pidprobe")
+        try:
+            self.assertEqual(session.invoke(manifest, "askhost", []), 0)
+        finally:
+            session.close()
+        self.assertIn("call -32601 http -32601\n", texts)
+        methods = (store.data_dir("dev.dock.pidprobe") / "methods.log").read_text().split()
+        self.assertEqual(methods, ["initialize", "invoke", "shutdown"])  # never provision or unprovision
 
 
 if __name__ == "__main__":

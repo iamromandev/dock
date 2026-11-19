@@ -4,7 +4,7 @@ api_version = "1"
 description = "Test fixture: asks the user a question through the host and echoes the answer"
 
 [run]
-any = { cmd = "python3", args = ["main.py"], requires = ["python3"] }
+container = { cmd = "python3", args = ["/plugin/main.py"] }
 
 [[commands]]
 name = "ask"

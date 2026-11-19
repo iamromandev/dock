@@ -10,7 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
+import dockenv  # noqa: E402
 from cli.inputs import InputSpec, UsageError, parse_args, parse_for, specs_from_toml  # noqa: E402
 from cli.manifest import Manifest  # noqa: E402
 
@@ -254,7 +256,7 @@ id = "dev.dock.bad"
 version = "0.1.0"
 api_version = "1"
 [run]
-any = {{ cmd = "python3", args = ["main.py"], requires = ["python3"] }}
+container = {{ cmd = "python3", args = ["/plugin/main.py"] }}
 [[commands]]
 name = "fetch"
 inputs = [ {inputs} ]
@@ -272,7 +274,7 @@ class DockCase(unittest.TestCase):
     @classmethod
     def dock(cls, *args, stdin=""):
         return subprocess.run([sys.executable, "-m", "cli", *args], input=stdin, capture_output=True,
-                              text=True, check=False, env=cls.env, cwd=ROOT, timeout=30)
+                              text=True, check=False, env=cls.env, cwd=ROOT, timeout=120)
 
     def starts(self):
         log = Path(self.home) / "logs" / "dev.dock.probe.log"
@@ -308,6 +310,14 @@ class InstallRejectsBadDeclarations(DockCase):
 
 
 class TypedInputsE2E(DockCase):
+    """Runs the probe plugin in a real container; the classes above start no plugin and need no runtime."""
+
+    @classmethod
+    def setUpClass(cls):
+        dockenv.prebuild_plugins(ROOT / "tests" / "fixtures" / "probe")
+        super().setUpClass()
+        dockenv.write_config(cls.home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
+
     def invoke(self, *args):
         r = self.dock("fetch", *args)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -358,22 +368,17 @@ class TypedInputsE2E(DockCase):
     def test_short_flag_equals_value(self):
         self.assertEqual(self.invoke("u", "-o=a.txt")["inputs"]["output"], "a.txt")
 
-    def test_bad_args_start_nothing_even_with_stale_provisioned_marker(self):
-        home = tempfile.mkdtemp(prefix="dock-stale-")
+    def test_bad_args_start_nothing(self):
+        home = tempfile.mkdtemp(prefix="dock-badargs-")
         env = {**self.env, "DOCK_HOME": home}
         run = lambda *a: subprocess.run([sys.executable, "-m", "cli", *a], capture_output=True, text=True,
                                         env=env, cwd=ROOT, timeout=30)
-        for name in ("probe", "provprobe"):
-            self.assertEqual(run("plugin", "install", str(ROOT / "tests" / "fixtures" / name)).returncode, 0)
-        marker = Path(home, "state", "dev.dock.provprobe.provisioned")
-        marker.write_text(json.dumps({"version": "0.1.0", "since": 0}))
+        self.assertEqual(run("plugin", "install", str(ROOT / "tests" / "fixtures" / "probe")).returncode, 0)
         r = run("fetch", "u", "--retries", "many")
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertEqual(r.stderr.strip(), "dock: fetch: input 'retries' must be an integer, got 'many'")
-        for plugin_id in ("dev.dock.probe", "dev.dock.provprobe"):
-            log = Path(home, "logs", f"{plugin_id}.log")
-            self.assertEqual(log.read_text().count(" start ") if log.exists() else 0, 0, plugin_id)
-        self.assertTrue(marker.exists())
+        log = Path(home, "logs", "dev.dock.probe.log")
+        self.assertEqual(log.read_text().count(" start ") if log.exists() else 0, 0)
 
     def test_qualified_name_prefixes_error_with_command_part(self):
         r = self.dock("dev.dock.probe:fetch")

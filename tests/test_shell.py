@@ -1,6 +1,5 @@
 """End-to-end tests for the interactive shell. Run `make test`."""
 
-import json
 import os
 import signal
 import subprocess
@@ -14,11 +13,11 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tests"))
 
+import dockenv  # noqa: E402
 from cli import __version__  # noqa: E402
 from cli.lifecycle import Session  # noqa: E402
-from cli.manifest import Manifest  # noqa: E402
-from cli.process import PluginError  # noqa: E402
 from cli.store import Store  # noqa: E402
 from cli.ui import TerminalUI  # noqa: E402
 
@@ -40,7 +39,7 @@ class ShellProc:
     def __init__(self, env, *args):
         self.p = subprocess.Popen(
             [sys.executable, "-m", "cli", *(args or ("shell",))], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=ROOT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env, cwd=ROOT, **dockenv.SIGINT_DEFAULT,
         )
         self.out = ""
         self.err = ""
@@ -92,29 +91,29 @@ class ShellProc:
         self._close()
 
 
-def pid_alive(pid):
-    """True while the process runs (a zombie nobody has reaped yet counts as gone)."""
-    state = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-    return bool(state) and not state.startswith("Z")
-
-
 class ShellE2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.plugins = (ROOT / "plugin" / "hello", ROOT / "tests" / "fixtures" / "probe")
+        dockenv.prebuild_plugins(*cls.plugins)
         cls.home = tempfile.mkdtemp(prefix="dock-shell-home-")
         cls.env = {**os.environ, "DOCK_HOME": cls.home, "PYTHONPATH": str(ROOT)}
-        for path in (ROOT / "plugin" / "hello", ROOT / "plugin" / "llm", ROOT / "plugin" / "chat",
-                     ROOT / "tests" / "fixtures" / "probe", ROOT / "tests" / "fixtures" / "provprobe",
-                     ROOT / "tests" / "fixtures" / "capcaller", ROOT / "tests" / "fixtures" / "capprovider"):
+        for path in cls.plugins:
             r = cls.dock("plugin", "install", str(path))
             assert r.returncode == 0, r.stderr
+        dockenv.write_config(cls.home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
+
+    @staticmethod
+    def cid(home):
+        """The container id the probe wrote when it last ran its `pid` or `stubborn` command."""
+        return Path(home, "data", "dev.dock.probe", "cid").read_text()
 
     @classmethod
     def dock(cls, *args, stdin="", env=None):
         return subprocess.run(
             [sys.executable, "-m", "cli", *args],
             input=stdin, capture_output=True, text=True, check=False,
-            env=env or cls.env, cwd=ROOT, timeout=60,
+            env=env or cls.env, cwd=ROOT, timeout=120, **dockenv.SIGINT_DEFAULT,
         )
 
     def shell(self, stdin, env=None):
@@ -127,24 +126,6 @@ class ShellE2E(unittest.TestCase):
     def setUp(self):
         for f in Path(self.home, "logs").glob("*.log"):
             f.unlink()
-        self.events_path.unlink(missing_ok=True)
-        self.provider_events_path.unlink(missing_ok=True)
-
-    events_path = property(lambda self: Path(self.home, "data", "dev.dock.provprobe", "events"))
-    provider_events_path = property(lambda self: Path(self.home, "data", "dev.dock.capprovider", "events"))
-
-    def events(self, path=None):
-        """Lines of a fixture's event log (provprobe by default), as (pid, event)."""
-        path = path or self.events_path
-        if not path.exists():
-            return []
-        return [(int(pid), name) for pid, name in (l.split() for l in path.read_text().splitlines())]
-
-    def provider_events(self):
-        return [name for _, name in self.events(self.provider_events_path)]
-
-    def markers(self, home=None):
-        return list(Path(home or self.home, "state").glob("*.provisioned"))
 
     def shell_proc(self, env=None, *args):
         sp = ShellProc(env or self.env, *args)
@@ -158,8 +139,9 @@ class ShellE2E(unittest.TestCase):
         for name in plugins:
             r = self.dock("plugin", "install", str(ROOT / "plugin" / name), env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
+        dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
         if config:
-            Path(home, "config.toml").write_text(config)
+            dockenv.add_config(home, config)
         return home, env
 
     # AC1
@@ -199,17 +181,6 @@ class ShellE2E(unittest.TestCase):
         self.assertIn("hello, Bob!", r.stdout)
 
     # AC3 / AC10
-    def test_chat_twice_provisions_llm_once(self):
-        r = self.shell("chat\n/exit\nchat\n/exit\n")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.starts("dev.dock.llm"), 1)
-        self.assertEqual(self.starts("dev.dock.chat"), 1)
-
-    def test_chat_second_invoke_has_no_history(self):
-        r = self.shell("chat\nfirst\n/exit\nchat\nsecond\n/exit\n")
-        self.assertEqual(r.stdout.count("message 1 of our conversation"), 2)  # each chat starts at turn 1
-        self.assertNotIn("message 2 of our conversation", r.stdout)
-
     def test_hello_twice_one_process(self):
         r = self.shell("hello a\nhello b\n")
         self.assertIn("hello, a!", r.stdout)
@@ -252,41 +223,50 @@ class ShellE2E(unittest.TestCase):
         self.assertEqual(self.starts("dev.dock.hello"), 1)
 
     # AC7
-    def test_eof_stops_everything_and_unprovisions(self):
-        r = self.shell("chat\n/exit\npid\n")
+    def test_eof_stops_everything(self):
+        r = self.shell("pid\n")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(list(Path(self.home, "state").glob("*.provisioned")), [])
-        pid = int(Path(self.home, "data", "dev.dock.probe", "pid").read_text())
-        with self.assertRaises(ProcessLookupError):
-            os.kill(pid, 0)
-        self.assertFalse(Path(self.home, "data", "dev.dock.llm", "model.lock").exists())
+        self.assertTrue(dockenv.wait_container_gone(self.cid(self.home)), "the plugin container is still running")
 
     # AC8
     def test_plugin_remove_stops_running_plugin_first(self):
-        # use a private home so the shared one keeps hello
+        # a copy of hello under its own id: a remove drops that image, never the shared hello one
+        tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
+        copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp, "dev.dock.hellorm")
+        self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellorm:0.1.0")
         home = tempfile.mkdtemp(prefix="dock-shell-rm-")
         env = {**self.env, "DOCK_HOME": home}
-        self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
-        r = self.dock("shell", stdin="hello a\nplugin remove dev.dock.hello\nhello b\n", env=env)
-        self.assertIn("removed dev.dock.hello", r.stdout)
+        self.dock("plugin", "install", str(copy), env=env)
+        dockenv.write_config(home, dockenv.require_runtime())
+        r = self.dock("shell", stdin="hello a\nplugin remove dev.dock.hellorm\nhello b\n", env=env)
+        self.assertIn("removed dev.dock.hellorm", r.stdout)
         self.assertIn("unknown command 'hello'", r.stderr)
         self.assertNotIn("hello, b!", r.stdout)
-        log = Path(home, "logs", "dev.dock.hello.log")
+        log = Path(home, "logs", "dev.dock.hellorm.log")
         self.assertEqual(log.read_text().count(" start "), 1)
+        self.assertFalse(dockenv.image_exists("dock/dev.dock.hellorm:0.1.0"))
 
     # AC11
     def _idle_run(self, timeout):
         home = tempfile.mkdtemp(prefix="dock-shell-idle-")
         env = {**self.env, "DOCK_HOME": home}
         self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
-        Path(home, "config.toml").write_text(f"[shell]\nidle_timeout = {timeout}\n")
+        dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
+        dockenv.add_config(home, f"[shell]\nidle_timeout = {timeout}\n")
         p = subprocess.Popen([sys.executable, "-m", "cli", "shell"], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                             env=env, cwd=ROOT)
+                             env=env, cwd=ROOT, **dockenv.SIGINT_DEFAULT)
         p.stdin.write("hello Bob\n")
         p.stdin.flush()
+        seen = ""
+        while "hello, Bob!" not in seen:  # the container start is not instant: idle time counts from the reply
+            line = p.stdout.readline()
+            if line == "":
+                p.kill()
+                self.fail(f"the shell ended before greeting: {p.stderr.read()}")
+            seen += line
         time.sleep(2.5)
-        out, _ = p.communicate("\nstatus\n", timeout=30)
+        out, _ = p.communicate("\nstatus\n", timeout=60)
         return out
 
     def test_idle_plugin_is_stopped_after_timeout(self):
@@ -298,12 +278,13 @@ class ShellE2E(unittest.TestCase):
         self.assertIn("dev.dock.hello", out)
 
     # AC12
-    def test_status_lists_running_plugins_with_provides(self):
-        r = self.shell("status\nchat\n/exit\nstatus\n")
+    def test_status_lists_running_plugins(self):
+        r = self.shell("status\nhello Bob\nstatus\n")
         self.assertIn("no plugins running", r.stdout)
         tail = r.stdout.rsplit("no plugins running", 1)[1]
-        self.assertRegex(tail, r"dev\.dock\.chat\s+running\s+idle 0m0\ds")
-        self.assertRegex(tail, r"dev\.dock\.llm\s+running\s+idle 0m\d\ds\s+provides: llm")
+        self.assertRegex(tail, r"dev\.dock\.hello\s+running\s+idle 0m\d\ds")
+        for removed in ("provides:", "isolated:", "wasm"):  # AC15
+            self.assertNotIn(removed, tail)
 
     # AC13
     def _shell_obj(self):
@@ -320,8 +301,7 @@ class ShellE2E(unittest.TestCase):
         sh = self._shell_obj()
         self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "build", "remove"])
         self.assertEqual(sh.candidates("plugin info dev.dock.", "dev.dock."),
-                         ["dev.dock.capcaller", "dev.dock.capprovider", "dev.dock.chat", "dev.dock.hello",
-                          "dev.dock.llm", "dev.dock.probe", "dev.dock.provprobe"])
+                         ["dev.dock.hello", "dev.dock.probe"])
         self.assertEqual(sh.candidates("plugin build dev.dock.h", "dev.dock.h"), ["dev.dock.hello"])
 
     def test_complete_uses_line_buffer_and_state(self):
@@ -343,6 +323,7 @@ class ShellE2E(unittest.TestCase):
         home = tempfile.mkdtemp(prefix="dock-shell-hist-")
         env = {**self.env, "DOCK_HOME": home}
         self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
+        dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
         r = self.dock("shell", stdin="hello a\n\nnosuch\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.history(home), ["hello a", "nosuch"])
@@ -351,6 +332,7 @@ class ShellE2E(unittest.TestCase):
         home = tempfile.mkdtemp(prefix="dock-shell-hist-")
         env = {**self.env, "DOCK_HOME": home}
         self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
+        dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
         r = self.dock("shell", stdin="help\n" * 1100, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.history(home)), 1000)
@@ -359,6 +341,7 @@ class ShellE2E(unittest.TestCase):
         home = tempfile.mkdtemp(prefix="dock-shell-nort-")
         env = {**self.env, "DOCK_HOME": home, "DOCK_NO_READLINE": "1"}
         self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
+        dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
         r = self.dock("shell", stdin='hello "Ada Lovelace"\nnosuch\n', env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("hello, Ada Lovelace!", r.stdout)
@@ -367,72 +350,15 @@ class ShellE2E(unittest.TestCase):
 
 
     # ---- startup failures and interrupts ---------------------------------------
-    def test_ctrl_c_during_slow_provision_returns_to_prompt_and_unprovisions(self):
-        sh = self.shell_proc({**self.env, "PROVPROBE_PROVISION": "slow"})
-        sh.send("ping")
-        self.assertTrue(wait_until(lambda: ("provision-begin" in [e for _, e in self.events()])))
-        sh.sigint()
-        sh.wait_for(PROMPT, count=2)
-        sh.send("code 3")  # the shell is alive and the session is usable
-        sh.wait_for("exit 3", stream="err")
-        sh.send("status")
-        sh.wait_for("dev.dock.probe")
-        self.assertNotIn("dev.dock.provprobe", sh.out)
-        self.assertEqual(sh.finish(), 0, sh.err)
-        names = [e for _, e in self.events()]
-        self.assertEqual(names.count("unprovision"), 1, names)
-        self.assertEqual(self.markers(), [])
-        self.assertFalse(any(pid_alive(pid) for pid, _ in self.events()))
-
-    def test_one_shot_ctrl_c_during_slow_provision_exits_130_and_unprovisions(self):
-        sh = self.shell_proc({**self.env, "PROVPROBE_PROVISION": "slow"}, "ping")
-        self.assertTrue(wait_until(lambda: ("provision-begin" in [e for _, e in self.events()])))
-        sh.sigint()
-        self.assertEqual(sh.finish(), 130, sh.err)
-        names = [e for _, e in self.events()]
-        self.assertEqual(names.count("unprovision"), 1, names)
-        self.assertEqual(self.markers(), [])
-        self.assertFalse(any(pid_alive(pid) for pid, _ in self.events()))
-
-    def test_failed_provision_twice_leaves_no_process_and_unprovisions_each(self):
-        sh = self.shell_proc({**self.env, "PROVPROBE_PROVISION": "fail"})
-        sh.send("ping")
-        sh.wait_for(PROMPT, count=2)
-        sh.send("status")
-        sh.wait_for("no plugins running")  # nothing half-started is left registered
-        sh.send("ping")
-        sh.wait_for(PROMPT, count=4)
-        sh.send("status")
-        sh.wait_for("no plugins running", count=2)
-        self.assertEqual(sh.finish(), 0, sh.err)
-        self.assertEqual(sh.err.count("provision failed on purpose"), 2, sh.err)
-        names = [e for _, e in self.events()]
-        self.assertEqual(names.count("provision-failed"), 2, names)
-        self.assertEqual(names.count("unprovision"), 2, names)
-        self.assertEqual(self.markers(), [])
-        self.assertFalse(any(pid_alive(pid) for pid, _ in self.events()))
-
-    def test_failed_llm_provision_twice_leaves_nothing_running(self):
-        sh = self.shell_proc({**self.env, "DOCK_LLM_BASE_URL": "http://127.0.0.1:9/v1"})
-        sh.send("chat")
-        sh.wait_for(PROMPT, count=2)
-        sh.send("chat")
-        sh.wait_for(PROMPT, count=3)
-        sh.send("status")
-        sh.wait_for("no plugins running")
-        self.assertEqual(sh.finish(), 0, sh.err)
-        self.assertEqual(sh.err.count("DOCK_LLM_MODEL"), 2, sh.err)
-        self.assertEqual(self.markers(), [])
-
     # ---- cancel that is ignored -------------------------------------------------
     def _assert_stubborn_plugin_replaced(self, sh):
-        pid = int(Path(self.home, "data", "dev.dock.probe", "pid").read_text())
+        cid = self.cid(self.home)
         sh.send("code 2")  # would hang behind the stuck plugin if it were kept
         sh.wait_for("exit 2", stream="err", timeout=20)
         self.assertEqual(sh.finish(), 0, sh.err)
         self.assertNotIn("stubborn late", sh.out)
         self.assertEqual(self.starts("dev.dock.probe"), 2)
-        self.assertFalse(pid_alive(pid))
+        self.assertTrue(dockenv.wait_container_gone(cid), "the stuck plugin container is still running")
 
     def test_second_ctrl_c_stops_a_plugin_that_ignores_cancel(self):
         sh = self.shell_proc()
@@ -452,34 +378,13 @@ class ShellE2E(unittest.TestCase):
         sh.wait_for(PROMPT, count=2, timeout=10)
         self._assert_stubborn_plugin_replaced(sh)
 
-    # ---- crashed provider, exit paths, built-ins ----------------------------------
-    def test_crashed_provider_is_restarted_by_next_use(self):
-        sh = self.shell_proc()
-        sh.send("chat")
-        sh.send("first")
-        sh.send("/exit")
-        sh.wait_for(PROMPT, count=2)
-        pid = json.loads(Path(self.home, "data", "dev.dock.llm", "model.lock").read_text())["pid"]
-        os.kill(pid, signal.SIGKILL)
-        self.assertTrue(wait_until(lambda: not pid_alive(pid)))
-        sh.send("chat")
-        sh.send("second")
-        sh.send("/exit")
-        sh.wait_for("message 1 of our conversation", count=2)
-        self.assertEqual(sh.finish(), 0, sh.err)
-        self.assertEqual(self.starts("dev.dock.llm"), 2)
-        self.assertEqual(self.markers(), [])
-
+    # ---- exit paths, built-ins ----------------------------------
     def test_eof_and_exit_clean_up_the_same_way(self):
         for ending in ("", "exit\n"):
             with self.subTest(ending=ending):
-                self.events_path.unlink(missing_ok=True)
-                r = self.shell("ping\n" + ending)
+                r = self.shell("pid\n" + ending)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                names = [e for _, e in self.events()]
-                self.assertEqual(names.count("unprovision"), 1, names)
-                self.assertEqual(self.markers(), [])
-                self.assertFalse(any(pid_alive(pid) for pid, _ in self.events()))
+                self.assertTrue(dockenv.wait_container_gone(self.cid(self.home)))
 
     def test_builtins_work_inside_the_shell(self):
         r = self.shell("help\nversion\nplugin list\nplugin info dev.dock.hello\n")
@@ -497,20 +402,20 @@ class ShellE2E(unittest.TestCase):
         self.assertNotIn("usage: dock <command>", r.stdout)
 
     def test_plugin_install_of_running_id_stops_it_first(self):
-        home, env = self.private_home("hello")
-        r = self.dock("shell", stdin=f"hello a\nplugin install {ROOT / 'plugin' / 'hello'}\nhello b\n", env=env)
+        # a copy of hello under its own id: a reinstall drops only that copy's image, never the shared hello one
+        tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
+        copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp, "dev.dock.hellocopy")
+        self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellocopy:0.1.0")
+        home = tempfile.mkdtemp(prefix="dock-shell-priv-")
+        env = {**self.env, "DOCK_HOME": home}
+        self.assertEqual(self.dock("plugin", "install", str(copy), env=env).returncode, 0)
+        dockenv.write_config(home, dockenv.require_runtime())
+        r = self.dock("shell", stdin=f"hello a\nplugin install {copy}\nhello b\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("installed dev.dock.hello", r.stdout)
+        self.assertIn("installed dev.dock.hellocopy", r.stdout)
         self.assertIn("hello, b!", r.stdout)
-        log = Path(home, "logs", "dev.dock.hello.log")
+        log = Path(home, "logs", "dev.dock.hellocopy.log")
         self.assertEqual(log.read_text().count(" start "), 2)
-
-    def test_missing_provider_error_keeps_shell_alive(self):
-        home, env = self.private_home("hello", "chat")
-        r = self.dock("shell", stdin="chat\nhello Bob\n", env=env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("no installed plugin provides 'llm'", r.stderr)
-        self.assertIn("hello, Bob!", r.stdout)
 
     def test_unwritable_history_warns_once_and_exits_cleanly(self):
         home, env = self.private_home("hello")
@@ -544,103 +449,30 @@ class ShellE2E(unittest.TestCase):
         self.assertEqual(r.stderr.count("invalid [shell] idle_timeout"), 1, r.stderr)
         self.assertIn("hello, b!", r.stdout)
 
-    def test_broken_config_toml_is_reported_once_and_shell_survives(self):
+    def test_a_broken_config_toml_stops_every_plugin_start_but_the_shell_survives(self):
         home, env = self.private_home("hello", config="[shell\n")
-        r = self.dock("shell", stdin="hello a\nhello b\nstatus\n", env=env)
+        r = self.dock("shell", stdin="hello a\nhello b\nstatus\nversion\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stderr.count("config.toml"), 1, r.stderr)
-        self.assertIn("hello, a!", r.stdout)
-        self.assertIn("hello, b!", r.stdout)
-        self.assertEqual(Path(home, "logs", "dev.dock.hello.log").read_text().count(" start "), 1)
-
-    # ---- Ctrl-C while a command waits on a provider ------------------------------------
-    def test_ctrl_c_mid_call_lets_the_provider_finish_cancelling(self):
-        sh = self.shell_proc()
-        sh.send("callcap")
-        sh.wait_for("tick")  # the provider is mid-call and streaming
-        sh.sigint()
-        sh.wait_for(PROMPT, count=2)
-        sh.send("callcap")  # reuses the provider: no second initialize or provision
-        self.assertTrue(wait_until(lambda: self.provider_events().count("call-begin") == 2))
-        sh.sigint()
-        sh.wait_for(PROMPT, count=3)
-        self.assertEqual(sh.finish(), 0, sh.err)
-        self.assertNotIn("did not stop", sh.err)
-        names = self.provider_events()
-        self.assertEqual(names.count("initialize"), 1, names)
-        self.assertEqual(names.count("provision"), 1, names)
-        self.assertEqual(names.count("call-cancelled"), 2, names)
-        self.assertEqual(names.count("unprovision"), 1, names)
-        self.assertEqual(self.starts("dev.dock.capprovider"), 1)
-        self.assertEqual(self.markers(), [])
-
-    def test_one_shot_ctrl_c_mid_call_exits_130_and_unprovisions_the_provider(self):
-        sh = self.shell_proc(self.env, "callcap")
-        sh.wait_for("tick")
-        sh.sigint()
-        self.assertEqual(sh.finish(), 130, sh.err)
-        self.assertNotIn("did not stop", sh.err)
-        names = self.provider_events()
-        self.assertEqual(names.count("call-cancelled"), 1, names)
-        self.assertEqual(names.count("unprovision"), 1, names)
-        self.assertEqual(self.markers(), [])
-
-    # ---- a force-killed provisioned plugin ----------------------------------------------
-    def test_force_killed_plugin_keeps_marker_until_the_next_process_unprovisions(self):
-        marker = Path(self.home, "state", "dev.dock.provprobe.provisioned")
-        sh = self.shell_proc()
-        sh.send("ping stuck")
-        sh.wait_for("stuck")
-        sh.sigint()
-        sh.wait_for("cancelling", stream="err")
-        sh.sigint()  # stop waiting: the plugin ignores cancel
-        sh.wait_for("did not stop", stream="err")
-        sh.wait_for(PROMPT, count=2)
-        self.assertTrue(marker.exists(), "marker must survive a kill: unprovision was skipped")
-        first_marker = marker.read_text()
-        first_pid = self.events()[0][0]
-        self.assertNotIn((first_pid, "unprovision"), self.events())
-
-        sh.send("ping")  # a new process provisions again and rewrites the marker
-        sh.wait_for("pong")
-        self.assertTrue(marker.exists())
-        self.assertNotEqual(marker.read_text(), first_marker)
-        self.assertEqual(sh.finish(), 0, sh.err)
-
-        events = self.events()
-        second_pid = next(pid for pid, _ in events if pid != first_pid)
-        self.assertIn((second_pid, "provision-begin"), events)
-        self.assertIn((second_pid, "unprovision"), events)
-        self.assertNotIn((first_pid, "unprovision"), events)
-        self.assertFalse(marker.exists())
+        self.assertGreaterEqual(r.stderr.count("config.toml"), 2, r.stderr)  # each start is refused, loudly
+        self.assertNotIn("hello, a!", r.stdout)
+        self.assertNotIn("hello, b!", r.stdout)
+        self.assertIn("no plugins running", r.stdout)
+        self.assertIn(f"dock {__version__}", r.stdout)  # built-ins that start no plugin still work
+        self.assertFalse(Path(home, "logs", "dev.dock.hello.log").exists(), "a plugin process was started")
 
 
 class SessionUnit(unittest.TestCase):
-    """Session behaviour that needs no subprocess to observe."""
+    """Session behaviour that needs no subprocess of the test to observe."""
+
+    @classmethod
+    def setUpClass(cls):
+        dockenv.prebuild_plugins(ROOT / "plugin" / "hello")
 
     def setUp(self):
-        self.home = Path(tempfile.mkdtemp(prefix="dock-session-"))
+        self.home = dockenv.make_home("dock-session-", ROOT / "plugin" / "hello")
         self.store = Store(self.home)
-        for name in ("hello", "llm"):
-            self.store.install(ROOT / "plugin" / name)
         self.session = Session(self.store)
         self.addCleanup(self.session.close)
-
-    def test_call_cleans_up_event_handler_and_survives_a_gone_caller(self):
-        def gone(*_a, **_k):
-            raise PluginError("caller is gone")
-
-        caller = mock.Mock()
-        caller.manifest.id = "dev.dock.caller"
-        caller.manifest.requires = ["llm"]
-        caller.notify.side_effect = gone
-        result = self.session._call(caller, {
-            "capability": "llm", "method": "generate",
-            "params": {"messages": [{"role": "user", "content": "hello"}]},
-        })
-        self.assertIn("toy model", result["text"])
-        self.assertGreater(caller.notify.call_count, 0)
-        self.assertNotIn("event", self.session.providers["llm"].handlers)
 
     def test_stop_proc_drops_replies_still_queued_for_it(self):
         manifest = self.store.get("dev.dock.hello")
@@ -650,12 +482,6 @@ class SessionUnit(unittest.TestCase):
         self.session.hub.replies[(other, 99)] = {"id": 99}
         self.session.stop_proc(proc)
         self.assertEqual(list(self.session.hub.replies), [(other, 99)])
-
-    def test_provider_for_refreshes_last_used_when_reusing_a_warm_provider(self):
-        provider = self.session.provider_for("llm")
-        self.session.last_used[provider] = time.monotonic() - 1000
-        self.assertIs(self.session.provider_for("llm"), provider)
-        self.assertLess(time.monotonic() - self.session.last_used[provider], 5)
 
     def test_messages_from_a_forgotten_process_are_ignored(self):
         manifest = self.store.get("dev.dock.hello")
