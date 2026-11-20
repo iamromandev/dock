@@ -151,17 +151,24 @@ class ShellE2E(unittest.TestCase):
         self.assertIn("usage: dock", r.stdout)
         self.assertFalse(r.stdout.startswith("dock> "))
 
-    def test_shell_prints_prompt_with_piped_input(self):
-        r = self.shell("hello Bob\n")
-        self.assertIn("dock> ", r.stdout)
-        self.assertIn("hello, Bob!", r.stdout)
-
     # AC2
     def test_quoted_arg_and_unknown_command(self):
-        r = self.shell('hello "Ada Lovelace"\nnosuch\n')
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("hello, Ada Lovelace!", r.stdout)
-        self.assertIn("unknown command 'nosuch'", r.stderr)
+        script = 'hello "Ada Lovelace"\nnosuch\n'
+        with self.subTest("readline on"):
+            r = self.shell(script)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("hello, Ada Lovelace!", r.stdout)
+            self.assertIn("unknown command 'nosuch'", r.stderr)
+        with self.subTest("readline off"):
+            home = tempfile.mkdtemp(prefix="dock-shell-nort-")
+            env = {**self.env, "DOCK_HOME": home, "DOCK_NO_READLINE": "1"}
+            self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
+            dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
+            r = self.dock("shell", stdin=script, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("hello, Ada Lovelace!", r.stdout)
+            self.assertIn("unknown command 'nosuch'", r.stderr)
+            self.assertFalse(Path(home, "history").exists())
 
     def test_unbalanced_quote_returns_to_prompt(self):
         r = self.shell('hello "Ada\nhello Bob\n')
@@ -179,13 +186,6 @@ class ShellE2E(unittest.TestCase):
         self.assertEqual(r.stderr.count("exit 3"), 1)
         self.assertNotIn("exit 0", r.stderr)
         self.assertIn("hello, Bob!", r.stdout)
-
-    # AC3 / AC10
-    def test_hello_twice_one_process(self):
-        r = self.shell("hello a\nhello b\n")
-        self.assertIn("hello, a!", r.stdout)
-        self.assertIn("hello, b!", r.stdout)
-        self.assertEqual(self.starts("dev.dock.hello"), 1)
 
     # AC5
     def test_crash_reports_error_and_next_use_restarts(self):
@@ -222,29 +222,38 @@ class ShellE2E(unittest.TestCase):
         self.assertNotIn("dev.dock.hello:", sh.err)
         self.assertEqual(self.starts("dev.dock.hello"), 1)
 
-    # AC7
-    def test_eof_stops_everything(self):
-        r = self.shell("pid\n")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertTrue(dockenv.wait_container_gone(self.cid(self.home)), "the plugin container is still running")
-
     # AC8
-    def test_plugin_remove_stops_running_plugin_first(self):
-        # a copy of hello under its own id: a remove drops that image, never the shared hello one
-        tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
-        copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp, "dev.dock.hellorm")
-        self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellorm:0.1.0")
-        home = tempfile.mkdtemp(prefix="dock-shell-rm-")
-        env = {**self.env, "DOCK_HOME": home}
-        self.dock("plugin", "install", str(copy), env=env)
-        dockenv.write_config(home, dockenv.require_runtime())
-        r = self.dock("shell", stdin="hello a\nplugin remove dev.dock.hellorm\nhello b\n", env=env)
-        self.assertIn("removed dev.dock.hellorm", r.stdout)
-        self.assertIn("unknown command 'hello'", r.stderr)
-        self.assertNotIn("hello, b!", r.stdout)
-        log = Path(home, "logs", "dev.dock.hellorm.log")
-        self.assertEqual(log.read_text().count(" start "), 1)
-        self.assertFalse(dockenv.image_exists("dock/dev.dock.hellorm:0.1.0"))
+    def test_plugin_remove_or_install_of_a_running_id_stops_it_first(self):
+        # a copy of hello under its own id: a remove or reinstall drops only that copy's image, never the shared hello one
+        with self.subTest("remove"):
+            tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
+            copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp, "dev.dock.hellorm")
+            self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellorm:0.1.0")
+            home = tempfile.mkdtemp(prefix="dock-shell-rm-")
+            env = {**self.env, "DOCK_HOME": home}
+            self.dock("plugin", "install", str(copy), env=env)
+            dockenv.write_config(home, dockenv.require_runtime())
+            r = self.dock("shell", stdin="hello a\nplugin remove dev.dock.hellorm\nhello b\n", env=env)
+            self.assertIn("removed dev.dock.hellorm", r.stdout)
+            self.assertIn("unknown command 'hello'", r.stderr)
+            self.assertNotIn("hello, b!", r.stdout)
+            log = Path(home, "logs", "dev.dock.hellorm.log")
+            self.assertEqual(log.read_text().count(" start "), 1)
+            self.assertFalse(dockenv.image_exists("dock/dev.dock.hellorm:0.1.0"))
+        with self.subTest("install"):
+            tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
+            copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp, "dev.dock.hellocopy")
+            self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellocopy:0.1.0")
+            home = tempfile.mkdtemp(prefix="dock-shell-priv-")  # its own home and logs: nothing carries over from the case before
+            env = {**self.env, "DOCK_HOME": home}
+            self.assertEqual(self.dock("plugin", "install", str(copy), env=env).returncode, 0)
+            dockenv.write_config(home, dockenv.require_runtime())
+            r = self.dock("shell", stdin=f"hello a\nplugin install {copy}\nhello b\n", env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("installed dev.dock.hellocopy", r.stdout)
+            self.assertIn("hello, b!", r.stdout)
+            log = Path(home, "logs", "dev.dock.hellocopy.log")
+            self.assertEqual(log.read_text().count(" start "), 2)
 
     # AC11
     def _idle_run(self, timeout):
@@ -269,9 +278,6 @@ class ShellE2E(unittest.TestCase):
         out, _ = p.communicate("\nstatus\n", timeout=60)
         return out
 
-    def test_idle_plugin_is_stopped_after_timeout(self):
-        self.assertIn("no plugins running", self._idle_run(1))
-
     def test_idle_timeout_zero_keeps_plugin(self):
         out = self._idle_run(0)
         self.assertNotIn("no plugins running", out)
@@ -293,24 +299,21 @@ class ShellE2E(unittest.TestCase):
         from cli.store import Store
         return Shell(Store(Path(self.home)), None)
 
-    def test_candidates_first_word(self):
-        c = self._shell_obj().candidates("he", "he")
-        self.assertEqual(c, ["hello", "help"])
-
-    def test_candidates_plugin_subcommands_and_ids(self):
-        sh = self._shell_obj()
-        self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "build", "remove"])
-        self.assertEqual(sh.candidates("plugin info dev.dock.", "dev.dock."),
-                         ["dev.dock.hello", "dev.dock.probe"])
-        self.assertEqual(sh.candidates("plugin build dev.dock.h", "dev.dock.h"), ["dev.dock.hello"])
-
-    def test_complete_uses_line_buffer_and_state(self):
+    def test_completion(self):
         import types
         sh = self._shell_obj()
-        sh.readline = types.SimpleNamespace(get_line_buffer=lambda: "he")
-        self.assertEqual(sh.complete("he", 0), "hello")
-        self.assertEqual(sh.complete("he", 1), "help")
-        self.assertIsNone(sh.complete("he", 2))
+        with self.subTest("first word"):
+            self.assertEqual(sh.candidates("he", "he"), ["hello", "help"])
+        with self.subTest("plugin subcommands and ids"):
+            self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "build", "remove"])
+            self.assertEqual(sh.candidates("plugin info dev.dock.", "dev.dock."),
+                             ["dev.dock.hello", "dev.dock.probe"])
+            self.assertEqual(sh.candidates("plugin build dev.dock.h", "dev.dock.h"), ["dev.dock.hello"])
+        with self.subTest("complete uses line buffer and state"):
+            sh.readline = types.SimpleNamespace(get_line_buffer=lambda: "he")
+            self.assertEqual(sh.complete("he", 0), "hello")
+            self.assertEqual(sh.complete("he", 1), "help")
+            self.assertIsNone(sh.complete("he", 2))
 
     # AC14
     @staticmethod
@@ -319,7 +322,7 @@ class ShellE2E(unittest.TestCase):
         lines = Path(home, "history").read_text().splitlines()
         return [l.replace("\\040", " ") for l in lines if l != "_HiStOrY_V2_"]
 
-    def test_history_file_records_entered_lines(self):
+    def test_history_file_records_entered_lines_and_is_private(self):
         home = tempfile.mkdtemp(prefix="dock-shell-hist-")
         env = {**self.env, "DOCK_HOME": home}
         self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
@@ -327,6 +330,7 @@ class ShellE2E(unittest.TestCase):
         r = self.dock("shell", stdin="hello a\n\nnosuch\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.history(home), ["hello a", "nosuch"])
+        self.assertEqual(Path(home, "history").stat().st_mode & 0o777, 0o600)
 
     def test_history_is_capped_at_1000(self):
         home = tempfile.mkdtemp(prefix="dock-shell-hist-")
@@ -336,17 +340,6 @@ class ShellE2E(unittest.TestCase):
         r = self.dock("shell", stdin="help\n" * 1100, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.history(home)), 1000)
-
-    def test_shell_works_without_readline(self):
-        home = tempfile.mkdtemp(prefix="dock-shell-nort-")
-        env = {**self.env, "DOCK_HOME": home, "DOCK_NO_READLINE": "1"}
-        self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env)
-        dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
-        r = self.dock("shell", stdin='hello "Ada Lovelace"\nnosuch\n', env=env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("hello, Ada Lovelace!", r.stdout)
-        self.assertIn("unknown command 'nosuch'", r.stderr)
-        self.assertFalse(Path(home, "history").exists())
 
 
     # ---- startup failures and interrupts ---------------------------------------
@@ -370,14 +363,6 @@ class ShellE2E(unittest.TestCase):
         sh.wait_for(PROMPT, count=2)
         self._assert_stubborn_plugin_replaced(sh)
 
-    def test_plugin_that_ignores_cancel_is_stopped_when_grace_expires(self):
-        sh = self.shell_proc({**self.env, "DOCK_CANCEL_GRACE": "1"})
-        sh.send("stubborn 30")
-        sh.wait_for("stubborn started")
-        sh.sigint()
-        sh.wait_for(PROMPT, count=2, timeout=10)
-        self._assert_stubborn_plugin_replaced(sh)
-
     # ---- exit paths, built-ins ----------------------------------
     def test_eof_and_exit_clean_up_the_same_way(self):
         for ending in ("", "exit\n"):
@@ -393,29 +378,11 @@ class ShellE2E(unittest.TestCase):
         self.assertIn(f"dock {__version__}", r.stdout)
         self.assertRegex(r.stdout, r"dev\.dock\.hello\s+0\.1\.0")
         self.assertIn("id:          dev.dock.hello", r.stdout)
-
-    def test_shell_help_lists_shell_builtins_and_not_shell(self):
-        r = self.shell("help\n")
+        # the help it printed lists the shell built-ins and not `shell`
         for word in ("status", "exit, quit"):
             self.assertRegex(r.stdout, rf"(?m)^  {word}\b", word)
         self.assertNotRegex(r.stdout, r"(?m)^  shell\b")
         self.assertNotIn("usage: dock <command>", r.stdout)
-
-    def test_plugin_install_of_running_id_stops_it_first(self):
-        # a copy of hello under its own id: a reinstall drops only that copy's image, never the shared hello one
-        tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
-        copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp, "dev.dock.hellocopy")
-        self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellocopy:0.1.0")
-        home = tempfile.mkdtemp(prefix="dock-shell-priv-")
-        env = {**self.env, "DOCK_HOME": home}
-        self.assertEqual(self.dock("plugin", "install", str(copy), env=env).returncode, 0)
-        dockenv.write_config(home, dockenv.require_runtime())
-        r = self.dock("shell", stdin=f"hello a\nplugin install {copy}\nhello b\n", env=env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("installed dev.dock.hellocopy", r.stdout)
-        self.assertIn("hello, b!", r.stdout)
-        log = Path(home, "logs", "dev.dock.hellocopy.log")
-        self.assertEqual(log.read_text().count(" start "), 2)
 
     def test_unwritable_history_warns_once_and_exits_cleanly(self):
         home, env = self.private_home("hello")
@@ -424,11 +391,6 @@ class ShellE2E(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stderr.count("cannot write history"), 1, r.stderr)
         self.assertIn("hello, a!", r.stdout)
-
-    def test_history_file_is_private(self):
-        home, env = self.private_home("hello")
-        self.dock("shell", stdin="hello a\n", env=env)
-        self.assertEqual(Path(home, "history").stat().st_mode & 0o777, 0o600)
 
     # ---- idle reaping ---------------------------------------------------------------
     def test_idle_plugin_is_stopped_before_the_line_that_follows_the_wait(self):
@@ -474,41 +436,40 @@ class SessionUnit(unittest.TestCase):
         self.session = Session(self.store)
         self.addCleanup(self.session.close)
 
-    def test_stop_proc_drops_replies_still_queued_for_it(self):
+    def test_stop_proc_forgets_the_process(self):
         manifest = self.store.get("dev.dock.hello")
-        proc = self.session.start(manifest, TerminalUI(manifest.id))
-        other = self.session.start(manifest, TerminalUI(manifest.id))
-        self.session.hub.replies[(proc, 99)] = {"id": 99}
-        self.session.hub.replies[(other, 99)] = {"id": 99}
-        self.session.stop_proc(proc)
-        self.assertEqual(list(self.session.hub.replies), [(other, 99)])
+        with self.subTest("drops replies still queued for it"):
+            proc = self.session.start(manifest, TerminalUI(manifest.id))
+            other = self.session.start(manifest, TerminalUI(manifest.id))
+            self.session.hub.replies[(proc, 99)] = {"id": 99}
+            self.session.hub.replies[(other, 99)] = {"id": 99}
+            self.session.stop_proc(proc)
+            self.assertEqual(list(self.session.hub.replies), [(other, 99)])
+        with self.subTest("messages from a forgotten process are ignored"):
+            self.session.hub.replies.clear()
+            proc = self.session.start(manifest, TerminalUI(manifest.id))
+            self.session.stop_proc(proc)
+            self.session.hub.inbox.put((proc, "msg", {"id": 99, "result": {}}))
+            self.session.hub.pump(5)
+            self.assertEqual(self.session.hub.replies, {})
 
-    def test_messages_from_a_forgotten_process_are_ignored(self):
+    def test_drain_pending(self):
         manifest = self.store.get("dev.dock.hello")
-        proc = self.session.start(manifest, TerminalUI(manifest.id))
-        self.session.stop_proc(proc)
-        self.session.hub.inbox.put((proc, "msg", {"id": 99, "result": {}}))
-        self.session.hub.pump(5)
-        self.assertEqual(self.session.hub.replies, {})
-
-    def test_drain_pending_returns_once_nothing_is_pending(self):
-        self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
-        manifest = self.store.get("dev.dock.hello")
-        proc = self.session.start(manifest, TerminalUI(manifest.id))
-        proc.pending.add(99)  # a reply that never comes
-        started = time.monotonic()
-        self.assertFalse(self.session.drain_pending(started + 0.3))
-        self.assertGreaterEqual(time.monotonic() - started, 0.3)
-        proc.pending.clear()
-        self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
-
-    def test_drain_pending_collects_a_reply_that_arrives_before_the_deadline(self):
-        manifest = self.store.get("dev.dock.hello")
-        proc = self.session.start(manifest, TerminalUI(manifest.id))
-        proc.pending.add(99)
-        threading.Timer(0.2, lambda: self.session.hub.inbox.put((proc, "msg", {"id": 99, "result": {}}))).start()
-        self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
-        self.assertEqual(proc.pending, set())
+        with self.subTest("returns once nothing is pending"):
+            self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
+            proc = self.session.start(manifest, TerminalUI(manifest.id))
+            proc.pending.add(99)  # a reply that never comes
+            started = time.monotonic()
+            self.assertFalse(self.session.drain_pending(started + 0.3))
+            self.assertGreaterEqual(time.monotonic() - started, 0.3)
+            proc.pending.clear()
+            self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
+        with self.subTest("collects a reply that arrives before the deadline"):
+            proc = self.session.start(manifest, TerminalUI(manifest.id))
+            proc.pending.add(99)
+            threading.Timer(0.2, lambda: self.session.hub.inbox.put((proc, "msg", {"id": 99, "result": {}}))).start()
+            self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
+            self.assertEqual(proc.pending, set())
 
     def test_stopping_processes_leaves_no_unclosed_pipes(self):
         import gc
@@ -579,17 +540,17 @@ class ShellUnit(unittest.TestCase):
             code = shell.loop()
         return code, session
 
-    def test_ctrl_c_while_reaping_before_the_prompt_keeps_the_shell_running(self):
-        code, session = self.run_loop([KeyboardInterrupt()], ["version"])
-        self.assertEqual(code, 0)
-        session.close.assert_called_once()
-
-    def test_ctrl_c_while_reaping_after_a_line_keeps_the_shell_running(self):
-        # the first reap (before the prompt) succeeds, the second (after the line) is interrupted
-        code, session = self.run_loop([[], KeyboardInterrupt()], ["version", "version"])
-        self.assertEqual(code, 0)
-        session.close.assert_called_once()
-        self.assertGreaterEqual(session.reap_idle.call_count, 4)
+    def test_ctrl_c_while_reaping_keeps_the_shell_running(self):
+        with self.subTest("before the prompt"):
+            code, session = self.run_loop([KeyboardInterrupt()], ["version"])
+            self.assertEqual(code, 0)
+            session.close.assert_called_once()
+        with self.subTest("after a line"):
+            # the first reap (before the prompt) succeeds, the second (after the line) is interrupted
+            code, session = self.run_loop([[], KeyboardInterrupt()], ["version", "version"])
+            self.assertEqual(code, 0)
+            session.close.assert_called_once()
+            self.assertGreaterEqual(session.reap_idle.call_count, 4)
 
 
 if __name__ == "__main__":

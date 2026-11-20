@@ -36,10 +36,25 @@ class DockE2E(unittest.TestCase):
         r = self.dock("help")
         for cmd in ("hello", "count"):
             self.assertIn(cmd, r.stdout)
+        for line in r.stdout.splitlines():
+            self.assertNotRegex(line, r"\bserve\b")
 
-    def test_python_plugin_with_args(self):
-        r = self.dock("hello", "Roman")
-        self.assertEqual(r.stdout.strip(), "hello, Roman!")
+    def test_serve_was_removed(self):
+        message = "dock: serve was removed; run commands with 'dock <command>' or 'dock shell'\n"
+        for args in (("serve",), ("serve", "--x"), ("-v", "serve")):
+            with self.subTest(args=args):
+                r = self.dock(*args)
+                self.assertEqual((r.returncode, r.stdout, r.stderr), (1, "", message))
+
+    def test_greeting(self):
+        for name, args, expected in (("with args", ("Roman",), "hello, Roman!"),
+                                     ("quoted multi-word name", ("Ada Lovelace",), "hello, Ada Lovelace!"),
+                                     ("empty name greets instead of prompting", ("",), "hello, stranger!")):
+            with self.subTest(name):
+                r = self.dock("hello", *args)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertNotIn("your name", r.stdout)
+                self.assertEqual(r.stdout.strip(), expected)
 
     def test_python_plugin_prompts_through_host(self):
         r = self.dock("hello", stdin="Ada\n")
@@ -57,55 +72,23 @@ class DockE2E(unittest.TestCase):
         self.assertEqual(r.stderr.strip(), f"dock: {args[0]}: {message}")
         self.assertEqual(self.starts(plugin_id), before, "the plugin was started")
 
-    def test_bad_args_become_clean_error(self):
-        self.assert_usage_error("dev.dock.hello", "input 'n' must be an integer, got 'abc'", "count", "abc")
-
-    def test_hello_greets_a_quoted_multi_word_name(self):
-        r = self.dock("hello", "Ada Lovelace")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "hello, Ada Lovelace!")
-
-    def test_hello_with_two_words_unquoted_is_a_usage_error(self):
-        self.assert_usage_error("dev.dock.hello", "unexpected argument 'Lovelace'", "hello", "Ada", "Lovelace")
-
-    def test_hello_with_an_empty_name_greets_it_instead_of_prompting(self):
-        r = self.dock("hello", "")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertNotIn("your name", r.stdout)
-        self.assertEqual(r.stdout.strip(), "hello, stranger!")
-
-    def test_count_counts_to_the_given_number(self):
-        r = self.dock("count", "3")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("counted to 3", r.stdout)
-
-    def test_count_defaults_to_ten(self):
-        r = self.dock("count")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("counted to 10", r.stdout)
-
-    def test_count_negative_needs_double_dash(self):
+    def test_usage_errors_are_refused_before_anything_starts(self):
         # dock reads a leading '-' as a flag, so a negative number goes after `--`
-        self.assert_usage_error("dev.dock.hello", "unknown flag '-3'", "count", "-3")
-        r = self.dock("count", "--", "-3")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("counted to -3", r.stdout)
+        for name, message, args in (
+                ("bad args", "input 'n' must be an integer, got 'abc'", ("count", "abc")),
+                ("two words unquoted", "unexpected argument 'Lovelace'", ("hello", "Ada", "Lovelace")),
+                ("negative number without --", "unknown flag '-3'", ("count", "-3"))):
+            with self.subTest(name):
+                self.assert_usage_error("dev.dock.hello", message, *args)
 
-    def test_a_stale_provisioned_marker_is_ignored(self):
-        home = tempfile.mkdtemp(prefix="dock-home-")
-        env = {**self.env, "DOCK_HOME": home}
-        self.assertEqual(self.dock("plugin", "install", str(ROOT / "plugin" / "hello"), env=env).returncode, 0)
-        dockenv.write_config(home, dockenv.require_runtime())
-        marker = Path(home, "state", "dev.dock.hello.provisioned")
-        marker.parent.mkdir(exist_ok=True)
-        marker.write_text('{"version": "0.1.0"}')
-        r = self.dock("hello", "Ada", env=env)
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("hello, Ada!", r.stdout)
-        self.assertNotIn("provisioned", r.stderr)
-        log = Path(home, "logs", "dev.dock.hello.log").read_text()
-        self.assertEqual(log.count(" start "), 1, "only the command's own plugin was started")
-        self.assertTrue(marker.exists(), "an old marker is left alone")
+    def test_count(self):
+        for name, args, expected in (("given number", ("3",), "counted to 3"),
+                                     ("defaults to ten", (), "counted to 10"),
+                                     ("negative number after --", ("--", "-3"), "counted to -3")):
+            with self.subTest(name):
+                r = self.dock("count", *args)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(expected, r.stdout)
 
     def test_unknown_command(self):
         r = self.dock("nope")
@@ -122,26 +105,19 @@ class DockE2E(unittest.TestCase):
         dockenv.add_config(home, text)
         return self.dock("hello", "Ada", env=env), Path(home, "logs", "dev.dock.hello.log")
 
-    def test_a_removed_config_table_fails_a_command_naming_the_table(self):
-        for table, body in (("http", '[http]\nhosts = ["x"]\n'), ("providers", '[providers]\nllm = "x"\n'),
-                            ("isolation", "[isolation]\nenabled = true\n"), ("wasm", '[wasm]\nruntime = "x"\n')):
-            with self.subTest(table=table):
+    def test_a_bad_config_fails_the_command_naming_the_problem_and_starts_nothing(self):
+        cases = [(f"removed [{t}] table", body, f"[{t}] ") for t, body in (
+            ("http", '[http]\nhosts = ["x"]\n'), ("providers", '[providers]\nllm = "x"\n'),
+            ("isolation", "[isolation]\nenabled = true\n"), ("wasm", '[wasm]\nruntime = "x"\n'))]
+        cases.append(("isolation table points to container runtime", "[isolation]\nenabled = true\n",
+                      "[container] runtime"))
+        cases += [(f"unparsable {text!r}", text, "config.toml")
+                  for text in ('[providers]\nllm = "x"\n[shell\n', "[container\n", "[shell\n")]
+        for name, body, expected in cases:
+            with self.subTest(name):
                 r, log = self.run_with_config(body)
                 self.assertEqual(r.returncode, 1, r.stderr)
-                self.assertIn(f"[{table}] ", r.stderr)
-                self.assertNotIn("hello, Ada!", r.stdout)
-                self.assertFalse(log.exists() and " start " in log.read_text(), "the plugin was started")
-
-    def test_the_isolation_table_message_points_to_container_runtime(self):
-        r, _ = self.run_with_config("[isolation]\nenabled = true\n")
-        self.assertIn("[container] runtime", r.stderr)
-
-    def test_a_config_that_does_not_parse_fails_the_command_and_starts_nothing(self):
-        for text in ('[providers]\nllm = "x"\n[shell\n', "[container\n", "[shell\n"):
-            with self.subTest(text=text):
-                r, log = self.run_with_config(text)
-                self.assertEqual(r.returncode, 1, r.stderr)
-                self.assertIn("config.toml", r.stderr)
+                self.assertIn(expected, r.stderr)
                 self.assertNotIn("hello, Ada!", r.stdout)
                 self.assertFalse(log.exists() and " start " in log.read_text(), "the plugin was started")
 

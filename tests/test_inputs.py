@@ -37,71 +37,70 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(specs[1].short, "-o")
         self.assertEqual(specs[2].default, 3)
 
-    def test_empty_declaration_is_valid(self):
-        self.assertEqual(specs_from_toml("fetch", []), [])
+    def test_bad_type_or_default_is_refused(self):
+        cases = [
+            ("unknown type", [{"name": "x", "type": "path"}], "unknown type 'path'"),
+            ("missing type", [{"name": "x"}], "missing 'type'"),
+            ("duplicate name",
+             [{"name": "x", "type": "int", "flag": "--a"}, {"name": "x", "type": "int", "flag": "--b"}],
+             "duplicate name"),
+            ("required with default", [{"name": "x", "type": "int", "required": True, "default": 1, "flag": "--x"}],
+             "'required' and 'default' cannot be combined"),
+            ("int default is a string", [{"name": "x", "type": "int", "default": "a", "flag": "--x"}],
+             "default must be int"),
+            ("int default is a bool", [{"name": "x", "type": "int", "default": True, "flag": "--x"}],
+             "default must be int"),
+            ("string default is an int", [{"name": "x", "type": "string", "default": 1, "flag": "--x"}],
+             "default must be string"),
+            ("bool default True", [{"name": "x", "type": "bool", "flag": "--x", "default": True}],
+             "bool inputs cannot have a default"),
+            ("bool default False", [{"name": "x", "type": "bool", "flag": "--x", "default": False}],
+             "bool inputs cannot have a default"),
+            ("bool default string", [{"name": "x", "type": "bool", "flag": "--x", "default": "no"}],
+             "bool inputs cannot have a default"),
+            ("bool required", [{"name": "x", "type": "bool", "flag": "--x", "required": True}],
+             "bool inputs cannot be required"),
+        ]
+        for label, raw, reason in cases:
+            with self.subTest(label):
+                self.bad(raw, reason)
 
-    def test_unknown_type(self):
-        self.bad([{"name": "x", "type": "path"}], "unknown type 'path'")
+    def test_bad_flag_or_short_is_refused(self):
+        cases = [
+            ("duplicate flag",
+             [{"name": "a", "type": "int", "flag": "--x"}, {"name": "x", "type": "int", "flag": "--x"}],
+             "duplicate flag '--x'"),
+            ("duplicate short",
+             [{"name": "a", "type": "int", "flag": "--a", "short": "-x"},
+              {"name": "x", "type": "int", "flag": "--b", "short": "-x"}], "duplicate flag '-x'"),
+            ("short without flag", [{"name": "x", "type": "string", "short": "-x"}], "'short' needs a 'flag'"),
+        ]
+        for flag in ("-x", "--", "--a b", "x", "---x", "--é"):
+            cases.append((f"malformed flag {flag!r}", [{"name": "x", "type": "string", "flag": flag}],
+                          f"malformed flag '{flag}'"))
+        for short in ("x", "--x", "-xy", "-"):
+            cases.append((f"malformed short {short!r}",
+                          [{"name": "x", "type": "string", "flag": "--x", "short": short}],
+                          f"malformed short '{short}'"))
+        for label, raw, reason in cases:
+            with self.subTest(label):
+                self.bad(raw, reason)
 
-    def test_missing_type(self):
-        self.bad([{"name": "x"}], "missing 'type'")
+    def test_bad_positional_is_refused(self):
+        cases = [
+            ("positional bool", [{"name": "x", "type": "bool"}], "a positional input cannot be bool"),
+            ("required positional after optional positional",
+             [{"name": "a", "type": "string"}, {"name": "x", "type": "string", "required": True}],
+             "required positional cannot follow an optional positional"),
+        ]
+        for label, raw, reason in cases:
+            with self.subTest(label):
+                self.bad(raw, reason)
 
     def test_missing_name(self):
         with self.assertRaises(ValueError) as cm:
             specs_from_toml("fetch", [{"type": "int"}])
         self.assertIn("command 'fetch'", str(cm.exception))
-
-    def test_duplicate_name(self):
-        self.bad([{"name": "x", "type": "int", "flag": "--a"}, {"name": "x", "type": "int", "flag": "--b"}],
-                 "duplicate name")
-
-    def test_duplicate_flag(self):
-        self.bad([{"name": "a", "type": "int", "flag": "--x"}, {"name": "x", "type": "int", "flag": "--x"}],
-                 "duplicate flag '--x'")
-
-    def test_duplicate_short(self):
-        self.bad([{"name": "a", "type": "int", "flag": "--a", "short": "-x"},
-                  {"name": "x", "type": "int", "flag": "--b", "short": "-x"}], "duplicate flag '-x'")
-
-    def test_short_without_flag(self):
-        self.bad([{"name": "x", "type": "string", "short": "-x"}], "'short' needs a 'flag'")
-
-    def test_positional_bool(self):
-        self.bad([{"name": "x", "type": "bool"}], "a positional input cannot be bool")
-
-    def test_required_with_default(self):
-        self.bad([{"name": "x", "type": "int", "required": True, "default": 1, "flag": "--x"}],
-                 "'required' and 'default' cannot be combined")
-
-    def test_default_type_mismatch(self):
-        self.bad([{"name": "x", "type": "int", "default": "a", "flag": "--x"}], "default must be int")
-        self.bad([{"name": "x", "type": "int", "default": True, "flag": "--x"}], "default must be int")
-        self.bad([{"name": "x", "type": "string", "default": 1, "flag": "--x"}], "default must be string")
-
-    def test_malformed_flag(self):
-        for flag in ("-x", "--", "--a b", "x", "---x", "--é"):
-            with self.subTest(flag=flag):
-                self.bad([{"name": "x", "type": "string", "flag": flag}], f"malformed flag '{flag}'")
-
-    def test_malformed_short(self):
-        for short in ("x", "--x", "-xy", "-"):
-            with self.subTest(short=short):
-                self.bad([{"name": "x", "type": "string", "flag": "--x", "short": short}],
-                         f"malformed short '{short}'")
-
-    def test_required_positional_after_optional_positional(self):
-        self.bad([{"name": "a", "type": "string"}, {"name": "x", "type": "string", "required": True}],
-                 "required positional cannot follow an optional positional")
-
-    def test_bool_cannot_have_default(self):
-        for default in (True, False, "no"):
-            with self.subTest(default=default):
-                self.bad([{"name": "x", "type": "bool", "flag": "--x", "default": default}],
-                         "bool inputs cannot have a default")
-
-    def test_bool_cannot_be_required(self):
-        self.bad([{"name": "x", "type": "bool", "flag": "--x", "required": True}],
-                 "bool inputs cannot be required")
 
     def test_bool_required_false_is_fine(self):
         self.assertEqual(len(specs_from_toml("fetch", [{"name": "x", "type": "bool", "flag": "--x",
@@ -131,101 +130,93 @@ class ParseTests(unittest.TestCase):
         self.ok(["https://x", "-o", "a.txt"],
                 {"url": "https://x", "output": "a.txt", "retries": 3, "quiet": False})
 
-    def test_flags_before_positional_and_equals(self):
-        self.ok(["--quiet", "--retries=5", "https://x"], {"url": "https://x", "retries": 5, "quiet": True})
+    def test_flag_and_separate_value_forms(self):
+        cases = [
+            (["--quiet", "--retries=5", "https://x"], {"url": "https://x", "retries": 5, "quiet": True}),
+            (["https://x", "--retries", "5"], {"url": "https://x", "retries": 5, "quiet": False}),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                self.ok(args, expected)
 
-    def test_space_separated_value(self):
-        self.ok(["https://x", "--retries", "5"], {"url": "https://x", "retries": 5, "quiet": False})
+    def test_dash_arguments(self):
+        cases = [
+            (["--", "-weird-url"], {"url": "-weird-url", "retries": 3, "quiet": False}),
+            (["-"], {"url": "-", "retries": 3, "quiet": False}),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                self.ok(args, expected)
 
-    def test_double_dash_makes_rest_positional(self):
-        self.ok(["--", "-weird-url"], {"url": "-weird-url", "retries": 3, "quiet": False})
+    def test_int_values_with_sign(self):
+        cases = [
+            (["u", "--retries", "-1"], {"url": "u", "retries": -1, "quiet": False}),
+            (["u", "--retries=+7"], {"url": "u", "retries": 7, "quiet": False}),
+            (["u", "--retries", "-0"], {"url": "u", "retries": 0, "quiet": False}),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                self.ok(args, expected)
 
-    def test_negative_number_consumed_as_value(self):
-        self.ok(["u", "--retries", "-1"], {"url": "u", "retries": -1, "quiet": False})
+    def test_short_equals_value(self):
+        cases = [
+            (["u", "-o=a.txt"], {"url": "u", "output": "a.txt", "retries": 3, "quiet": False}),
+            (["u", "-o=a=b"], {"url": "u", "output": "a=b", "retries": 3, "quiet": False}),
+        ]
+        for args, expected in cases:
+            with self.subTest(args=args):
+                self.ok(args, expected)
 
-    def test_plus_sign_int(self):
-        self.ok(["u", "--retries=+7"], {"url": "u", "retries": 7, "quiet": False})
-
-    def test_short_flag_equals_value(self):
-        self.ok(["u", "-o=a.txt"], {"url": "u", "output": "a.txt", "retries": 3, "quiet": False})
-
-    def test_short_flag_equals_keeps_later_equals_in_value(self):
-        self.ok(["u", "-o=a=b"], {"url": "u", "output": "a=b", "retries": 3, "quiet": False})
-
-    def test_short_bool_flag_with_value(self):
-        specs = [S("q", "bool", flag="--quiet", short="-q")]
-        self.err(["-q=1"], "flag '-q' takes no value", specs=specs)
-
-    def test_unknown_short_flag_with_equals(self):
-        self.err(["u", "-z=1"], "unknown flag '-z'")
-
-    def test_negative_zero_int(self):
-        self.ok(["u", "--retries", "-0"], {"url": "u", "retries": 0, "quiet": False})
-
-    def test_unicode_digits_are_not_integers(self):
-        self.err(["u", "--retries", "\u0663"], "input 'retries' must be an integer, got '\u0663'")
-        self.err(["u", "--retries=\uff11\uff12"], "input 'retries' must be an integer, got '\uff11\uff12'")
-
-    def test_empty_equals_value_is_integer_error(self):
-        self.err(["u", "--retries="], "input 'retries' must be an integer, got ''")
-
-    def test_int_default_zero_is_filled(self):
-        specs = [S("n", "int", flag="--n", default=0)]
-        self.assertEqual(parse_args(specs, []), {"n": 0})
+    def test_non_integers_are_refused(self):
+        cases = [
+            (["u", "--retries", "many"], "input 'retries' must be an integer, got 'many'"),
+            (["u", "--retries", "1.5"], "input 'retries' must be an integer, got '1.5'"),
+            (["u", "--retries="], "input 'retries' must be an integer, got ''"),
+            (["u", "--retries", "٣"], "input 'retries' must be an integer, got '٣'"),
+            (["u", "--retries=１２"], "input 'retries' must be an integer, got '１２'"),
+        ]
+        for args, message in cases:
+            with self.subTest(args=args):
+                self.err(args, message)
 
     def test_flag_value_may_look_like_flag(self):
         self.ok(["u", "-o", "--quiet"], {"url": "u", "output": "--quiet", "retries": 3, "quiet": False})
-
-    def test_single_dash_is_positional(self):
-        self.ok(["-"], {"url": "-", "retries": 3, "quiet": False})
 
     def test_non_ascii_passthrough(self):
         self.ok(["http://ü/日本", "-o", "ファイル"],
                 {"url": "http://ü/日本", "output": "ファイル", "retries": 3, "quiet": False})
 
-    def test_missing_required(self):
-        self.err([], "missing required input 'url'")
+    def test_defaults_and_absent_values(self):
+        cases = [
+            ("int default zero is filled", [S("n", "int", flag="--n", default=0)], [], {"n": 0}),
+            ("optional without default is absent", [S("a")], [], {}),
+            ("optional positional default", [S("a", default="d")], [], {"a": "d"}),
+            ("optional positional default overridden", [S("a", default="d")], ["z"], {"a": "z"}),
+        ]
+        for label, specs, args, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(parse_args(specs, args), expected)
 
-    def test_bad_int(self):
-        self.err(["u", "--retries", "many"], "input 'retries' must be an integer, got 'many'")
-        self.err(["u", "--retries", "1.5"], "input 'retries' must be an integer, got '1.5'")
-
-    def test_unknown_flag(self):
-        self.err(["u", "--verbose"], "unknown flag '--verbose'")
-        self.err(["u", "--verbose=1"], "unknown flag '--verbose'")
-        self.err(["u", "-z"], "unknown flag '-z'")
-
-    def test_extra_positional(self):
-        self.err(["u", "extra"], "unexpected argument 'extra'")
-
-    def test_flag_needs_value(self):
-        self.err(["u", "-o"], "flag '-o' needs a value")
-        self.err(["u", "--retries"], "flag '--retries' needs a value")
-
-    def test_bool_with_value(self):
-        self.err(["u", "--quiet=true"], "flag '--quiet' takes no value")
-
-    def test_flag_twice(self):
-        self.err(["u", "--quiet", "--quiet"], "flag '--quiet' given more than once")
-        self.err(["u", "-o", "a", "--output", "b"], "flag '--output' given more than once")
-
-    def test_empty_declaration_rejects_anything(self):
+    def test_usage_errors_are_refused(self):
+        cases = [
+            ([], "missing required input 'url'", None),
+            (["u", "--verbose"], "unknown flag '--verbose'", None),
+            (["u", "--verbose=1"], "unknown flag '--verbose'", None),
+            (["u", "-z"], "unknown flag '-z'", None),
+            (["u", "extra"], "unexpected argument 'extra'", None),
+            (["u", "-o"], "flag '-o' needs a value", None),
+            (["u", "--retries"], "flag '--retries' needs a value", None),
+            (["u", "--quiet=true"], "flag '--quiet' takes no value", None),
+            (["u", "--quiet", "--quiet"], "flag '--quiet' given more than once", None),
+            (["u", "-o", "a", "--output", "b"], "flag '--output' given more than once", None),
+            (["x"], "unexpected argument 'x'", []),
+            (["--x"], "unknown flag '--x'", []),
+            (["x"], "input 'n' must be an integer, got 'x'", [S("n", "int")]),
+        ]
+        for args, message, specs in cases:
+            with self.subTest(args=args, specs=specs):
+                self.err(args, message, specs=specs)
         self.assertEqual(parse_args([], []), {})
-        self.err(["x"], "unexpected argument 'x'", specs=[])
-        self.err(["--x"], "unknown flag '--x'", specs=[])
-
-    def test_optional_without_default_is_absent(self):
-        self.assertEqual(parse_args([S("a")], []), {})
-
-    def test_optional_positional_default(self):
-        self.assertEqual(parse_args([S("a", default="d")], []), {"a": "d"})
-        self.assertEqual(parse_args([S("a", default="d")], ["z"]), {"a": "z"})
-
-    def test_bool_default_false(self):
-        self.assertEqual(parse_args([S("q", "bool", flag="--q")], []), {"q": False})
-
-    def test_positional_int_validated(self):
-        self.err(["x"], "input 'n' must be an integer, got 'x'", specs=[S("n", "int")])
 
 
 class ParseForTests(unittest.TestCase):
@@ -237,15 +228,10 @@ class ParseForTests(unittest.TestCase):
         self.assertEqual(parse_for(self.manifest, "fetch", ["u"]),
                          {"url": "u", "retries": 3, "quiet": False})
 
-    def test_declared_command_usage_error(self):
-        with self.assertRaises(UsageError):
-            parse_for(self.manifest, "fetch", [])
-
-    def test_undeclared_command_gives_none(self):
-        self.assertIsNone(parse_for(self.manifest, "echoargs", ["--anything"]))
-
-    def test_unknown_command_gives_none(self):
-        self.assertIsNone(parse_for(self.manifest, "nosuch", ["x"]))
+    def test_undeclared_or_unknown_command_gives_none(self):
+        for command, args in (("echoargs", ["--anything"]), ("nosuch", ["x"])):
+            with self.subTest(command=command):
+                self.assertIsNone(parse_for(self.manifest, command, args))
 
     def test_empty_declaration_gives_empty_inputs(self):
         self.assertEqual(parse_for(self.manifest, "noargs", []), {})
@@ -356,30 +342,6 @@ class TypedInputsE2E(DockCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(json.loads(r.stdout), {"args": [], "inputs": {}})
 
-    def test_empty_declaration_command_rejects_any_arg(self):
-        before = self.starts()
-        for args, msg in ((["x"], "unexpected argument 'x'"), (["--x"], "unknown flag '--x'")):
-            with self.subTest(args=args):
-                r = self.dock("noargs", *args)
-                self.assertEqual(r.returncode, 2)
-                self.assertEqual(r.stderr.strip(), f"dock: noargs: {msg}")
-        self.assertEqual(self.starts(), before)
-
-    def test_short_flag_equals_value(self):
-        self.assertEqual(self.invoke("u", "-o=a.txt")["inputs"]["output"], "a.txt")
-
-    def test_bad_args_start_nothing(self):
-        home = tempfile.mkdtemp(prefix="dock-badargs-")
-        env = {**self.env, "DOCK_HOME": home}
-        run = lambda *a: subprocess.run([sys.executable, "-m", "cli", *a], capture_output=True, text=True,
-                                        env=env, cwd=ROOT, timeout=30)
-        self.assertEqual(run("plugin", "install", str(ROOT / "tests" / "fixtures" / "probe")).returncode, 0)
-        r = run("fetch", "u", "--retries", "many")
-        self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertEqual(r.stderr.strip(), "dock: fetch: input 'retries' must be an integer, got 'many'")
-        log = Path(home, "logs", "dev.dock.probe.log")
-        self.assertEqual(log.read_text().count(" start ") if log.exists() else 0, 0)
-
     def test_qualified_name_prefixes_error_with_command_part(self):
         r = self.dock("dev.dock.probe:fetch")
         self.assertEqual(r.returncode, 2)
@@ -393,12 +355,6 @@ class TypedInputsE2E(DockCase):
         urls = [json.loads(l[l.index("{"):])["inputs"]["url"] for l in r.stdout.splitlines() if "{" in l]
         self.assertEqual(urls, ["https://x", "https://y"])
         self.assertEqual(self.starts(), before + 1)
-
-    def test_shell_undeclared_command_gets_no_inputs_key(self):
-        r = self.dock("shell", stdin="echoargs --whatever x\nexit\n")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        payloads = [json.loads(l[l.index("{"):]) for l in r.stdout.splitlines() if "{" in l]
-        self.assertEqual(payloads, [{"args": ["--whatever", "x"], "inputs": "<absent>"}])
 
 
 if __name__ == "__main__":

@@ -108,6 +108,19 @@ A manifest that uses a removed feature fails the install: `provides` and `requir
 
 Any other request from a plugin (`call` and `http` included) is answered with error `-32601`.
 
+## Keywords
+
+A `[[commands]]` entry may have `keywords`, a list of non-empty strings that `dock search` matches (next to the
+command's name and summary). Anything else (not a list, a non-string, an empty string) fails `dock plugin install`
+with a message naming the command. A plugin never receives them.
+
+```toml
+[[commands]]
+name = "hello"
+summary = "Greet someone: hello [name]"
+keywords = ["greet", "welcome"]
+```
+
 ## Typed inputs
 
 A `[[commands]]` entry may declare its inputs. The host then parses and
@@ -174,7 +187,7 @@ spawn → initialize → invoke* → shutdown → (kill on timeout)
 ```
 
 `invoke` may repeat any number of times, sequentially, between
-`initialize` and `shutdown` (the interactive `dock shell` and `dock serve` keep
+`initialize` and `shutdown` (the interactive `dock shell` keeps
 plugins running between operations). A plugin must handle every `invoke` in
 the same process and must not leak per-invoke state into the next one, unless
 it documents otherwise. The host force-kills a plugin that ignores `cancel` past the grace period,

@@ -6,14 +6,15 @@ plugin index and forwarded, args untouched, to the plugin that owns it.
 
 from __future__ import annotations
 
-import signal
 import sys
 from pathlib import Path
 
-from cli import __version__, isolation, lifecycle
+from cli import __version__, catalog, isolation, lifecycle
 from cli.inputs import UsageError, parse_for
-from cli.manifest import ManifestError
+from cli.manifest import Manifest, ManifestError
 from cli.store import Store
+
+SERVE_REMOVED = "dock: serve was removed; run commands with 'dock <command>' or 'dock shell'"
 
 BUILTIN_HELP = """\
 usage: dock <command> [args...]
@@ -21,11 +22,11 @@ usage: dock <command> [args...]
 built-in:
   help                      show this help
   version                   show dock version
+  search <word>...          find commands by name, summary or keyword, installed or in the catalog
   shell                     open the interactive dock> prompt (default on a terminal)
-  serve                     serve another program over JSON-RPC on stdin/stdout (protocol/SERVE.md)
   plugin list               list installed plugins
-  plugin info <id>          show a plugin's manifest details
-  plugin install <path>     install a plugin from a folder
+  plugin info <id|path>     show a plugin's manifest details
+  plugin install <path|id>  install a plugin from a folder, or a catalog plugin by id
   plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
 
@@ -38,11 +39,12 @@ SHELL_HELP = """\
 built-in:
   help                      show this help
   version                   show dock version
+  search <word>...          find commands by name, summary or keyword, installed or in the catalog
   status                    list running plugins with idle time
   exit, quit                leave the shell (or press Ctrl-D)
   plugin list               list installed plugins
-  plugin info <id>          show a plugin's manifest details
-  plugin install <path>     install a plugin from a folder
+  plugin info <id|path>     show a plugin's manifest details
+  plugin install <path|id>  install a plugin from a folder, or a catalog plugin by id
   plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
 
@@ -63,6 +65,37 @@ def cmd_help(store: Store, in_shell: bool = False) -> int:
     return 0
 
 
+def cmd_search(store: Store, args: list[str]) -> int:
+    if not args or any(not a.strip() for a in args):
+        print("usage: dock search <word>...", file=sys.stderr)
+        return 2
+    matches = catalog.search(store, args)
+    if not matches:
+        print(f"dock: no commands match '{' '.join(args)}'", file=sys.stderr)
+        return 1
+    for m in matches:
+        if m.installed:
+            status = "installed" + (f" (catalog has {m.catalog_version})" if m.catalog_version else "")
+        elif m.installed_version:
+            status = f"not in installed {m.installed_version}: {m.install}"
+        else:
+            status = f"not installed: {m.install}"
+        print(f"{m.name:<16} {m.summary}  {m.plugin} {m.version}  {status}")
+    return 0
+
+
+def install_from(store: Store, folder: Path) -> int:
+    m = store.install(folder)
+    print(f"installed {m.id} {m.version}")
+    if m.commands:
+        print(f"  commands:    {', '.join(c.name for c in m.commands)}")
+    if m.permissions:
+        print(f"  permissions: {', '.join(m.permissions)}")
+    if m.env:
+        print(f"  env:         {', '.join(m.env)}")
+    return 0
+
+
 def cmd_plugin(store: Store, args: list[str]) -> int:
     sub = args[0] if args else "list"
     if sub == "list":
@@ -76,15 +109,7 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
             print(f"{pid:<22} {e['version']:<8} {'  '.join(parts)}")
         return 0
     if sub == "install" and len(args) == 2:
-        m = store.install(Path(args[1]))
-        print(f"installed {m.id} {m.version}")
-        if m.commands:
-            print(f"  commands:    {', '.join(c.name for c in m.commands)}")
-        if m.permissions:
-            print(f"  permissions: {', '.join(m.permissions)}")
-        if m.env:
-            print(f"  env:         {', '.join(m.env)}")
-        return 0
+        return install_from(store, catalog.install_source(store, args[1]))
     if sub == "remove" and len(args) == 2:
         store.remove(args[1])
         print(f"removed {args[1]}")
@@ -94,31 +119,27 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
         print(f"built {tag}")
         return 0
     if sub == "info" and len(args) == 2:
-        m = store.get(args[1])
+        index = store.index()
+        installed = args[1] in index
+        if installed:
+            m = store.get(args[1])
+        else:  # a folder, or the id of a catalog plugin: read its plugin.toml, nothing is installed
+            m = Manifest.load(catalog.install_source(store, args[1]))
         print(f"id:          {m.id}\nversion:     {m.version}\nprotocol:    v{m.api_version}")
         print(f"description: {m.description}")
         print(f"commands:    {', '.join(c.name for c in m.commands) or '-'}")
         print(f"permissions: {', '.join(m.permissions) or '-'}")
         print(f"env:         {', '.join(m.env) or '-'}")
+        print(f"keywords:    {'; '.join(f'{c.name}: ' + ', '.join(c.keywords) for c in m.commands if c.keywords) or '-'}")
         print(f"runtime:     {isolation.describe(store, m)}")
         print(f"location:    {m.root}")
+        if not installed:
+            there = index.get(m.id)
+            print(f"installed:   yes, {there['version']} ({there['path']})" if there
+                  else f"installed:   no ({m.root})")
         return 0
     print(BUILTIN_HELP, file=sys.stderr)
     return 2
-
-
-def _serve_signals() -> None:
-    """`dock serve` outlives a Ctrl-C aimed at its client, and leaves cleanly on SIGTERM.
-
-    Python-level handlers (not SIG_IGN) so the plugins it starts do not inherit an ignored SIGINT.
-    """
-    signal.signal(signal.SIGINT, lambda *_: None)
-
-    def terminate(*_):
-        signal.signal(signal.SIGTERM, lambda *_: None)  # once: the cleanup that follows must not be interrupted
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, terminate)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -136,13 +157,8 @@ def main(argv: list[str] | None = None) -> int:
 
             return shell.start(store, verbose)
         if argv[:1] == ["serve"]:
-            if len(argv) > 1:
-                print("dock: serve takes no arguments", file=sys.stderr)
-                return 2
-            from cli import serve
-
-            _serve_signals()
-            return serve.serve(store, verbose)
+            print(SERVE_REMOVED, file=sys.stderr)
+            return 1
         if not argv or argv[0] in ("help", "-h", "--help"):
             return cmd_help(store)
         if argv[0] in ("version", "--version"):
@@ -150,6 +166,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if argv[0] == "plugin":
             return cmd_plugin(store, argv[1:])
+        if argv[0] == "search":
+            return cmd_search(store, argv[1:])
 
         manifest, command = store.resolve(argv[0])
         parse_for(manifest, command, argv[1:])  # a bad invocation must start no process

@@ -6,8 +6,7 @@
   logs/<id>.log             each plugin's stderr
   history                   shell input history
   config.toml               optional; [container] runtime names the container runtime (else docker, then podman),
-                            [shell] idle_timeout sets the idle stop (seconds),
-                            [serve] idle_timeout the same for `dock serve`'s warm plugin containers
+                            [shell] idle_timeout sets the idle stop (seconds)
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from cli import isolation
+from cli import catalog, isolation
 from cli.manifest import Manifest, ManifestError, NotAContainerPlugin, check_removed_tables
 
 
@@ -71,7 +70,6 @@ class Store:
         self.index_path = self.home / "index.json"
         self.history_path = self.home / "history"
         self._warned_idle_timeout = False
-        self._warned_serve_idle_timeout = False
         for d in (self.plugin_dir, self.data_root, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
 
@@ -106,6 +104,7 @@ class Store:
             "path": str(dest),
             "description": installed.description,
             "commands": {c.name: c.summary for c in installed.commands},
+            "keywords": {c.name: c.keywords for c in installed.commands if c.keywords},
         }
         self._save_index(idx)
         if reinstall:
@@ -154,7 +153,7 @@ class Store:
 
         owners = [pid for pid, e in self.index().items() if name in e["commands"]]
         if not owners:
-            raise ManifestError(f"unknown command '{name}'. Run 'dock help'.")
+            raise ManifestError(catalog.hint(self, name) or f"unknown command '{name}'. Run 'dock help'.")
         if len(owners) > 1:
             choices = ", ".join(f"{pid}:{name}" for pid in owners)
             raise ManifestError(f"'{name}' is provided by several plugins; use one of: {choices}")
@@ -178,16 +177,6 @@ class Store:
             if not self._warned_idle_timeout:  # every prompt asks; say it once
                 self._warned_idle_timeout = True
                 print(f"dock: invalid [shell] idle_timeout {value!r}; using 300", file=sys.stderr)
-            return 300
-        return value
-
-    def serve_idle_timeout(self) -> float:
-        """Seconds `dock serve` keeps a finished call's plugin process warm; 0 = never stop. Default 300."""
-        value = self.config().get("serve", {}).get("idle_timeout", 300)
-        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-            if not self._warned_serve_idle_timeout:
-                self._warned_serve_idle_timeout = True
-                print(f"dock: invalid [serve] idle_timeout {value!r}; using 300", file=sys.stderr)
             return 300
         return value
 

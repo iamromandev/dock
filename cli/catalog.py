@@ -1,0 +1,198 @@
+"""Plugins that are not installed: local catalog folders listed in config.toml, read without running anything.
+
+  [catalog] paths = ["~/plugins", "/opt/dock-plugins"]
+
+Only plugin.toml files are read (through Manifest.load); nothing is built, started or copied. This module takes
+the Store as an argument and never imports cli.store (which imports this module).
+"""
+
+from __future__ import annotations
+
+import difflib
+import os
+import sys
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from cli.manifest import Manifest, ManifestError, NotAContainerPlugin
+
+CONFIG_KEYS = ("paths",)
+_NAME = "catalog"
+
+
+def _warn(msg: str) -> None:
+    print(f"dock: {msg}", file=sys.stderr)
+
+
+def paths(store) -> list[Path]:
+    """The folders of [catalog] paths, `~` expanded; [] without a [catalog] table. Fails closed like [container]."""
+    path = store.home / "config.toml"
+    data = store.config()
+    if "paths" in data:
+        raise ManifestError(f"{path}: 'paths' is at the top level; catalog settings belong in a [catalog] table")
+    for key in data:
+        if key != _NAME and difflib.get_close_matches(key.lower(), [_NAME], n=1, cutoff=0.75):
+            raise ManifestError(f"{path}: [{key}] is not a known table; did you mean [catalog]?")
+    table = data.get(_NAME)
+    if table is None:
+        return []
+    where = f"{path}: [catalog]"
+    if not isinstance(table, dict):
+        raise ManifestError(f"{where} must be a table")
+    for key in table:
+        if key not in CONFIG_KEYS:
+            raise ManifestError(f"{where} has unknown key '{key}' (known: {', '.join(CONFIG_KEYS)})")
+    entries = table.get("paths", [])
+    if not isinstance(entries, list) or not all(isinstance(e, str) and e for e in entries):
+        raise ManifestError(f"{where} paths must be a list of folder paths")
+    folders = []
+    for entry in entries:
+        expanded = os.path.expanduser(entry)
+        if not os.path.isabs(expanded):
+            raise ManifestError(f"{where} paths entry '{entry}' must be an absolute path or start with ~")
+        folders.append(Path(expanded))
+    return folders
+
+
+@dataclass(frozen=True)
+class Available:
+    """A catalog plugin: its manifest and the folder it was read from."""
+    manifest: Manifest
+    folder: Path  # resolved real path
+
+
+def _candidates(entry: Path) -> list[Path]:
+    """The plugin folders of one catalog entry: itself, or its immediate subfolders that hold a plugin.toml."""
+    if (entry / "plugin.toml").is_file():
+        return [entry]
+    return sorted(d for d in entry.iterdir() if d.is_dir() and (d / "plugin.toml").is_file())
+
+
+def load(store, warn: Callable[[str], None] = _warn) -> list[Available]:
+    """Every readable plugin of the catalog, in scan order; one warning per entry or plugin that is skipped."""
+    found: list[Available] = []
+    seen: set[Path] = set()
+    for entry in paths(store):
+        if not entry.exists():
+            warn(f"catalog folder {entry} not found, skipped")
+            continue
+        try:
+            if not entry.is_dir():
+                raise NotADirectoryError(f"{entry} is not a folder")
+            candidates = _candidates(entry)
+        except OSError as e:
+            warn(f"catalog folder {entry} cannot be read ({e}), skipped")
+            continue
+        for candidate in candidates:
+            real = Path(os.path.realpath(candidate))
+            if real in seen:
+                continue
+            seen.add(real)
+            try:
+                found.append(Available(Manifest.load(real), real))
+            except (ManifestError, OSError) as e:  # ManifestError includes NotAContainerPlugin
+                warn(f"catalog plugin {real} skipped: {e}")
+    return found
+
+
+@dataclass(frozen=True)
+class Match:
+    name: str  # command name
+    summary: str
+    keywords: tuple[str, ...]
+    plugin: str  # plugin id
+    version: str
+    installed: bool
+    folder: Path | None  # catalog folder of a not-installed match; None when installed
+    catalog_version: str | None  # installed, and the catalog holds other version(s): "0.2.0" or "0.2.0, 0.3.0"
+    install: str | None  # not installed: the command that installs it
+    installed_version: str | None = None  # not installed here, but the plugin id is installed without this command
+    manifest: Manifest | None = field(default=None, compare=False)  # set for not-installed matches
+
+
+def _matches(words: list[str], name: str, summary: str, keywords) -> bool:
+    fields = [name.lower(), summary.lower(), *(k.lower() for k in keywords)]
+    return all(any(w in f for f in fields) for w in words)
+
+
+def search(store, words: list[str], warn: Callable[[str], None] = _warn) -> list[Match]:
+    """Commands of installed and catalog plugins for which every word is in the name, summary or a keyword."""
+    words = [w.lower() for w in words]
+    index = store.index()
+    available = load(store, warn)
+    by_id: dict[str, list[Available]] = {}
+    for a in available:
+        by_id.setdefault(a.manifest.id, []).append(a)
+
+    found: list[Match] = []
+    for pid, entry in index.items():
+        other = sorted({a.manifest.version for a in by_id.get(pid, []) if a.manifest.version != entry["version"]})
+        keywords = entry.get("keywords", {})
+        for name, summary in entry["commands"].items():
+            kws = tuple(keywords.get(name, []))
+            if _matches(words, name, summary, kws):
+                found.append(Match(name, summary, kws, pid, entry["version"], True, None,
+                                   ", ".join(other) or None, None))
+    for a in available:
+        m = a.manifest
+        entry = index.get(m.id)
+        target = m.id if len(by_id[m.id]) == 1 else str(a.folder)
+        for c in m.commands:
+            if entry is not None and c.name in entry["commands"]:
+                continue  # listed once, from the installed copy
+            if _matches(words, c.name, c.summary, c.keywords):
+                found.append(Match(c.name, c.summary, tuple(c.keywords), m.id, m.version, False, a.folder, None,
+                                   f"dock plugin install {target}", entry["version"] if entry else None, m))
+    return sorted(found, key=lambda x: (x.name, x.plugin, str(x.folder or "")))
+
+
+def _install_target(a: Available, by_id: dict[str, list[Available]]) -> str:
+    return a.manifest.id if len(by_id[a.manifest.id]) == 1 else str(a.folder)
+
+
+def hint(store, command: str, warn: Callable[[str], None] = _warn) -> str | None:
+    """The 'unknown command' message naming the catalog plugins that have `command`; None when none has it."""
+    available = load(store, warn)
+    by_id: dict[str, list[Available]] = {}
+    for a in available:
+        by_id.setdefault(a.manifest.id, []).append(a)
+    owners = sorted((a for a in available if a.manifest.command(command)), key=lambda a: (a.manifest.id, str(a.folder)))
+    if not owners:
+        return None
+    index = store.index()
+    if len(owners) == 1:
+        a = owners[0]
+        install = f"dock plugin install {_install_target(a, by_id)}"
+        if a.manifest.id in index:
+            return (f"unknown command '{command}'. {a.manifest.id} {a.manifest.version} in the catalog has it "
+                    f"(installed: {index[a.manifest.id]['version']}): {install}")
+        return f"unknown command '{command}'. {a.manifest.id} has it (not installed): {install}"
+
+    def one(a: Available) -> str:
+        install = f"dock plugin install {_install_target(a, by_id)}"
+        if a.manifest.id in index:
+            return f"{a.manifest.id} {a.manifest.version} (installed: {index[a.manifest.id]['version']}; {install})"
+        return f"{a.manifest.id} ({install})"
+
+    each = "; ".join(one(a) for a in owners)
+    return f"unknown command '{command}'. Not installed, in the catalog: {each}"
+
+
+def find(store, plugin_id: str, warn: Callable[[str], None] = _warn) -> Available | None:
+    """The one catalog plugin with this id; None when there is none; ManifestError when several folders have it."""
+    owners = sorted((a for a in load(store, warn) if a.manifest.id == plugin_id), key=lambda a: str(a.folder))
+    if len(owners) > 1:
+        each = ", ".join(f"{a.folder} ({a.manifest.version})" for a in owners)
+        raise ManifestError(f"{plugin_id} is in several catalog folders; install one by path: {each}")
+    return owners[0] if owners else None
+
+
+def install_source(store, arg: str) -> Path:
+    """The folder `plugin install <arg>` reads: `arg` itself when it is an existing folder, else the catalog's."""
+    if Path(arg).is_dir():
+        return Path(arg)
+    found = find(store, arg)
+    if found is None:
+        raise ManifestError(f"no plugin folder or catalog plugin named '{arg}'")
+    return found.folder

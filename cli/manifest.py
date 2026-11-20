@@ -25,6 +25,7 @@ REMOVED_TABLES = {  # config.toml tables of features dock no longer has: no plug
     "wasm": "[wasm] is no longer supported: dock runs plugins only in a container",
     "http": "[http] is no longer supported: HTTP through dock was removed",
     "providers": "[providers] is no longer supported: capabilities were removed",
+    "serve": "[serve] is no longer supported: dock serve was removed",
 }
 
 
@@ -39,6 +40,7 @@ class Command:
     name: str
     summary: str = ""
     inputs: list[InputSpec] | None = None  # None = undeclared; [] = declares none
+    keywords: list[str] = field(default_factory=list)  # extra words `dock search` matches
 
 
 _PLUGIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # one path component: it names folders under the store
@@ -159,7 +161,11 @@ class Manifest:
                     inputs = specs_from_toml(c["name"], c["inputs"])
                 except ValueError as e:
                     raise ManifestError(f"{path}: {e}") from e
-            commands.append(Command(c["name"], c.get("summary", ""), inputs))
+            keywords = c.get("keywords", [])
+            if (not isinstance(keywords, list)
+                    or not all(isinstance(k, str) and k.strip() for k in keywords)):
+                raise ManifestError(f"{path}: {c['name']}: keywords must be a list of non-empty strings")
+            commands.append(Command(c["name"], c.get("summary", ""), inputs, list(keywords)))
 
         container = _container_run(path, root, run["container"])
         for part in ("id", "version"):  # they become the image tag dock/<id>:<version>
