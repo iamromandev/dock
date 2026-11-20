@@ -8,16 +8,10 @@ __pycache__
 **/*.lock
 **/*.pyc
 *.egg-info
-plugin/download/bin/
-plugin/download/target/
-plugin/image/target/
-plugin/image/plugin.wasm
 
 ### project ###
 .env
 .env.**
 
 ### allow ###
-!plugin/image/Cargo.lock
-!plugin/download/Cargo.lock
 !.env.example
