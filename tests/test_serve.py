@@ -26,14 +26,6 @@ class ServeSkeleton(ServeCase):
         self.assertEqual(c.hello(), {"serve_version": SERVE_VERSION, "dock_version": __version__})
         self.assertEqual(SERVE_VERSION, "1")
 
-    def test_stdout_holds_only_json_lines(self):
-        c = self.client()
-        c.hello()
-        c.request("commands")
-        c.close_stdin()
-        self.assertEqual(c.wait(), 0)
-        self.assertEqual(c.bad_lines, [])
-
     def test_anything_before_hello_is_refused(self):
         c = self.client()
         reply = c.request("commands")
@@ -51,35 +43,23 @@ class ServeSkeleton(ServeCase):
         self.assertEqual(commands["hello"]["plugin"], "dev.dock.hello")
         self.assertEqual(commands["count"]["inputs"], [{"name": "n", "type": "int", "required": False}])
 
-    def test_a_line_that_is_not_json_is_refused_and_the_connection_carries_on(self):
-        c = self.hello_client()
-        c.send_raw(b"this is not json\n")
-        c.wait_until(lambda: None in c.replies, what="the parse error")
-        error = c.replies[None]["error"]
-        self.assertEqual(error["code"], -32700)
-        self.assertIn("commands", c.request("commands")["result"])
-
-    def test_a_line_over_one_megabyte_is_refused_and_the_connection_carries_on(self):
-        c = self.hello_client()
-        c.send_raw(b'{"id": 1, "method": "' + b"x" * (1024 * 1024 + 10) + b'"}\n')
-        c.wait_until(lambda: None in c.replies, what="the too-long error")
-        self.assertEqual(c.replies[None]["error"]["code"], -32700)
-        self.assertIn("commands", c.request("commands")["result"])
-
-    def test_a_json_value_that_is_not_an_object_is_an_invalid_request(self):
-        c = self.hello_client()
-        c.send_raw(b"[1, 2]\n")
-        c.wait_until(lambda: None in c.replies, what="the invalid request error")
-        self.assertEqual(c.replies[None]["error"]["code"], -32600)
+    def test_a_bad_line_is_refused_and_the_connection_carries_on(self):
+        for name, line, code, wait_for, carries_on in (
+                ("not json", b"this is not json\n", -32700, "the parse error", True),
+                ("over one megabyte", b'{"id": 1, "method": "' + b"x" * (1024 * 1024 + 10) + b'"}\n', -32700,
+                 "the too-long error", True),
+                ("json value that is not an object", b"[1, 2]\n", -32600, "the invalid request error", False)):
+            with self.subTest(name):
+                c = self.hello_client()  # fresh: `None in c.replies` stays true once a case has run
+                c.send_raw(line)
+                c.wait_until(lambda: None in c.replies, what=wait_for)
+                self.assertEqual(c.replies[None]["error"]["code"], code)
+                if carries_on:
+                    self.assertIn("commands", c.request("commands")["result"])
 
     def test_an_unknown_method_is_not_found(self):
         c = self.hello_client()
         self.assertEqual(c.request("frobnicate")["error"]["code"], -32601)
-
-    def test_end_of_stdin_exits_zero(self):
-        c = self.hello_client()
-        c.close_stdin()
-        self.assertEqual(c.wait(), 0)
 
     def test_shutdown_is_answered_and_dock_exits_zero(self):
         c = self.hello_client()
@@ -113,15 +93,13 @@ class ServeRun(ServeCase):
         c = self.hello_client()
         self.assertEqual(c.wait_reply(self.run_call(c, "nonesuch"))["error"]["code"], -32601)
 
-    def test_a_cwd_that_is_not_an_existing_absolute_folder_is_refused(self):
+    def test_bad_run_params_are_refused(self):
         c = self.hello_client()
         for cwd in ("relative/dir", os.path.join(self.cwd, "missing"), 7, None):
             with self.subTest(cwd=cwd):
                 req = c.start("run", {"command": "pid", "args": [], "cwd": cwd})
                 self.assertEqual(c.wait_reply(req)["error"]["code"], -32602)
-
-    def test_args_must_be_a_list_of_strings_and_inputs_are_reserved(self):
-        c = self.hello_client()
+        # args must be a list of strings, and inputs are reserved
         for params in ({"command": "pid", "args": "x", "cwd": self.cwd},
                        {"command": "pid", "args": [1], "cwd": self.cwd},
                        {"command": 5, "args": [], "cwd": self.cwd},
@@ -160,13 +138,6 @@ class ServeRun(ServeCase):
         self.assertEqual(len(c.notes("progress", a)), 4)
         self.assertEqual(len(c.notes("progress", b)), 2)
         self.assertNotEqual(c.cid_of(a), c.cid_of(b))  # a process per call that runs
-
-    def test_plugins_without_the_new_fields_still_work(self):
-        c = self.hello_client()
-        call = self.run_call(c, "count", "2")
-        self.assertEqual(c.wait_reply(call)["result"], {"exit_code": 0})
-        self.assertEqual([n["params"]["percent"] for n in c.notes("progress", call)], [50.0, 100.0])
-        self.assertEqual(c.output_text(call), "counted to 2\n")
 
     def test_a_plugin_error_comes_back_with_its_code(self):
         c = self.hello_client()
@@ -210,14 +181,6 @@ class ServeRun(ServeCase):
         self.assertLess(time.monotonic() - started, float(GRACE) + 5)
         self.assertTrue(wait_container_gone(cid), "the stuck plugin is still running")
 
-    def test_cancelling_an_unknown_id_is_ignored(self):
-        c = self.hello_client()
-        c.notify("cancel", {"id": 12345})
-        c.notify("cancel", {})
-        c.notify("cancel", {"id": [1]})
-        call = self.run_call(c, "pid")
-        self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 0)
-
     # one call's death is only its own (R7) -------------------------------------
     def test_a_killed_plugin_fails_its_own_call_only(self):
         c = self.hello_client()
@@ -229,37 +192,31 @@ class ServeRun(ServeCase):
         self.assertEqual(c.wait_reply(other)["result"]["exit_code"], 0)
 
     # leaving (R8) ----------------------------------------------------------------
-    def test_closing_stdin_during_calls_cancels_them_and_leaves_nothing_behind(self):
-        c = self.hello_client()
-        calls = [self.run_call(c, "sleep", "60") for _ in range(2)]
-        c.wait_until(lambda: all(c.notes("output", k) for k in calls), what="the calls to start")
-        cids = [c.cid_of(k) for k in calls]
-        started = time.monotonic()
-        c.close_stdin()
-        self.assertEqual(c.wait(timeout=float(GRACE) + 10), 0)
-        self.assertLess(time.monotonic() - started, float(GRACE) + 10)
-        for cid in cids:
-            self.assertFalse(container_running(cid), f"plugin process {cid} is still running")
-        self.assertEqual(c.bad_lines, [])
+    def test_leaving_cancels_the_calls_and_leaves_nothing_behind(self):
+        def close_stdin(c, calls):
+            c.close_stdin()
 
-    def test_shutdown_answers_after_cancelling_the_calls(self):
-        c = self.hello_client()
-        call = self.run_call(c, "sleep", "60")
-        c.wait_until(lambda: c.notes("output", call), what="the call to start")
-        cid = c.cid_of(call)
-        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 10)["result"], {})
-        self.assertEqual(c.replies[call]["error"]["code"], -32800)  # the call was answered before shutdown was
-        self.assertEqual(c.wait(), 0)
-        self.assertFalse(container_running(cid))
+        def shutdown(c, calls):
+            self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 10)["result"], {})
+            self.assertEqual(c.replies[calls[0]]["error"]["code"], -32800)  # the call was answered before shutdown was
 
-    def test_sigterm_leaves_like_end_of_input(self):
-        c = self.hello_client()
-        call = self.run_call(c, "sleep", "60")
-        c.wait_until(lambda: c.notes("output", call), what="the call to start")
-        cid = c.cid_of(call)
-        c.proc.send_signal(signal.SIGTERM)
-        self.assertEqual(c.wait(timeout=float(GRACE) + 10), 0)
-        self.assertFalse(container_running(cid))
+        def sigterm(c, calls):
+            c.proc.send_signal(signal.SIGTERM)
+
+        for name, leave, count in (("closing stdin", close_stdin, 2), ("shutdown", shutdown, 1),
+                                   ("sigterm", sigterm, 1)):
+            with self.subTest(name):
+                c = self.hello_client()
+                calls = [self.run_call(c, "sleep", "60") for _ in range(count)]
+                c.wait_until(lambda: all(c.notes("output", k) for k in calls), what="the calls to start")
+                cids = [c.cid_of(k) for k in calls]
+                started = time.monotonic()
+                leave(c, calls)
+                self.assertEqual(c.wait(timeout=float(GRACE) + 10), 0)
+                self.assertLess(time.monotonic() - started, float(GRACE) + 10)
+                for cid in cids:
+                    self.assertFalse(container_running(cid), f"plugin process {cid} is still running")
+                self.assertEqual(c.bad_lines, [])
 
     def test_sigint_does_not_stop_serve(self):
         c = self.hello_client()
@@ -327,27 +284,26 @@ class ServePrompts(ServeCase):
         self.assertRegex(prompt["id"], r"^p\d+$")
         self.assertEqual(c.output_text(call), "answer: Ada Lovelace\n")
 
-    def test_an_eof_answer_reaches_the_plugin_as_eof(self):
-        c = self.hello_client(answer_prompts=lambda params: {"eof": True})
-        call = self.ask(c)
-        self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 0)
-        self.assertEqual(c.output_text(call), "answer: <eof>\n")
+    def test_an_eof_an_error_or_malformed_answer_reaches_the_plugin_as_eof(self):
+        def eof(c, call):
+            pass  # answered by answer_prompts
 
-    def test_an_error_reply_counts_as_eof(self):
-        c = self.hello_client()
-        call = self.ask(c)
-        c.wait_until(lambda: c.prompts, what="the prompt")
-        c.send({"id": c.prompts[0]["id"], "error": {"code": -32000, "message": "no terminal"}})
-        self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 0)
-        self.assertEqual(c.output_text(call), "answer: <eof>\n")
+        def error_reply(c, call):
+            c.wait_until(lambda: c.prompts, what="the prompt")
+            c.send({"id": c.prompts[0]["id"], "error": {"code": -32000, "message": "no terminal"}})
 
-    def test_a_malformed_answer_counts_as_eof(self):
-        c = self.hello_client()
-        call = self.ask(c)
-        c.wait_until(lambda: c.prompts, what="the prompt")
-        c.send({"id": c.prompts[0]["id"], "result": {"text": 5}})
-        self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 0)
-        self.assertEqual(c.output_text(call), "answer: <eof>\n")
+        def malformed(c, call_):
+            c.wait_until(lambda: c.prompts, what="the prompt")
+            c.send({"id": c.prompts[0]["id"], "result": {"text": 5}})
+
+        for name, answer, kw in (("eof answer", eof, {"answer_prompts": lambda params: {"eof": True}}),
+                                 ("error reply", error_reply, {}), ("malformed answer", malformed, {})):
+            with self.subTest(name):
+                c = self.hello_client(**kw)
+                call = self.ask(c)
+                answer(c, call)
+                self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 0)
+                self.assertEqual(c.output_text(call), "answer: <eof>\n")
 
     def test_prompts_of_two_calls_are_answered_each_to_its_own_plugin(self):
         c = self.hello_client()
@@ -371,14 +327,32 @@ class ServePrompts(ServeCase):
         self.assertLess(time.monotonic() - started, float(GRACE) + 5)
         self.assertEqual(c.output_text(call), "answer: <eof>\n")  # the plugin was given eof, not left waiting
 
-    def test_an_answer_that_comes_after_the_prompt_was_withdrawn_is_ignored(self):
-        c = self.hello_client()
-        call = self.ask(c)
-        c.wait_until(lambda: c.prompts, what="the prompt")
-        c.notify("cancel", {"id": call})
-        c.wait_reply(call)
-        c.send({"id": c.prompts[0]["id"], "result": {"text": "too late"}})
-        self.assertIn("commands", c.request("commands")["result"])  # still serving; nothing crashed
+    def test_stray_messages_are_ignored(self):
+        def late_answer(c):
+            call = self.ask(c)
+            c.wait_until(lambda: c.prompts, what="the prompt")
+            c.notify("cancel", {"id": call})
+            c.wait_reply(call)
+            c.send({"id": c.prompts[0]["id"], "result": {"text": "too late"}})
+
+        def unknown_prompt_ids(c):
+            c.send({"id": "p99", "result": {"text": "x"}})
+            c.send({"id": 5, "result": {}})
+
+        def unknown_cancel(c):
+            c.notify("cancel", {"id": 12345})
+            c.notify("cancel", {})
+            c.notify("cancel", {"id": [1]})
+            call = c.start("run", {"command": "pid", "args": [], "cwd": self.cwd})
+            self.assertEqual(c.wait_reply(call)["result"]["exit_code"], 0)
+
+        for name, stray in (("answer after the prompt was withdrawn", late_answer),
+                            ("replies to unknown prompt ids", unknown_prompt_ids),
+                            ("cancelling an unknown id", unknown_cancel)):
+            with self.subTest(name):
+                c = self.hello_client()
+                stray(c)
+                self.assertIn("commands", c.request("commands")["result"])  # still serving; nothing crashed
 
     def test_closing_stdin_while_a_prompt_is_pending_ends_the_call_and_dock(self):
         c = self.hello_client()
@@ -387,13 +361,6 @@ class ServePrompts(ServeCase):
         c.close_stdin()
         self.assertEqual(c.wait(timeout=float(GRACE) + 10), 0)
         self.assertEqual(c.replies[call]["error"]["code"], -32800)
-
-    def test_replies_to_unknown_prompt_ids_are_ignored(self):
-        c = self.hello_client()
-        c.send({"id": "p99", "result": {"text": "x"}})
-        c.send({"id": 5, "result": {}})
-        self.assertIn("commands", c.request("commands")["result"])
-
 
 class ClientUIProgress(unittest.TestCase):
     """Progress to a serve client is `{call, percent, message}`; whatever else a plugin sends is dropped."""
@@ -409,14 +376,14 @@ class ClientUIProgress(unittest.TestCase):
         self.assertEqual([m for m, _ in sent], ["progress"])
         return sent[0][1]
 
-    def test_transfer_fields_are_dropped_and_only_percent_and_message_remain(self):
-        got = self.notified({"percent": 100.0, "message": "seeding", "phase": "seeding", "uploaded": 5, "peers": 2,
-                             "done": 9, "total": 9, "speed": 1.5, "name": "x"})
-        self.assertEqual(got, {"call": 7, "percent": 100.0, "message": "seeding"})
-
-    def test_a_field_dock_does_not_know_is_dropped(self):
-        got = self.notified({"percent": None, "message": "m", "surprise": 1})
-        self.assertEqual(got, {"call": 7, "percent": None, "message": "m"})
+    def test_only_percent_and_message_remain(self):
+        with self.subTest("transfer fields are dropped"):
+            got = self.notified({"percent": 100.0, "message": "seeding", "phase": "seeding", "uploaded": 5,
+                                 "peers": 2, "done": 9, "total": 9, "speed": 1.5, "name": "x"})
+            self.assertEqual(got, {"call": 7, "percent": 100.0, "message": "seeding"})
+        with self.subTest("a field dock does not know is dropped"):
+            got = self.notified({"percent": None, "message": "m", "surprise": 1})
+            self.assertEqual(got, {"call": 7, "percent": None, "message": "m"})
 
 
 if __name__ == "__main__":

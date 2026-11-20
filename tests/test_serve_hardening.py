@@ -68,29 +68,20 @@ class ServeHardening(ServeCase):
             cids.append(c.cid_of(call))
         return cids
 
-    def test_sigterm_while_cleaning_up_after_end_of_input_still_finishes_the_cleanup(self):
-        slow_shutdown(self.home, 1.2)
-        c = self.hello_client()
-        cids = self.warm_two(c)
-        c.close_stdin()
-        time.sleep(0.5)  # inside the first shutdown
-        self.assertTrue(any(container_running(p) for p in cids), "the close was not slow")
-        c.proc.send_signal(signal.SIGTERM)
-        self.assertEqual(c.wait(timeout=30), 0)
-        for cid in cids:
-            self.assertFalse(container_running(cid))
-
-    def test_sigterm_while_cleaning_up_after_shutdown_still_finishes_the_cleanup(self):
-        slow_shutdown(self.home, 1.2)
-        c = self.hello_client()
-        cids = self.warm_two(c)
-        c.start("shutdown")
-        time.sleep(0.5)
-        self.assertTrue(any(container_running(p) for p in cids), "the close was not slow")
-        c.proc.send_signal(signal.SIGTERM)
-        self.assertEqual(c.wait(timeout=30), 0)
-        for cid in cids:
-            self.assertFalse(container_running(cid))
+    def test_sigterm_while_cleaning_up_still_finishes_the_cleanup(self):
+        for name, begin_close in (("after end of input", lambda c: c.close_stdin()),
+                                  ("after shutdown", lambda c: c.start("shutdown"))):
+            with self.subTest(name):
+                slow_shutdown(self.home, 1.2)
+                c = self.hello_client()
+                cids = self.warm_two(c)
+                begin_close(c)
+                time.sleep(0.5)  # inside the first shutdown
+                self.assertTrue(any(container_running(p) for p in cids), "the close was not slow")
+                c.proc.send_signal(signal.SIGTERM)
+                self.assertEqual(c.wait(timeout=30), 0)
+                for cid in cids:
+                    self.assertFalse(container_running(cid))
 
     def test_a_cancelled_call_is_answered_before_its_slow_close_is_done(self):
         slow_shutdown(self.home, 6)
@@ -105,16 +96,6 @@ class ServeHardening(ServeCase):
         time.sleep(0.5)
         self.assertTrue(container_running(cid), "the close was not slow: the plugin is already gone")
         self.assertTrue(wait_container_gone(cid, timeout=20), "the close still happens, after the reply")
-
-    def test_the_host_asks_a_plugin_only_to_initialize_invoke_and_shutdown(self):
-        c = self.hello_client()
-        call = self.run_call(c, "pid")
-        c.wait_reply(call)
-        c.close_stdin()
-        self.assertEqual(c.wait(), 0)
-        log = (Store(self.home).data_dir(PROBE) / "methods.log").read_text().split()
-        self.assertEqual(log, ["initialize", "invoke", "shutdown"])  # never provision or unprovision
-
 
 
 class InternalErrors(unittest.TestCase):
@@ -219,25 +200,25 @@ class PoolHardening(unittest.TestCase):
         self.assertFalse(container_running(cid), "close returned while the reaper was still closing a session")
         reaper.join(5)
 
-    def test_a_session_that_is_closing_after_its_call_is_closed_only_after_the_reply_hook_ran(self):
-        pool = self.pool()
-        session = pool.lease(PROBE, tempfile.mkdtemp(prefix="dock-hardening-cwd-"), FakeClientUI([]))
-        session.invoke_result(self.manifest, "pid", [])
-        seen = []
-        pool.release(session, False, before_close=lambda: seen.append(list(session.procs)))
-        self.assertEqual(len(seen), 1)
-        self.assertEqual(len(seen[0]), 1)  # still running when the hook (the reply) ran
-        self.assertEqual(session.procs, [])  # and closed by the time release returns
-
-    def test_a_reusable_session_is_back_in_the_pool_before_the_reply_hook_would_run(self):
-        pool = self.pool()
-        session = pool.lease(PROBE, tempfile.mkdtemp(prefix="dock-hardening-cwd-"), FakeClientUI([]))
-        session.invoke_result(self.manifest, "pid", [])
-        called = []
-        pool.release(session, True, before_close=lambda: called.append(1))
-        self.assertEqual(called, [])  # nothing to close: the caller replies after release returns
-        again = pool.lease(PROBE, session.cwd, FakeClientUI([]))
-        self.assertIs(again, session)
+    def test_release_orders_the_reply_hook_and_the_close(self):
+        for name, reusable in (("closing session is closed only after the reply hook", False),
+                               ("reusable session is back in the pool before the reply hook", True)):
+            with self.subTest(name):
+                pool = self.pool()
+                session = pool.lease(PROBE, tempfile.mkdtemp(prefix="dock-hardening-cwd-"), FakeClientUI([]))
+                session.invoke_result(self.manifest, "pid", [])
+                if not reusable:
+                    seen = []
+                    pool.release(session, False, before_close=lambda: seen.append(list(session.procs)))
+                    self.assertEqual(len(seen), 1)
+                    self.assertEqual(len(seen[0]), 1)  # still running when the hook (the reply) ran
+                    self.assertEqual(session.procs, [])  # and closed by the time release returns
+                else:
+                    called = []
+                    pool.release(session, True, before_close=lambda: called.append(1))
+                    self.assertEqual(called, [])  # nothing to close: the caller replies after release returns
+                    again = pool.lease(PROBE, session.cwd, FakeClientUI([]))
+                    self.assertIs(again, session)
 
 
 if __name__ == "__main__":

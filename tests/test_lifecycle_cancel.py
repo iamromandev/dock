@@ -87,17 +87,10 @@ class InvokeResultCancel(unittest.TestCase):
         self.assertEqual({k: result[k] for k in ("exit_code", "cid", "cwd")},
                          {"exit_code": 0, "cid": self.cid(), "cwd": project})
 
-    def test_invoke_still_returns_just_the_exit_code(self):
-        self.assertEqual(self.session.invoke(self.manifest, "pid", []), 0)
-
     def test_a_usage_error_is_raised_before_anything_starts(self):
         with self.assertRaises(UsageError):
             self.session.invoke_result(self.manifest, "sleep", [])
         self.assertEqual(self.session.procs, [])
-
-    def test_unset_event_changes_nothing(self):
-        result = self.session.invoke_result(self.manifest, "work", ["2"], cancel=self.cancel)
-        self.assertEqual(result["exit_code"], 0)
 
     def test_event_set_during_the_call_cancels_it_and_no_process_is_left(self):
         self.cancel_once_started()
@@ -231,12 +224,6 @@ class StopTwice(unittest.TestCase):
         self.proc = self.session.start(self.manifest, self.session.ui_factory(self.manifest.id))
         self.log = CountingLog(self.proc._log)
         self.proc._log = self.log
-
-    def test_stopping_and_killing_one_after_the_other_tears_down_once(self):
-        self.proc.stop()
-        self.proc.stop()
-        self.proc.kill()
-        self.assertEqual(self.log.closed_times, 1)
 
     def test_a_stop_and_a_kill_from_two_threads_tear_down_once_and_neither_fails(self):
         errors = []

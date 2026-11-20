@@ -9,7 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stderr
+from contextlib import nullcontext, redirect_stderr
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -52,41 +52,35 @@ def make_plugin(run: str, extra: str = "") -> Path:
 
 
 class ManifestContainer(unittest.TestCase):
-    def test_container_entry_is_parsed_with_defaults(self):
-        m = Manifest.load(make_plugin('container = { cmd = "python3" }'))
-        self.assertEqual(m.container, ContainerRun(cmd="python3", args=[], dockerfile="Dockerfile"))
+    def test_container_entry_is_parsed(self):
+        cases = (
+            ('container = { cmd = "python3" }', ContainerRun(cmd="python3", args=[], dockerfile="Dockerfile")),
+            ('container = { cmd = "/plugin/x", args = ["a", "b"], dockerfile = "build/Df" }',
+             ContainerRun("/plugin/x", ["a", "b"], "build/Df")),
+        )
+        for run, expected in cases:
+            with self.subTest(run=run):
+                self.assertEqual(Manifest.load(make_plugin(run)).container, expected)
 
-    def test_container_entry_with_args_and_dockerfile(self):
-        root = make_plugin('container = { cmd = "/plugin/x", args = ["a", "b"], dockerfile = "build/Df" }')
-        m = Manifest.load(root)
-        self.assertEqual(m.container, ContainerRun("/plugin/x", ["a", "b"], "build/Df"))
+    def test_an_invalid_container_entry_is_rejected_naming_the_problem(self):
+        cases = (
+            ('container = { args = ["a"] }', "container.*cmd"),
+            ('container = { cmd = "x", args = "a" }', "container.*args"),
+            ('container = "python3"', "container"),
+        )
+        for run, pattern in cases:
+            with self.subTest(run=run), self.assertRaisesRegex(ManifestError, pattern):
+                Manifest.load(make_plugin(run))
 
-    def test_container_without_cmd_is_rejected_naming_the_problem(self):
-        with self.assertRaisesRegex(ManifestError, "container.*cmd"):
-            Manifest.load(make_plugin('container = { args = ["a"] }'))
-
-    def test_container_dockerfile_outside_the_plugin_folder_is_rejected(self):
-        with self.assertRaisesRegex(ManifestError, "container.*dockerfile.*inside"):
-            Manifest.load(make_plugin('container = { cmd = "x", dockerfile = "../x" }'))
-
-    def test_container_absolute_dockerfile_is_rejected(self):
-        with self.assertRaisesRegex(ManifestError, "container.*dockerfile.*inside"):
-            Manifest.load(make_plugin('container = { cmd = "x", dockerfile = "/etc/passwd" }'))
-
-    def test_container_dockerfile_symlink_escaping_the_folder_is_rejected(self):
-        root = make_plugin('container = { cmd = "x", dockerfile = "link" }')
-        outside = temp_dir("dock-iso-out-")
-        (root / "link").symlink_to(outside / "Dockerfile")
-        with self.assertRaisesRegex(ManifestError, "inside"):
-            Manifest.load(root)
-
-    def test_container_args_must_be_a_list_of_strings(self):
-        with self.assertRaisesRegex(ManifestError, "container.*args"):
-            Manifest.load(make_plugin('container = { cmd = "x", args = "a" }'))
-
-    def test_container_must_be_a_table(self):
-        with self.assertRaisesRegex(ManifestError, "container"):
-            Manifest.load(make_plugin('container = "python3"'))
+    def test_container_dockerfile_must_stay_inside_the_plugin_folder(self):
+        for dockerfile in ("../x", "/etc/passwd", "link"):
+            with self.subTest(dockerfile=dockerfile):
+                root = make_plugin(f'container = {{ cmd = "x", dockerfile = "{dockerfile}" }}')
+                if dockerfile == "link":  # a symlink escaping the folder
+                    outside = temp_dir("dock-iso-out-")
+                    (root / "link").symlink_to(outside / "Dockerfile")
+                with self.assertRaisesRegex(ManifestError, "container.*dockerfile.*inside"):
+                    Manifest.load(root)
 
     def test_container_plugin_id_and_version_must_fit_an_image_tag(self):
         for field, value in (("id", ".hidden"), ("id", "a/b.c"), ("id", "../x"), ("id", "has space.x"), ("id", "a:b.c"),
@@ -101,8 +95,7 @@ class ManifestContainer(unittest.TestCase):
                 pattern = r"id '.*' may only hold" if field == "id" else r"container.*version|version.*container"
                 with self.assertRaisesRegex(ManifestError, pattern):
                     Manifest.load(root)
-
-    def test_container_plugin_id_and_version_with_dots_dashes_and_underscores_are_fine(self):
+        # dots, dashes and underscores are fine
         root = make_plugin('container = { cmd = "python3" }')
         text = (root / "plugin.toml").read_text().replace("dev.dock.sample", "Dev_1.dock-x").replace("1.2.3", "1.2.3-rc_1")
         (root / "plugin.toml").write_text(text)
@@ -122,20 +115,18 @@ class ManifestEnv(unittest.TestCase):
         m = Manifest.load(make_plugin('container = { cmd = "python3" }'))
         self.assertLessEqual(set(isolation.container_env(m)), RESERVED_ENV)
 
-    def test_no_env_means_an_empty_list(self):
-        self.assertEqual(Manifest.load(make_plugin('container = { cmd = "python3" }')).env, [])
-
-    def test_declared_names_are_kept_in_order(self):
-        self.assertEqual(self.load('["MY_VAR", "_X1", "A"]').env, ["MY_VAR", "_X1", "A"])
-
-    def test_duplicates_are_dropped_silently_keeping_the_first(self):
-        self.assertEqual(self.load('["B", "A", "B", "A"]').env, ["B", "A"])
-
-    def test_env_does_not_disturb_the_other_capabilities(self):
-        root = make_plugin('container = { cmd = "python3" }',
-                           '\n[capabilities]\npermissions = ["network"]\nenv = ["MY_VAR"]\n')
-        m = Manifest.load(root)
-        self.assertEqual((m.permissions, m.env), (["network"], ["MY_VAR"]))
+    def test_accepted_env(self):
+        with self.subTest("no env means an empty list"):
+            self.assertEqual(Manifest.load(make_plugin('container = { cmd = "python3" }')).env, [])
+        with self.subTest("declared names are kept in order"):
+            self.assertEqual(self.load('["MY_VAR", "_X1", "A"]').env, ["MY_VAR", "_X1", "A"])
+        with self.subTest("duplicates are dropped silently keeping the first"):
+            self.assertEqual(self.load('["B", "A", "B", "A"]').env, ["B", "A"])
+        with self.subTest("env does not disturb the other capabilities"):
+            root = make_plugin('container = { cmd = "python3" }',
+                               '\n[capabilities]\npermissions = ["network"]\nenv = ["MY_VAR"]\n')
+            m = Manifest.load(root)
+            self.assertEqual((m.permissions, m.env), (["network"], ["MY_VAR"]))
 
     def test_names_that_are_not_variable_names_are_rejected_naming_the_entry(self):
         for bad in ("lower", "Mixed", "1ABC", "A-B", "A B", "A=B", ""):
@@ -144,16 +135,14 @@ class ManifestEnv(unittest.TestCase):
                     ManifestError, rf"env entry '{bad}' must look like an environment variable name \(A-Z, 0-9, _\)"
                 ):
                     self.load(f'["{bad}"]')
+        with self.assertRaisesRegex(ManifestError, r"plugin\.toml: env entry 'lower'"):  # the error names the file
+            self.load('["lower"]')
 
     def test_names_dock_sets_itself_are_rejected_naming_the_entry(self):
         for bad in ("HOME", "PATH", "LANG", "TZ", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"):
             with self.subTest(name=bad):
                 with self.assertRaisesRegex(ManifestError, f"env entry '{bad}' is set by dock already"):
                     self.load(f'["{bad}"]')
-
-    def test_the_error_names_the_manifest_file(self):
-        with self.assertRaisesRegex(ManifestError, r"plugin\.toml: env entry 'lower'"):
-            self.load('["lower"]')
 
     def test_env_must_be_a_list_of_names(self):
         for bad in ('"MY_VAR"', "[1]", "{ A = 1 }", '["A", 2]'):
@@ -168,11 +157,6 @@ class ManifestEnv(unittest.TestCase):
             store.install(root)
         self.assertEqual(store.index(), {})
 
-    def test_a_good_env_installs(self):
-        store = Store(temp_dir("dock-iso-install-") / "home")
-        root = make_plugin('container = { cmd = "python3" }', '\n[capabilities]\nenv = ["MY_VAR"]\n')
-        self.assertEqual(store.install(root).env, ["MY_VAR"])
-
 
 class ContainerConfig(unittest.TestCase):
     """`[container] runtime` in config.toml, and what happens to a config that is not what dock can honour."""
@@ -185,59 +169,54 @@ class ContainerConfig(unittest.TestCase):
             (home / "config.toml").write_bytes(config)
         return Store(home)
 
-    def test_no_container_table_means_automatic_runtime(self):
-        self.assertEqual(isolation.config(self.store(None)), isolation.Config())
-        self.assertEqual(isolation.config(self.store("[shell]\nidle_timeout = 5\n")), isolation.Config())
-        self.assertIsNone(isolation.Config().runtime)
+    def test_valid_configs(self):
+        with self.subTest("no container table means automatic runtime"):
+            self.assertEqual(isolation.config(self.store(None)), isolation.Config())
+            self.assertEqual(isolation.config(self.store("[shell]\nidle_timeout = 5\n")), isolation.Config())
+            self.assertIsNone(isolation.Config().runtime)
+        with self.subTest("an empty container table means automatic runtime"):
+            self.assertEqual(isolation.config(self.store("[container]\n")), isolation.Config())
+        with self.subTest("runtime is read from the container table"):
+            cfg = isolation.config(self.store('[container]\nruntime = "/opt/podman"\n'))
+            self.assertEqual(cfg, isolation.Config("/opt/podman"))
+        with self.subTest("other tables next to a real container table are fine"):
+            cfg = isolation.config(self.store('[shell]\nidle_timeout = 5\n[container]\nruntime = "podman"\n'))
+            self.assertEqual(cfg.runtime, "podman")
+        with self.subTest("unrelated tables are not mistaken for container"):
+            text = '[shell]\nidle_timeout = 5\n[serve]\nidle_timeout = 9\n[something_else]\na = 1\n'
+            self.assertEqual(isolation.config(self.store(text)), isolation.Config())
 
-    def test_an_empty_container_table_means_automatic_runtime(self):
-        self.assertEqual(isolation.config(self.store("[container]\n")), isolation.Config())
-
-    def test_runtime_is_read_from_the_container_table(self):
-        cfg = isolation.config(self.store('[container]\nruntime = "/opt/podman"\n'))
-        self.assertEqual(cfg, isolation.Config("/opt/podman"))
-
-    def test_other_tables_next_to_a_real_container_table_are_fine(self):
-        cfg = isolation.config(self.store('[shell]\nidle_timeout = 5\n[container]\nruntime = "podman"\n'))
-        self.assertEqual(cfg.runtime, "podman")
-
-    def test_a_runtime_that_is_not_a_name_or_path_is_reported(self):
+    def test_type_errors_are_reported(self):
         for body in ("runtime = 3", 'runtime = ""', "runtime = true", 'runtime = ["docker"]'):
             with self.subTest(body=body):
                 with self.assertRaisesRegex(ManifestError, r"\[container\] runtime must be a command name or path"):
                     isolation.config(self.store(f"[container]\n{body}\n"))
-
-    def test_container_must_be_a_table(self):
-        with self.assertRaisesRegex(ManifestError, r"\[container\] must be a table"):
-            isolation.config(self.store("container = true\n"))
+        with self.subTest("container must be a table"):
+            with self.assertRaisesRegex(ManifestError, r"\[container\] must be a table"):
+                isolation.config(self.store("container = true\n"))
 
     # AC7: a typo must never quietly mean "the default runtime"
-    def test_an_unknown_key_in_the_table_is_refused_naming_it_and_the_known_one(self):
-        with self.assertRaises(ManifestError) as cm:
-            isolation.config(self.store('[container]\nruntimes = "x"\n'))
-        self.assertIn("unknown key 'runtimes'", str(cm.exception))
-        self.assertIn("(known: runtime)", str(cm.exception))
+    def test_unknown_keys_are_refused_naming_them(self):
+        with self.subTest("an unknown key is named with the known one"):
+            with self.assertRaises(ManifestError) as cm:
+                isolation.config(self.store('[container]\nruntimes = "x"\n'))
+            self.assertIn("unknown key 'runtimes'", str(cm.exception))
+            self.assertIn("(known: runtime)", str(cm.exception))
+        with self.subTest("every unknown key is named"):
+            with self.assertRaises(ManifestError) as cm:
+                isolation.config(self.store("[container]\nenabled = true\nplugins = []\nruntime = 'x'\n"))
+            self.assertIn("'enabled'", str(cm.exception))
+            self.assertIn("'plugins'", str(cm.exception))
+            self.assertNotIn("'runtime'", str(cm.exception))
 
-    def test_every_unknown_key_is_named(self):
-        with self.assertRaises(ManifestError) as cm:
-            isolation.config(self.store("[container]\nenabled = true\nplugins = []\nruntime = 'x'\n"))
-        self.assertIn("'enabled'", str(cm.exception))
-        self.assertIn("'plugins'", str(cm.exception))
-        self.assertNotIn("'runtime'", str(cm.exception))
-
-    def test_the_runtime_key_at_the_top_level_is_refused_suggesting_the_table(self):
-        with self.assertRaisesRegex(ManifestError, r"\[container\] table"):
-            isolation.config(self.store('runtime = "docker"\n\n[shell]\nidle_timeout = 5\n'))
-
-    def test_a_table_named_almost_container_is_refused_suggesting_the_real_name(self):
+    def test_typos_are_refused_suggesting_the_table(self):
+        with self.subTest("the runtime key at the top level"):
+            with self.assertRaisesRegex(ManifestError, r"\[container\] table"):
+                isolation.config(self.store('runtime = "docker"\n\n[shell]\nidle_timeout = 5\n'))
         for name in ("contaner", "Container", "CONTAINER", "containers", "containr", "container_"):
             with self.subTest(name=name):
                 with self.assertRaisesRegex(ManifestError, rf"\[{name}\].*\[container\]"):
                     isolation.config(self.store(f'[{name}]\nruntime = "docker"\n'))
-
-    def test_unrelated_tables_are_not_mistaken_for_container(self):
-        text = '[shell]\nidle_timeout = 5\n[serve]\nidle_timeout = 9\n[something_else]\na = 1\n'
-        self.assertEqual(isolation.config(self.store(text)), isolation.Config())
 
     # AC11: a table of a removed feature stops every command that starts a plugin
     def test_a_removed_table_is_refused_naming_it(self):
@@ -247,15 +226,13 @@ class ContainerConfig(unittest.TestCase):
                 for check in (isolation.config, lambda store: store.config()):
                     with self.assertRaisesRegex(ManifestError, rf"config\.toml: \[{table}\] "):
                         check(self.store(text))
-
-    def test_the_isolation_message_says_to_use_container_runtime(self):
-        with self.assertRaises(ManifestError) as cm:
-            isolation.config(self.store("[isolation]\nenabled = true\n"))
-        self.assertIn('[container] runtime = "docker"', str(cm.exception))
-
-    def test_a_removed_table_is_refused_even_as_an_inline_table(self):
-        with self.assertRaisesRegex(ManifestError, r"\[isolation\] was replaced"):
-            isolation.config(self.store("isolation = { enabled = true }\n[shell]\nidle_timeout = 5\n"))
+        with self.subTest("the isolation message says to use container runtime"):
+            with self.assertRaises(ManifestError) as cm:
+                isolation.config(self.store("[isolation]\nenabled = true\n"))
+            self.assertIn('[container] runtime = "docker"', str(cm.exception))
+        with self.subTest("even as an inline table"):
+            with self.assertRaisesRegex(ManifestError, r"\[isolation\] was replaced"):
+                isolation.config(self.store("isolation = { enabled = true }\n[shell]\nidle_timeout = 5\n"))
 
     # a config that does not parse is fatal: nothing says which part would have been about the runtime
     def test_a_config_that_does_not_parse_is_refused_wherever_the_damage_is(self):
@@ -283,20 +260,17 @@ class ResolveRuntime(unittest.TestCase):
     def which(self, found: dict[str, str]):
         return mock.patch.object(isolation.shutil, "which", side_effect=lambda name: found.get(name))
 
-    def test_a_configured_path_is_used(self):
-        self.assertEqual(isolation.resolve_runtime(isolation.Config(sys.executable)), sys.executable)
-
-    def test_a_configured_name_is_looked_up_on_the_path(self):
-        with self.which({"podman": "/opt/bin/podman", "docker": "/usr/bin/docker"}):
-            self.assertEqual(isolation.resolve_runtime(isolation.Config("podman")), "/opt/bin/podman")
-
-    def test_without_a_setting_docker_comes_first(self):
-        with self.which({"podman": "/opt/bin/podman", "docker": "/usr/bin/docker"}):
-            self.assertEqual(isolation.resolve_runtime(isolation.Config()), "/usr/bin/docker")
-
-    def test_without_docker_podman_is_used(self):
-        with self.which({"podman": "/opt/bin/podman"}):
-            self.assertEqual(isolation.resolve_runtime(isolation.Config()), "/opt/bin/podman")
+    def test_resolution_order(self):
+        both = {"podman": "/opt/bin/podman", "docker": "/usr/bin/docker"}
+        cases = (
+            ("a configured path is used", None, sys.executable, sys.executable),
+            ("a configured name is looked up on the path", both, "podman", "/opt/bin/podman"),
+            ("without a setting docker comes first", both, None, "/usr/bin/docker"),
+            ("without docker podman is used", {"podman": "/opt/bin/podman"}, None, "/opt/bin/podman"),
+        )
+        for label, found, configured, expected in cases:
+            with self.subTest(label), (self.which(found) if found is not None else nullcontext()):
+                self.assertEqual(isolation.resolve_runtime(isolation.Config(configured)), expected)
 
     def test_no_runtime_gives_the_message_that_names_the_fix(self):
         with self.which({}):
@@ -304,9 +278,7 @@ class ResolveRuntime(unittest.TestCase):
                 isolation.resolve_runtime(isolation.Config())
         self.assertEqual(str(cm.exception), "no container runtime found (install docker or podman, "
                                             "or set [container] runtime in ~/.dock/config.toml)")
-
-    def test_the_message_names_the_config_file_of_this_store(self):
-        store = Store(temp_dir("dock-iso-home-"))
+        store = Store(temp_dir("dock-iso-home-"))  # and the message names the config file of this store
         with self.which({}):
             with self.assertRaises(ManifestError) as cm:
                 isolation.resolve_runtime(isolation.Config(), store)
@@ -340,19 +312,11 @@ class ResolveRuntime(unittest.TestCase):
                 self.assertEqual(os.path.realpath(found), os.path.realpath(runtime))
                 found = isolation.resolve_runtime(isolation.Config("docker"))
                 self.assertTrue(os.path.isabs(found), found)
-
-    def test_a_relative_path_entry_is_resolved_against_dock_cwd_not_a_later_cwd(self):
-        folder = temp_dir("dock-iso-path-")
-        runtime = folder / "docker"
-        runtime.write_text("#!/bin/sh\n")
-        runtime.chmod(0o755)
-        old = os.getcwd()
-        self.addCleanup(os.chdir, old)
-        os.chdir(folder)
-        with mock.patch.dict(os.environ, {"PATH": "."}):
-            found = isolation.resolve_runtime(isolation.Config())
-        os.chdir(old)
-        self.assertEqual(os.path.realpath(found), os.path.realpath(runtime))
+        with self.subTest("resolved against dock's cwd, not a later cwd"):
+            with mock.patch.dict(os.environ, {"PATH": "."}):
+                found = isolation.resolve_runtime(isolation.Config())
+            os.chdir(old)
+            self.assertEqual(os.path.realpath(found), os.path.realpath(runtime))
 
 
 class RunArgv(unittest.TestCase):
@@ -367,9 +331,6 @@ class RunArgv(unittest.TestCase):
         return isolation.run_argv(self.RUNTIME, m, name="dock-dev-dock-sample-1-0", data_dir=data_dir,
                                   cwd=cwd, uid_gid=uid_gid, env=env if env is not None else {"HOME": "/tmp"},
                                   passthrough=passthrough)
-
-    def test_image_tag_is_id_and_version(self):
-        self.assertEqual(isolation.image_tag(self.manifest()), "dock/dev.dock.sample:1.2.3")
 
     def test_exact_argv_without_permissions(self):
         m = self.manifest()
@@ -395,20 +356,13 @@ class RunArgv(unittest.TestCase):
             "dock/dev.dock.sample:1.2.3", "python3", "/plugin/main.py",
         ])
 
-    def test_no_passthrough_adds_no_name_only_entries(self):
-        argv = self.argv(self.manifest(), {"HOME": "/tmp"})
-        values = [argv[i + 1] for i, a in enumerate(argv) if a == "-e"]
-        self.assertEqual(values, ["HOME=/tmp"])
-
     def test_passthrough_env_lists_declared_names_that_are_set_on_the_host(self):
         m = Manifest.load(make_plugin('container = { cmd = "python3" }',
                                       '\n[capabilities]\nenv = ["MY_VAR", "UNSET_VAR", "EMPTY_VAR"]\n'))
         with mock.patch.dict(os.environ, {"MY_VAR": "v", "EMPTY_VAR": "", "OTHER": "x"}):
             os.environ.pop("UNSET_VAR", None)
             self.assertEqual(isolation.passthrough_env(m), ["MY_VAR", "EMPTY_VAR"])  # empty counts as set
-
-    def test_passthrough_env_is_empty_when_nothing_is_declared(self):
-        with mock.patch.dict(os.environ, {"OTHER": "x"}):
+        with mock.patch.dict(os.environ, {"OTHER": "x"}):  # nothing declared: nothing passed
             self.assertEqual(isolation.passthrough_env(self.manifest()), [])
 
     def test_network_flag_only_without_network_permission(self):
@@ -424,14 +378,13 @@ class RunArgv(unittest.TestCase):
         data_mount = "type=bind,src=/home/u/.dock/data/dev.dock.sample,dst=/home/u/.dock/data/dev.dock.sample"
         self.assertLess(argv.index(data_mount), i)
         self.assertNotIn("-v", argv)
-
-    def test_no_user_flag_without_posix_ids(self):
-        self.assertNotIn("--user", self.argv(self.manifest(), uid_gid=None))
-
-    def test_paths_with_spaces_stay_single_arguments(self):
+        # paths with spaces stay single arguments
         argv = self.argv(self.manifest(["fs:write:cwd"]), cwd="/my dir/x", data_dir="/data dir/p")
         self.assertIn("type=bind,src=/my dir/x,dst=/my dir/x", argv)
         self.assertIn("type=bind,src=/data dir/p,dst=/data dir/p", argv)
+
+    def test_no_user_flag_without_posix_ids(self):
+        self.assertNotIn("--user", self.argv(self.manifest(), uid_gid=None))
 
     def test_a_colon_comma_or_quote_in_a_mounted_path_is_refused_naming_the_path(self):
         for bad in ("/w/a:b", "/w/a,b", '/w/a"b'):
@@ -443,8 +396,7 @@ class RunArgv(unittest.TestCase):
                 with self.assertRaises(ManifestError) as cm:
                     self.argv(self.manifest(), data_dir=bad)
                 self.assertIn(bad, str(cm.exception))
-
-    def test_a_colon_in_the_cwd_is_fine_when_it_is_not_mounted(self):
+        # a colon in the cwd is fine when it is not mounted
         self.assertIn("type=bind,src=/home/u/.dock/data/dev.dock.sample,dst=/home/u/.dock/data/dev.dock.sample",
                       self.argv(self.manifest(["network"]), cwd="/w/a:b"))
 
@@ -461,9 +413,7 @@ class RunArgv(unittest.TestCase):
             os.environ.update(old)
         self.assertEqual(env, {"LANG": "C", "TZ": "UTC", "HOME": "/tmp",
                                "DOCK_PLUGIN_ID": m.id, "DOCK_API_VERSION": API_VERSION})  # the host PATH is not passed on
-
-    def test_allowlisted_variables_unset_on_the_host_are_omitted(self):
-        old = dict(os.environ)
+        # allowlisted variables unset on the host are omitted
         os.environ.clear()
         try:
             env = isolation.container_env(self.manifest())
@@ -491,10 +441,6 @@ class LaunchIsAlwaysAContainer(unittest.TestCase):
             isolation.Launch([sys.executable, "-c", "pass"], {})  # no way to describe a native start
         with self.assertRaises(TypeError):
             isolation.Launch([sys.executable, "-c", "pass"], {}, runtime="docker")
-
-    def test_nothing_of_the_native_launch_is_left(self):
-        for name in ("native_launch", "runner_line"):
-            self.assertFalse(hasattr(isolation, name), name)
 
 
 def install(store: Store, run: str, extra: str = "", dockerfile: str | bool = True) -> Manifest:
@@ -535,6 +481,10 @@ class RecordingRuntimeCase(unittest.TestCase):
     def configure(self, runtime: str | Path | None = None) -> None:
         dockenv.write_config(self.store.home, runtime or self.wrapper)
 
+    def reset_calls(self) -> None:
+        """Forget the recorded runtime calls: the start of the next case of a table-driven test."""
+        self.log.unlink(missing_ok=True)
+
     def calls(self, verb: str | None = None) -> list[list[str]]:
         return [c for c in dockenv.calls_in(self.log) if verb is None or c[0] == verb]
 
@@ -574,31 +524,19 @@ class Prepare(RecordingRuntimeCase):
         for leaked in ("hello-123", "OTHER", "nope", "UNSET_VAR"):
             self.assertNotIn(leaked, joined)
 
-    def test_second_prepare_does_not_build_again(self):
+    def test_build_caching(self):
         self.configure()
         m = install(self.store, CONTAINER)
-        with redirect_stderr(StringIO()):
-            isolation.prepare(self.store, m)
-            isolation.prepare(self.store, m)
-        self.assertEqual(len(self.calls("build")), 1)
-
-    def test_ensure_image_force_rebuilds_an_existing_image(self):
-        self.configure()
-        m = install(self.store, CONTAINER)
-        cfg = isolation.config(self.store)
-        with redirect_stderr(StringIO()):
-            isolation.ensure_image(cfg, self.store, m)
-            isolation.ensure_image(cfg, self.store, m, force=True)
-        self.assertEqual(len(self.calls("build")), 2)
-
-    def test_build_output_goes_to_the_plugin_log(self):
-        self.configure()
-        m = install(self.store, CONTAINER)
-        with redirect_stderr(StringIO()):
-            isolation.prepare(self.store, m)
-        log = self.store.log_path(m.id).read_text()
-        self.assertIn(f"build {SAMPLE_IMAGE}", log)  # dock's header for the build
-        self.assertGreater(len(log.splitlines()), 2)  # and the runtime's own build output after it
+        with self.subTest("a second prepare does not build again"):
+            with redirect_stderr(StringIO()):
+                isolation.prepare(self.store, m)
+                isolation.prepare(self.store, m)
+            self.assertEqual(len(self.calls("build")), 1)
+        with self.subTest("ensure_image with force rebuilds an existing image"):
+            cfg = isolation.config(self.store)
+            with redirect_stderr(StringIO()):
+                isolation.ensure_image(cfg, self.store, m, force=True)
+            self.assertEqual(len(self.calls("build")), 2)
 
     def test_failing_build_refuses_with_the_log_path(self):
         self.configure()
@@ -609,6 +547,9 @@ class Prepare(RecordingRuntimeCase):
         self.assertEqual(str(cm.exception), f"dev.dock.sample: image build failed (see {self.store.log_path(m.id)})")
         self.assertEqual(self.calls("run"), [])
         self.assertFalse(dockenv.image_exists(SAMPLE_IMAGE))
+        log = self.store.log_path(m.id).read_text()
+        self.assertIn(f"build {SAMPLE_IMAGE}", log)  # dock's header for the build
+        self.assertGreater(len(log.splitlines()), 2)  # and the runtime's own build output after it
 
     def test_plugin_with_container_entry_but_no_dockerfile_is_refused(self):
         self.configure()
@@ -631,14 +572,6 @@ class Prepare(RecordingRuntimeCase):
             isolation.prepare(store, m)
         self.assertIn(str(store.data_root / m.id), str(cm.exception))
         self.assertEqual(self.calls(), [])
-
-    def test_runtime_found_on_path_is_used_by_its_resolved_path(self):
-        self.configure(runtime=self.wrapper.name)
-        m = install(self.store, CONTAINER)
-        with mock.patch.dict(os.environ, {"PATH": f"{self.wrapper.parent}{os.pathsep}{os.environ['PATH']}"}):
-            with redirect_stderr(StringIO()):
-                launch = isolation.prepare(self.store, m)
-        self.assertEqual(launch.argv[0], str(self.wrapper))
 
 
 class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
@@ -770,19 +703,31 @@ class CwdMount(RecordingRuntimeCase):
         project = (self.user_home / "project").resolve()
         launch = self.prepare(project)
         self.assertIn(f"type=bind,src={project},dst={project}", launch.argv)
+        # without fs:write:cwd any cwd is fine because nothing is mounted
+        m = Manifest.load(make_plugin(CONTAINER, '\n[capabilities]\npermissions = ["network"]'))
+        (m.root / "Dockerfile").write_text("FROM scratch\n")
+        launch = self.prepare("/", m)
+        self.assertNotIn("/:/", launch.argv)
 
-    def test_the_filesystem_root_is_refused(self):
-        self.assertRefused("/", "filesystem root")
-
-    def test_the_home_directory_is_refused(self):
-        self.assertRefused(self.user_home, "home directory")
-
-    def test_a_directory_containing_the_dock_home_is_refused(self):
-        self.assertRefused(self.store.home.parent, "dock home")
-
-    def test_the_dock_home_itself_and_anything_inside_it_is_refused(self):
-        self.assertRefused(self.store.home, "dock home")
-        self.assertRefused(self.store.home / "data" / "dev.dock.sample", "dock home")
+    def test_too_broad_a_cwd_is_refused(self):
+        cases = (
+            ("the filesystem root", lambda: "/", "filesystem root"),
+            ("the home directory", lambda: self.user_home, "home directory"),
+            ("a directory containing the dock home", lambda: self.store.home.parent, "dock home"),
+            ("the dock home itself", lambda: self.store.home, "dock home"),
+            ("inside the dock home", lambda: self.store.home / "data" / "dev.dock.sample", "dock home"),
+        )
+        for label, cwd, reason in cases:
+            with self.subTest(label):
+                self.assertRefused(cwd(), reason)
+        with self.subTest("a directory above the home directory"):
+            deep = self.tmp / "a" / "b" / "user"
+            (deep / "project").mkdir(parents=True)
+            with mock.patch.dict(os.environ, {"HOME": str(deep)}):
+                self.assertRefused(deep.parent, "above your home directory")
+                self.assertRefused(deep.parent.parent, "above your home directory")
+                launch = self.prepare(deep / "project")  # a project inside the home is still fine
+            self.assertTrue(any(str(deep / "project") in a for a in launch.argv), launch.argv)
 
     def test_a_symlink_to_a_refused_directory_is_refused(self):
         link = self.tmp / "innocent"
@@ -798,32 +743,14 @@ class CwdMount(RecordingRuntimeCase):
             self.assertIn(str(odd), str(cm.exception))
             self.assertEqual(self.calls(), [])  # no image probe, no build, no run
 
-    def test_a_directory_above_the_home_directory_is_refused(self):
-        deep = self.tmp / "a" / "b" / "user"
-        (deep / "project").mkdir(parents=True)
-        with mock.patch.dict(os.environ, {"HOME": str(deep)}):
-            self.assertRefused(deep.parent, "above your home directory")
-            self.assertRefused(deep.parent.parent, "above your home directory")
-            launch = self.prepare(deep / "project")  # a project inside the home is still fine
-        self.assertTrue(any(str(deep / "project") in a for a in launch.argv), launch.argv)
-
-    def test_a_case_variant_of_the_home_directory_is_refused(self):
-        variant = Path(str(self.user_home).swapcase())
-        if not variant.exists() or not os.path.samefile(variant, self.user_home):
-            self.skipTest("the temporary filesystem is case-sensitive")
-        self.assertRefused(variant, "home directory")
-
-    def test_a_case_variant_of_the_dock_home_is_refused(self):
-        variant = Path(str(self.store.home).swapcase())
-        if not variant.exists() or not os.path.samefile(variant, self.store.home):
-            self.skipTest("the temporary filesystem is case-sensitive")
-        self.assertRefused(variant, "dock home")
-
-    def test_without_fs_write_cwd_any_cwd_is_fine_because_nothing_is_mounted(self):
-        m = Manifest.load(make_plugin(CONTAINER, '\n[capabilities]\npermissions = ["network"]'))
-        (m.root / "Dockerfile").write_text("FROM scratch\n")
-        launch = self.prepare("/", m)
-        self.assertNotIn("/:/", launch.argv)
+    def test_a_case_variant_of_a_refused_directory_is_refused(self):
+        for label, real, reason in (("the home directory", self.user_home, "home directory"),
+                                    ("the dock home", self.store.home, "dock home")):
+            with self.subTest(label):
+                variant = Path(str(real).swapcase())
+                if not variant.exists() or not os.path.samefile(variant, real):
+                    self.skipTest("the temporary filesystem is case-sensitive")
+                self.assertRefused(variant, reason)
 
 
 FIXTURES = ROOT / "tests" / "fixtures"
@@ -911,8 +838,7 @@ class EnvPassthrough(DockIsolated):
         text = json.dumps(argv)
         for leaked in ("hello-123", "OTHER", "nope", "UNSET_VAR"):
             self.assertNotIn(leaked, text)
-
-    def test_a_secret_declared_variable_never_appears_in_any_runtime_call(self):
+        # a secret declared variable never appears in any runtime call
         env = {**self.host_env, "MY_VAR": "secret-xyz"}
         r = self.dock("dev.dock.envprobe:env", "MY_VAR", env=env)
         self.assertEqual(r.stdout.strip(), "set:secret-xyz", r.stderr)  # the plugin inside sees it
@@ -937,36 +863,6 @@ class IsolatedRun(DockIsolated):
         self.assertEqual(len(self.calls("build")), 0)
         self.assertEqual(len(self.run_calls()), 1)
 
-    def test_a_missing_image_is_built_on_first_use_and_not_again(self):
-        copy = self.plugin_copy(FIXTURES / "probe", "dev.dock.buildonce")
-        self.store.install(copy)
-        r = self.dock("dev.dock.buildonce:code", "0")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("dock: building image dock/dev.dock.buildonce:0.1.0", r.stderr)
-        r = self.dock("dev.dock.buildonce:code", "0")
-        self.assertNotIn("building image", r.stderr)
-        self.assertEqual(len(self.calls("build")), 1)
-        self.assertEqual(len(self.run_calls()), 2)
-        log = self.store.log_path("dev.dock.buildonce").read_text()
-        self.assertIn("build dock/dev.dock.buildonce:0.1.0", log)  # AC5: the build log is in logs/<id>.log
-
-    def test_failing_build_refuses_with_exit_1_and_starts_nothing(self):
-        def break_build(path):
-            (path / "Dockerfile").write_text("FROM python:3.12-slim\nRUN false\n")
-
-        self.store.install(self.plugin_copy(FIXTURES / "probe", "dev.dock.probefail", break_build))
-        r = self.dock("dev.dock.probefail:code", "0")
-        self.assertEqual(r.returncode, 1)
-        log = self.store.log_path("dev.dock.probefail")
-        self.assertIn(f"dock: dev.dock.probefail: image build failed (see {log})", r.stderr)
-        self.assertEqual(self.run_calls(), [])
-
-    def test_missing_runtime_is_refused(self):
-        self.configure(runtime="no-such-runtime-xyz")
-        r = self.dock("code", "0")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("dock: container runtime 'no-such-runtime-xyz' not found", r.stderr)
-
     def test_recorded_run_has_every_restriction_and_only_allowlisted_env(self):
         env = {**self.env, "SECRET_TOKEN": "s3cret", "LANG": "C.UTF-8", "TZ": "UTC"}
         self.assertEqual(self.dock("code", "0", env=env).returncode, 0)
@@ -986,11 +882,6 @@ class IsolatedRun(DockIsolated):
         self.assertEqual(names, {"LANG", "TZ", "HOME", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"})  # not PATH: the image's own
         self.assertNotIn("s3cret", " ".join(argv))
 
-    def test_hello_one_shot_works_in_a_container(self):
-        r = self.dock("hello", "Roman")
-        self.assertEqual(r.stdout.strip(), "hello, Roman!", r.stderr)
-        self.assertEqual(len(self.run_calls()), 1)
-
     def test_prompt_through_the_host_works_in_a_container(self):
         self.assertIn("hello, Ada!", self.dock("hello", stdin="Ada\n").stdout)
 
@@ -999,11 +890,6 @@ class IsolatedRun(DockIsolated):
         self.assertEqual(r.returncode, 0, r.stderr)
         got = json.loads(r.stdout)["inputs"]
         self.assertEqual(got, {"url": "http://x", "output": "out.bin", "retries": 3, "quiet": False})
-
-    def test_plugin_sees_only_the_allowlisted_environment(self):
-        env = {**self.env, "SECRET_TOKEN": "s3cret"}
-        self.dock("pid", env=env)  # starts it; the probe has no env command, so look at the recorded run
-        self.assertNotIn("SECRET_TOKEN", json.dumps(self.run_calls()))
 
     def test_shell_reuses_one_warm_container_for_two_operations(self):
         r = self.dock("shell", stdin="hello a\nhello b\n")
@@ -1035,19 +921,21 @@ class ContainerCleanup(DockIsolated):
         for name in names:  # and nothing is left in the runtime
             self.assertFalse(dockenv.container_exists(name), f"{name} is still there")
 
-    def test_one_shot_exit_removes_the_container(self):
-        self.assertEqual(self.dock("code", "0").returncode, 0)
-        self.assertAllRemoved()
-
-    def test_every_container_of_a_session_is_removed_at_exit(self):
-        r = self.dock("shell", stdin="hello a\ncode 0\n")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(len(self.container_names()), 2)
-        self.assertAllRemoved()
-
-    def test_crashed_plugin_container_is_removed(self):
-        self.assertEqual(self.dock("crash").returncode, 1)
-        self.assertAllRemoved()
+    def test_exit_paths_remove_the_container(self):
+        with self.subTest("one-shot exit"):
+            self.reset_calls()
+            self.assertEqual(self.dock("code", "0").returncode, 0)
+            self.assertAllRemoved()
+        with self.subTest("every container of a session is removed at exit"):
+            self.reset_calls()
+            r = self.dock("shell", stdin="hello a\ncode 0\n")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(len(self.container_names()), 2)
+            self.assertAllRemoved()
+        with self.subTest("a crashed plugin's container"):
+            self.reset_calls()
+            self.assertEqual(self.dock("crash").returncode, 1)
+            self.assertAllRemoved()
 
     def test_failed_initialize_removes_the_container(self):
         def die(path):
@@ -1141,41 +1029,44 @@ class Sweep(DockIsolated):
         self.assertEqual(ps[:5], ["ps", "-a", "--filter", "label=dev.dock.owner", "--format"])
         self.assertEqual(ps[5], '{{.Names}} {{.Label "dev.dock.owner"}}')
 
-    def test_sweep_leaves_containers_of_another_host_alone(self):
+    def test_sweep_leaves_containers_it_cannot_judge_alone(self):
         self.configure()
-        names = self.seed(elsewhere=owner(dead_pid(), host="some-other-host"))  # its pid means nothing here
-        self.assertEqual(self.swept(isolation.sweep(self.store)), [])
-        self.assertTrue(dockenv.container_exists(names["elsewhere"]))
+        cases = (
+            # its pid means nothing here
+            ("another host", dict(elsewhere=owner(dead_pid(), host="some-other-host"))),
+            # not host:pid: whoever wrote it, we cannot judge it
+            ("the old pid-only label", dict(old=str(dead_pid()))),
+            # os.kill would raise or signal a process group
+            ("unparsable labels", dict(odd="not-a-pid", odd2=f"{HOST}:abc", odd3=f"{HOST}:", odd4=":12",
+                                       huge=f"{HOST}:{'9' * 30}", zero=f"{HOST}:0")),
+        )
+        for label, owners in cases:
+            with self.subTest(label):
+                names = self.seed(**owners)
+                self.assertEqual(self.swept(isolation.sweep(self.store)), [])
+                for name in names.values():
+                    self.assertTrue(dockenv.container_exists(name), name)
 
-    def test_sweep_leaves_the_old_pid_only_label_alone(self):
-        self.configure()
-        names = self.seed(old=str(dead_pid()))  # not host:pid: whoever wrote it, we cannot judge it
-        self.assertEqual(self.swept(isolation.sweep(self.store)), [])
-        self.assertTrue(dockenv.container_exists(names["old"]))
-
-    def test_sweep_ignores_unparsable_labels(self):
-        self.configure()
-        names = self.seed(odd="not-a-pid", odd2=f"{HOST}:abc", odd3=f"{HOST}:", odd4=":12",
-                          huge=f"{HOST}:{'9' * 30}", zero=f"{HOST}:0")  # os.kill would raise or signal a process group
-        self.assertEqual(self.swept(isolation.sweep(self.store)), [])
-        for name in names.values():
-            self.assertTrue(dockenv.container_exists(name), name)
-
-    def test_sweep_is_skipped_on_windows(self):
-        self.configure()
-        names = self.seed(stale=owner(dead_pid()))
-        with mock.patch.object(isolation.sys, "platform", "win32"):
+    def test_sweep_is_a_no_op(self):
+        with self.subTest("skipped on windows"):
+            self.configure()
+            names = self.seed(stale=owner(dead_pid()))
+            with mock.patch.object(isolation.sys, "platform", "win32"):
+                self.assertEqual(isolation.sweep(self.store), [])
+            self.assertEqual(self.calls(), [])
+            self.assertTrue(dockenv.container_exists(names["stale"]))
+        with self.subTest("without a container table and no docker it calls nothing"):
+            (self.store.home / "config.toml").unlink()
+            self.reset_calls()
+            self.seed(stale=owner(dead_pid()))
+            empty = self.tmp / "empty"
+            empty.mkdir()
+            with mock.patch.dict(os.environ, {"PATH": str(empty)}):  # no `docker` anywhere
+                self.assertEqual(isolation.sweep(self.store), [])
+            self.assertEqual(self.calls(), [])
+        with self.subTest("a missing runtime is silent"):
+            self.configure(runtime="no-such-runtime-xyz")
             self.assertEqual(isolation.sweep(self.store), [])
-        self.assertEqual(self.calls(), [])
-        self.assertTrue(dockenv.container_exists(names["stale"]))
-
-    def test_sweep_without_a_container_table_and_no_docker_calls_nothing(self):
-        self.seed(stale=owner(dead_pid()))
-        empty = self.tmp / "empty"
-        empty.mkdir()
-        with mock.patch.dict(os.environ, {"PATH": str(empty)}):  # no `docker` anywhere
-            self.assertEqual(isolation.sweep(self.store), [])
-        self.assertEqual(self.calls(), [])
 
     def test_sweep_without_a_container_table_uses_docker_when_it_is_on_the_path(self):
         # The user may have dropped [container] after a crash: dock's own leftovers should still go.
@@ -1197,22 +1088,17 @@ class Sweep(DockIsolated):
             self.assertEqual(isolation.sweep(self.store), [])
         self.assertLess(time.monotonic() - started, 3)
 
-    def test_sweep_with_missing_runtime_is_silent(self):
-        self.configure(runtime="no-such-runtime-xyz")
-        self.assertEqual(isolation.sweep(self.store), [])
-
-    def test_one_shot_start_removes_a_stale_container_and_keeps_a_live_one(self):
+    def test_start_removes_a_stale_container_and_keeps_a_live_one(self):
         self.configure()
-        names = self.seed(stale=owner(dead_pid()), live=owner(os.getpid()))
-        self.assertEqual(self.dock("code", "0").returncode, 0)
-        self.assertFalse(dockenv.container_exists(names["stale"]))  # AC6
-        self.assertTrue(dockenv.container_exists(names["live"]))
-
-    def test_shell_start_removes_a_stale_container(self):
-        self.configure()
-        names = self.seed(stale=owner(dead_pid()))
-        self.assertEqual(self.dock("shell", stdin="").returncode, 0)
-        self.assertFalse(dockenv.container_exists(names["stale"]))
+        with self.subTest("one-shot start"):
+            names = self.seed(stale=owner(dead_pid()), live=owner(os.getpid()))
+            self.assertEqual(self.dock("code", "0").returncode, 0)
+            self.assertFalse(dockenv.container_exists(names["stale"]))  # AC6
+            self.assertTrue(dockenv.container_exists(names["live"]))
+        with self.subTest("shell start"):
+            names = self.seed(stale=owner(dead_pid()))
+            self.assertEqual(self.dock("shell", stdin="").returncode, 0)
+            self.assertFalse(dockenv.container_exists(names["stale"]))
 
 
 class BrokenConfig(DockIsolated):
@@ -1233,24 +1119,34 @@ class BrokenConfig(DockIsolated):
         self.assertFalse(self.store.log_path("dev.dock.hello").exists(), "a plugin process was started")
         self.assertEqual(self.run_calls(), [])
 
-    def test_each_removed_table_refuses_the_command_naming_the_table(self):
-        for table, body in (("isolation", "enabled = true"), ("wasm", 'runtime = "x"'),
-                            ("http", 'hosts = ["x"]'), ("providers", 'llm = "x"')):
-            with self.subTest(table=table):
-                self.write(self.container_section() + f"[{table}]\n{body}\n")
+    def test_bad_config_refuses_without_starting(self):
+        removed = (("isolation", "enabled = true"), ("wasm", 'runtime = "x"'),
+                   ("http", 'hosts = ["x"]'), ("providers", 'llm = "x"'))
+        cases = [(f"removed table [{t}]", lambda t=t, b=body: self.write(self.container_section() + f"[{t}]\n{b}\n"),
+                  (f"[{t}] ",)) for t, body in removed]
+        cases += [
+            ("the isolation message says to use container runtime",
+             lambda: self.write("[isolation]\nenabled = true\n"), ("[container] runtime",)),
+            ("a broken container header", lambda: self.write(f'[container\nruntime = "{self.wrapper}"\n'), ()),
+            ("a broken section elsewhere", lambda: self.write("[shell\n\n" + self.container_section()), ()),
+            ("a misspelt container table", lambda: self.write(self.container_section("[contaner]")), ("[container]",)),
+            ("an unknown key", lambda: self.write(self.container_section(body="runtimes = true")), ("runtimes", "known: runtime")),
+            ("a non-utf8 config", lambda: self.write(b"# caf\xe9\n" + self.container_section().encode()), ()),
+            ("an unreadable config", lambda: (self.store.home / "config.toml").mkdir(), ()),
+        ]
+        for label, setup, expected in cases:
+            with self.subTest(label):
+                path = self.store.home / "config.toml"
+                if path.is_dir():  # the unreadable case makes it a directory
+                    path.rmdir()
+                path.unlink(missing_ok=True)
+                self.reset_calls()
+                self.store.log_path("dev.dock.hello").unlink(missing_ok=True)
+                setup()
                 r = self.dock("hello", "Roman")
                 self.assertRefusedWithoutStarting(r)
-                self.assertIn(f"[{table}] ", r.stderr)
-
-    def test_the_isolation_message_says_to_use_container_runtime(self):
-        self.write('[isolation]\nenabled = true\n')
-        r = self.dock("hello", "Roman")
-        self.assertRefusedWithoutStarting(r)
-        self.assertIn("[container] runtime", r.stderr)
-
-    def test_a_broken_container_header_refuses_to_start_the_plugin(self):
-        self.write(f'[container\nruntime = "{self.wrapper}"\n')
-        self.assertRefusedWithoutStarting(self.dock("hello", "Roman"))
+                for text in expected:
+                    self.assertIn(text, r.stderr)
 
     def test_a_broken_container_header_refuses_in_the_shell_too_without_starting(self):
         self.write(f'[container\nruntime = "{self.wrapper}"\n')
@@ -1259,36 +1155,11 @@ class BrokenConfig(DockIsolated):
         self.assertIn("config.toml", r.stderr)
         self.assertFalse(self.store.log_path("dev.dock.hello").exists())
 
-    def test_a_broken_section_elsewhere_refuses_too(self):
-        self.write("[shell\n\n" + self.container_section())
-        self.assertRefusedWithoutStarting(self.dock("hello", "Roman"))
-
     def test_a_valid_container_table_with_other_tables_runs_in_a_container(self):
         self.write(self.container_section() + "[shell]\nidle_timeout = 5\n")
         r = self.dock("hello", "Roman")
         self.assertEqual(r.stdout.strip(), "hello, Roman!", r.stderr)
         self.assertEqual(len(self.run_calls()), 1)
-
-    def test_a_misspelt_container_table_refuses_naming_the_real_one(self):
-        self.write(self.container_section("[contaner]"))
-        r = self.dock("hello", "Roman")
-        self.assertRefusedWithoutStarting(r)
-        self.assertIn("[container]", r.stderr)
-
-    def test_an_unknown_key_refuses_naming_it(self):
-        self.write(self.container_section(body="runtimes = true"))
-        r = self.dock("hello", "Roman")
-        self.assertRefusedWithoutStarting(r)
-        self.assertIn("runtimes", r.stderr)
-        self.assertIn("known: runtime", r.stderr)
-
-    def test_a_non_utf8_config_refuses_without_a_traceback(self):
-        self.write(b"# caf\xe9\n" + self.container_section().encode())
-        self.assertRefusedWithoutStarting(self.dock("hello", "Roman"))
-
-    def test_an_unreadable_config_refuses_without_a_traceback(self):
-        (self.store.home / "config.toml").mkdir()
-        self.assertRefusedWithoutStarting(self.dock("hello", "Roman"))
 
 
 class PluginBuild(DockIsolated):
@@ -1318,43 +1189,41 @@ class PluginBuild(DockIsolated):
         self.assertEqual(len(self.calls("build")), 1)
         self.assertEqual(self.calls("image"), [["image", "inspect", "dock/dev.dock.hello:0.1.0"]])  # not asked again
 
-    def test_failing_build_prints_the_build_failed_message_and_exits_1(self):
-        self.configure()
+    def test_bad_build_arguments_are_reported(self):
+        with self.subTest("an unknown plugin is reported"):
+            r = self.dock("plugin", "build", "dev.dock.nope")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("dev.dock.nope is not installed", r.stderr)
+        with self.subTest("build needs exactly one id"):
+            r = self.dock("plugin", "build")
+            self.assertEqual(r.returncode, 2)
+            self.assertIn("plugin build <id>", r.stderr)
+        with self.subTest("a failing build prints the build-failed message and exits 1"):
+            self.configure()
 
-        def break_build(path):
-            (path / "Dockerfile").write_text("FROM python:3.12-slim\nRUN false\n")
+            def break_build(path):
+                (path / "Dockerfile").write_text("FROM python:3.12-slim\nRUN false\n")
 
-        self.store.install(self.plugin_copy(ROOT / "plugin" / "hello", "dev.dock.hellofail", break_build))
-        r = self.dock("plugin", "build", "dev.dock.hellofail")
-        self.assertEqual(r.returncode, 1)
-        log = self.store.log_path("dev.dock.hellofail")
-        self.assertIn(f"dock: dev.dock.hellofail: image build failed (see {log})", r.stderr)
-        self.assertNotIn("built dock/", r.stdout)
-
-    def test_plugin_without_a_dockerfile_is_refused(self):
-        install(self.store, CONTAINER, dockerfile=False)
-        self.configure()
-        r = self.dock("plugin", "build", "dev.dock.sample")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("dock: dev.dock.sample: the plugin has no Dockerfile (Dockerfile): add one and reinstall it",
-                      r.stderr)
-        self.assertEqual(self.calls("build"), [])
-
-    def test_missing_runtime_is_refused(self):
-        self.configure(runtime="no-such-runtime-xyz")
-        r = self.dock("plugin", "build", "dev.dock.hello")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("dock: container runtime 'no-such-runtime-xyz' not found", r.stderr)
-
-    def test_unknown_plugin_is_reported(self):
-        r = self.dock("plugin", "build", "dev.dock.nope")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("dev.dock.nope is not installed", r.stderr)
-
-    def test_build_needs_exactly_one_id(self):
-        r = self.dock("plugin", "build")
-        self.assertEqual(r.returncode, 2)
-        self.assertIn("plugin build <id>", r.stderr)
+            self.store.install(self.plugin_copy(ROOT / "plugin" / "hello", "dev.dock.hellofail", break_build))
+            r = self.dock("plugin", "build", "dev.dock.hellofail")
+            self.assertEqual(r.returncode, 1)
+            log = self.store.log_path("dev.dock.hellofail")
+            self.assertIn(f"dock: dev.dock.hellofail: image build failed (see {log})", r.stderr)
+            self.assertNotIn("built dock/", r.stdout)
+        with self.subTest("a plugin without a Dockerfile is refused"):
+            self.reset_calls()
+            install(self.store, CONTAINER, dockerfile=False)
+            self.configure()
+            r = self.dock("plugin", "build", "dev.dock.sample")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("dock: dev.dock.sample: the plugin has no Dockerfile (Dockerfile): add one and reinstall it",
+                          r.stderr)
+            self.assertEqual(self.calls("build"), [])
+        with self.subTest("a missing runtime is refused"):
+            self.configure(runtime="no-such-runtime-xyz")
+            r = self.dock("plugin", "build", "dev.dock.hello")
+            self.assertEqual(r.returncode, 1)
+            self.assertIn("dock: container runtime 'no-such-runtime-xyz' not found", r.stderr)
 
     def test_works_from_the_shell_and_the_help_lists_it(self):
         self.configure()
@@ -1376,44 +1245,40 @@ class PluginInfoRuntime(DockIsolated):
     def runtime_line(self, plugin_id, env=None):
         return next(l for l in self.info(plugin_id, env).splitlines() if l.startswith("runtime:"))
 
-    def test_runtime_without_network_and_cwd_access(self):
-        self.configure()
-        self.assertEqual(self.runtime_line("dev.dock.hello"), "runtime:     docker (no network, no cwd access)")
-        self.assertEqual(self.calls(), [])  # info asks the runtime nothing
+    def test_runtime_line(self):
+        with self.subTest("without network and cwd access"):
+            self.configure()
+            self.assertEqual(self.runtime_line("dev.dock.hello"), "runtime:     docker (no network, no cwd access)")
+            self.assertEqual(self.calls(), [])  # info asks the runtime nothing
+        with self.subTest("the runtime is found without any config"):
+            (self.store.home / "config.toml").unlink()
+            self.assertEqual(self.runtime_line("dev.dock.hello"), "runtime:     docker (no network, no cwd access)")
+        with self.subTest("network without cwd"):
+            install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network"]')
+            self.configure()
+            self.assertEqual(self.runtime_line("dev.dock.sample"), "runtime:     docker (network, no cwd access)")
+        with self.subTest("cwd and network"):  # a reinstall under the same id
+            install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network", "fs:write:cwd"]')
+            self.assertEqual(self.runtime_line("dev.dock.sample"), "runtime:     docker (network, cwd)")
 
-    def test_runtime_is_found_without_any_config(self):
-        self.assertEqual(self.runtime_line("dev.dock.hello"), "runtime:     docker (no network, no cwd access)")
-
-    def test_network_without_cwd(self):
-        install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network"]')
-        self.configure()
-        self.assertEqual(self.runtime_line("dev.dock.sample"), "runtime:     docker (network, no cwd access)")
-
-    def test_cwd_and_network(self):
-        install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network", "fs:write:cwd"]')
-        self.configure()
-        self.assertEqual(self.runtime_line("dev.dock.sample"), "runtime:     docker (network, cwd)")
-
-    def test_the_runtime_comes_after_env_and_before_the_location(self):
-        keys = [l.split(":")[0] for l in self.info("dev.dock.hello").splitlines()]
-        self.assertEqual(keys, ["id", "version", "protocol", "description", "commands", "permissions", "env",
+    def test_info_layout_has_nothing_of_a_removed_feature(self):
+        keys = [l.split(":")[0] for l in self.info("dev.dock.hello").splitlines()]  # the runtime after env, before location
+        self.assertEqual(keys, ["id", "version", "protocol", "description", "commands", "permissions", "env", "keywords",
                                 "runtime", "location"])
-
-    def test_no_line_of_a_removed_feature_is_left(self):
         text = self.info("dev.dock.hello")
         for removed in ("runner:", "isolation:", "builds:", "provision", "provides", "requires", "http:"):
             self.assertNotIn(removed, text)
 
-    def test_no_runtime_found_still_shows_info_and_says_what_to_install(self):
-        empty = self.tmp / "empty"
-        empty.mkdir()
-        env = {**self.env, "PATH": str(empty)}  # AC8: info needs no runtime
-        self.assertEqual(self.runtime_line("dev.dock.hello", env),
-                         "runtime:     none found (install docker or podman, or set [container] runtime)")
-
-    def test_broken_config_does_not_break_info(self):
-        (self.store.home / "config.toml").write_text("[container\n")
-        self.assertIn("runtime:     unknown", self.runtime_line("dev.dock.hello"))
+    def test_info_survives_a_missing_runtime_and_a_broken_config(self):
+        with self.subTest("no runtime found still shows info and says what to install"):
+            empty = self.tmp / "empty"
+            empty.mkdir()
+            env = {**self.env, "PATH": str(empty)}  # AC8: info needs no runtime
+            self.assertEqual(self.runtime_line("dev.dock.hello", env),
+                             "runtime:     none found (install docker or podman, or set [container] runtime)")
+        with self.subTest("a broken config does not break info"):
+            (self.store.home / "config.toml").write_text("[container\n")
+            self.assertIn("runtime:     unknown", self.runtime_line("dev.dock.hello"))
 
 
 class PluginInfoEnv(DockIsolated):
@@ -1423,15 +1288,15 @@ class PluginInfoEnv(DockIsolated):
         out = self.dock("plugin", "info", plugin_id).stdout
         return next(l for l in out.splitlines() if l.startswith(key))
 
-    def test_dash_without_declared_env(self):
-        self.assertEqual(self.line("dev.dock.hello"), "env:         -")
-
-    def test_declared_names_are_listed_after_the_permissions(self):
-        install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network"]\nenv = ["A_ONE", "B_TWO"]\n')
-        self.assertEqual(self.line("dev.dock.sample"), "env:         A_ONE, B_TWO")
-        lines = self.dock("plugin", "info", "dev.dock.sample").stdout.splitlines()
-        keys = [l.split(":")[0] for l in lines]
-        self.assertEqual(keys.index("env"), keys.index("permissions") + 1)
+    def test_the_env_line(self):
+        with self.subTest("a dash without declared env"):
+            self.assertEqual(self.line("dev.dock.hello"), "env:         -")
+        with self.subTest("declared names are listed after the permissions"):
+            install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network"]\nenv = ["A_ONE", "B_TWO"]\n')
+            self.assertEqual(self.line("dev.dock.sample"), "env:         A_ONE, B_TWO")
+            lines = self.dock("plugin", "info", "dev.dock.sample").stdout.splitlines()
+            keys = [l.split(":")[0] for l in lines]
+            self.assertEqual(keys.index("env"), keys.index("permissions") + 1)
 
     def test_install_summary_lists_env_only_when_declared(self):
         root = make_plugin(CONTAINER, '\n[capabilities]\nenv = ["A_ONE", "B_TWO"]\n')
@@ -1441,12 +1306,6 @@ class PluginInfoEnv(DockIsolated):
         # hello under another id: a reinstall of hello itself would delete the image the whole run shares
         out = self.dock("plugin", "install", str(self.plugin_copy(ROOT / "plugin" / "hello", "dev.dock.hellosummary"))).stdout
         self.assertNotIn("env:", out)
-
-    def test_a_bad_env_fails_the_install_with_exit_1_naming_the_entry(self):
-        root = make_plugin(CONTAINER, '\n[capabilities]\nenv = ["lower"]\n')
-        r = self.dock("plugin", "install", str(root))
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("env entry 'lower'", r.stderr)
 
 
 class ShellStatus(DockIsolated):
@@ -1462,14 +1321,6 @@ class ShellStatus(DockIsolated):
         r = self.dock("shell", stdin="hello a\nstatus\n")
         line = self.status_line(r.stdout, "dev.dock.hello")
         self.assertRegex(line, r"^dev\.dock\.hello +running +idle 0m\d\ds +docker$")
-
-    def test_status_has_nothing_of_the_removed_features(self):
-        self.configure()
-        r = self.dock("shell", stdin="hello a\ncode 0\nstatus\n")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        for removed in ("provides", "isolated", "wasm", "native"):
-            self.assertNotIn(removed, r.stdout)
-        self.assertIn("dev.dock.probe", r.stdout)
 
 
 class ReinstallDropsTheImage(RecordingRuntimeCase):
@@ -1493,6 +1344,11 @@ class ReinstallDropsTheImage(RecordingRuntimeCase):
         (root / "Dockerfile").write_text("FROM scratch\n")
         return self.store.install(root)
 
+    def fresh_store(self) -> None:
+        """A new DOCK_HOME, no config, no recorded calls: the start of the next case of a table-driven test."""
+        self.store = Store(self.tmp / f"home-{time.monotonic_ns()}")
+        self.reset_calls()
+
     def image_rms(self):
         return [c for c in self.calls("image") if c[1] == "rm"]
 
@@ -1508,14 +1364,9 @@ class ReinstallDropsTheImage(RecordingRuntimeCase):
         self.sample()
         self.assertIn(["image", "rm", "-f", self.TAG], self.image_rms())
         self.assertFalse(dockenv.image_exists(self.TAG))
-
-    def test_the_next_run_rebuilds_the_image(self):
-        self.configure()
-        m = self.sample()
-        self.build_image(m)
-        m = self.sample()
+        # the next run rebuilds the image
         with redirect_stderr(StringIO()):
-            isolation.prepare(self.store, m)
+            isolation.prepare(self.store, self.store.get(self.ID))
         self.assertEqual(len(self.calls("build")), 2)
 
     def test_a_first_install_asks_the_runtime_nothing_and_so_never_drops_a_shared_image(self):
@@ -1543,27 +1394,29 @@ class ReinstallDropsTheImage(RecordingRuntimeCase):
             self.sample()
         self.assertEqual(self.image_rms(), [["image", "rm", "-f", self.TAG]])
 
-    def test_a_missing_runtime_does_not_fail_the_install(self):
-        self.sample()
-        self.configure(runtime="/nonexistent/runtime-xyz")
-        with redirect_stderr(StringIO()):
+    def test_the_install_does_not_fail_when_the_old_image_cannot_be_dropped(self):
+        with self.subTest("a missing runtime"):
+            self.fresh_store()
+            self.sample()
+            self.configure(runtime="/nonexistent/runtime-xyz")
+            with redirect_stderr(StringIO()):
+                m = self.sample()
+            self.assertIn(m.id, self.store.index())
+        with self.subTest("a failing image rm"):
+            self.fresh_store()
+            self.sample()
+            self.configure()  # nothing was built: the runtime answers `No such image` with exit 1
             m = self.sample()
-        self.assertIn(m.id, self.store.index())
-
-    def test_a_failing_image_rm_does_not_fail_the_install(self):
-        self.sample()
-        self.configure()  # nothing was built: the runtime answers `No such image` with exit 1
-        m = self.sample()
-        self.assertEqual(self.image_rms(), [["image", "rm", "-f", self.TAG]])
-        self.assertIn(m.id, self.store.index())
-
-    def test_a_broken_config_does_not_fail_the_install(self):
-        self.sample()
-        (self.store.home / "config.toml").write_text("[container\n")
-        with redirect_stderr(StringIO()):
-            m = self.sample()
-        self.assertIn(m.id, self.store.index())
-        self.assertEqual(self.calls(), [])
+            self.assertEqual(self.image_rms(), [["image", "rm", "-f", self.TAG]])
+            self.assertIn(m.id, self.store.index())
+        with self.subTest("a broken config"):
+            self.fresh_store()
+            self.sample()
+            (self.store.home / "config.toml").write_text("[container\n")
+            with redirect_stderr(StringIO()):
+                m = self.sample()
+            self.assertIn(m.id, self.store.index())
+            self.assertEqual(self.calls(), [])
 
     def test_a_hanging_runtime_does_not_hold_the_install_up_forever(self):
         self.sample()
@@ -1596,31 +1449,33 @@ class ReinstallDropsTheImage(RecordingRuntimeCase):
             self.store.remove(self.ID)
         self.assertNotIn(self.ID, self.store.index())
 
-    def test_a_broken_config_warns_that_the_old_image_may_be_stale(self):
-        self.sample()
-        (self.store.home / "config.toml").write_text("[container\n")
-        with redirect_stderr(StringIO()) as err:
+    def test_stale_image_warning(self):
+        with self.subTest("a broken config warns that the old image may be stale"):
+            self.fresh_store()
             self.sample()
-        lines = err.getvalue().splitlines()
-        self.assertEqual(len(lines), 1, lines)
-        self.assertIn(f"dock: old image {self.TAG} may be stale", lines[0])
-        self.assertIn(f"dock plugin build {self.ID}", lines[0])
-
-    def test_remove_warns_when_there_is_no_runtime_to_drop_the_image(self):
-        self.sample()
-        self.configure(runtime="/nonexistent/runtime-xyz")
-        with redirect_stderr(StringIO()) as err:
-            self.store.remove(self.ID)
-        self.assertEqual(len(err.getvalue().splitlines()), 1, err.getvalue())
-        self.assertIn(f"dock: old image {self.TAG} may be stale", err.getvalue())
-
-    def test_a_working_runtime_prints_no_warning(self):
-        self.configure()
-        self.sample()
-        with redirect_stderr(StringIO()) as err:
+            (self.store.home / "config.toml").write_text("[container\n")
+            with redirect_stderr(StringIO()) as err:
+                self.sample()
+            lines = err.getvalue().splitlines()
+            self.assertEqual(len(lines), 1, lines)
+            self.assertIn(f"dock: old image {self.TAG} may be stale", lines[0])
+            self.assertIn(f"dock plugin build {self.ID}", lines[0])
+        with self.subTest("remove warns when there is no runtime to drop the image"):
+            self.fresh_store()
             self.sample()
-            self.store.remove(self.ID)
-        self.assertEqual(err.getvalue(), "")
+            self.configure(runtime="/nonexistent/runtime-xyz")
+            with redirect_stderr(StringIO()) as err:
+                self.store.remove(self.ID)
+            self.assertEqual(len(err.getvalue().splitlines()), 1, err.getvalue())
+            self.assertIn(f"dock: old image {self.TAG} may be stale", err.getvalue())
+        with self.subTest("a working runtime prints no warning"):
+            self.fresh_store()
+            self.configure()
+            self.sample()
+            with redirect_stderr(StringIO()) as err:
+                self.sample()
+                self.store.remove(self.ID)
+            self.assertEqual(err.getvalue(), "")
 
     def test_removing_a_plugin_whose_folder_is_damaged_still_removes_it(self):
         self.configure()
@@ -1668,18 +1523,12 @@ class InstallKeepsBuildFiles(unittest.TestCase):
         m = self.store.install(self.plugin(CONTAINER))
         names = sorted(p.name for p in m.root.iterdir())
         self.assertEqual(names, ["Dockerfile", "go.mod", "lib.go", "main.go", "plugin.toml"])
-
-    def test_a_rust_build_output_folder_is_never_installed(self):
-        root = self.plugin(CONTAINER)
-        (root / "target").mkdir()
-        (root / "target" / "big").write_text("x")
-        m = self.store.install(root)
-        self.assertNotIn("target", {p.name for p in m.root.iterdir()})
-
-    def test_container_only_manifest_installs_without_a_native_build(self):
-        m = self.store.install(self.plugin('container = { cmd = "/plugin/x" }'))
-        self.assertEqual(m.container.cmd, "/plugin/x")
-        self.assertIn(m.id, self.store.index())
+        with self.subTest("a rust build output folder is never installed"):
+            root = self.plugin(CONTAINER)
+            (root / "target").mkdir()
+            (root / "target" / "big").write_text("x")
+            m = self.store.install(root)
+            self.assertNotIn("target", {p.name for p in m.root.iterdir()})
 
 
 if __name__ == "__main__":

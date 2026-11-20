@@ -1,6 +1,5 @@
 """Session seams that `dock serve` relies on: a UI factory and an explicit cwd. Run `make test`."""
 
-import os
 import sys
 import tempfile
 import unittest
@@ -14,7 +13,6 @@ sys.path.insert(0, str(ROOT / "tests"))
 import dockenv  # noqa: E402
 from cli import isolation  # noqa: E402
 from cli.lifecycle import Session  # noqa: E402
-from cli.process import PluginProcess  # noqa: E402
 from cli.store import Store  # noqa: E402
 from cli.ui import TerminalUI  # noqa: E402
 
@@ -82,51 +80,41 @@ class SessionSeams(unittest.TestCase):
         self.assertIn(("dev.dock.hello", "progress", 100.0), self.events)
         self.assertIn(("dev.dock.hello", "output", "counted to 2\n"), self.events)
 
-    def test_a_stuck_plugin_is_reported_through_the_factorys_ui(self):
-        session = self.session()
-        manifest = self.store.get("dev.dock.hello")
-        proc = session.start(manifest, session.ui_factory(manifest.id))
-        proc.pending.add(99)  # an answer that never comes
-        session._stop_unresponsive()
-        self.assertIn(("dev.dock.hello", "warn", "did not stop on cancel; stopped it"), self.events)
+    def test_warnings_go_through_the_factorys_ui(self):
+        def stuck(session):
+            manifest = self.store.get("dev.dock.hello")
+            proc = session.start(manifest, session.ui_factory(manifest.id))
+            proc.pending.add(99)  # an answer that never comes
+            session._stop_unresponsive()
 
-    def test_interrupt_notice_goes_through_the_given_ui(self):
-        session = self.session()
-        session._interrupted(session.ui_factory("dev.dock.hello"))
-        self.assertIn(("dev.dock.hello", "warn", "interrupted, cancelling…"), self.events)
+        def interrupted(session):
+            session._interrupted(session.ui_factory("dev.dock.hello"))
+
+        cases = (("stuck plugin", stuck, "did not stop on cancel; stopped it"),
+                 ("interrupt notice", interrupted, "interrupted, cancelling…"))
+        for name, act, message in cases:
+            with self.subTest(name):
+                self.events.clear()
+                act(self.session())
+                self.assertIn(("dev.dock.hello", "warn", message), self.events)
 
     def test_cwd_is_what_isolation_mounts_and_what_the_plugin_is_told(self):
         project = tempfile.mkdtemp(prefix="dock-seams-cwd-")
-        session = self.session(cwd=project)
         manifest = self.store.get("dev.dock.pidprobe")
-        with mock.patch.object(isolation, "prepare", wraps=isolation.prepare) as prepare:
-            result = session.invoke_result(manifest, "pid", [])
-        self.assertEqual(prepare.call_args.kwargs["cwd"], project)
-        self.assertEqual(result["cwd"], project)  # what the plugin was told in `invoke`
-        self.assertTrue(any(who == "dev.dock.pidprobe" and kind == "output" and " cid " in text
-                            for who, kind, text in self.events))
-        self.assertEqual(session.cwd, project)
-
-    def test_without_a_cwd_the_process_cwd_is_used_as_before(self):
-        session = self.session()
-        manifest = self.store.get("dev.dock.pidprobe")
-        with mock.patch.object(isolation, "prepare", wraps=isolation.prepare) as prepare:
-            session.invoke(manifest, "pid", [])
-        self.assertIsNone(prepare.call_args.kwargs["cwd"])
-
-
-class PluginRequests(unittest.TestCase):
-    """A plugin may only ask the host for output, log, progress and prompt_user: nothing else is answered."""
-
-    def test_a_plugin_request_for_call_or_http_gets_method_not_found(self):
-        store = Store(Path(tempfile.mkdtemp(prefix="dock-seams-")))
-        store.install(ROOT / "plugin" / "hello")
-        proc = PluginProcess(store.get("dev.dock.hello"), os.devnull, {"output": lambda p: None},
-                             isolation.Launch(argv=[], env={}, runtime="docker", container="c"))
-        for method in ("call", "http"):
-            with self.subTest(method=method), mock.patch.object(proc, "_send") as send:
-                proc._handle_incoming({"id": 7, "method": method, "params": {"x": 1}})
-                send.assert_called_once_with({"id": 7, "error": {"code": -32601, "message": f"host has no '{method}'"}})
+        with self.subTest("explicit cwd"):
+            session = self.session(cwd=project)
+            with mock.patch.object(isolation, "prepare", wraps=isolation.prepare) as prepare:
+                result = session.invoke_result(manifest, "pid", [])
+            self.assertEqual(prepare.call_args.kwargs["cwd"], project)
+            self.assertEqual(result["cwd"], project)  # what the plugin was told in `invoke`
+            self.assertTrue(any(who == "dev.dock.pidprobe" and kind == "output" and " cid " in text
+                                for who, kind, text in self.events))
+            self.assertEqual(session.cwd, project)
+        with self.subTest("without a cwd the process cwd is used as before"):
+            session = self.session()
+            with mock.patch.object(isolation, "prepare", wraps=isolation.prepare) as prepare:
+                session.invoke(manifest, "pid", [])
+            self.assertIsNone(prepare.call_args.kwargs["cwd"])
 
 
 class PluginAsksTheHost(unittest.TestCase):

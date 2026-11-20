@@ -19,7 +19,7 @@ import traceback
 from collections.abc import Callable
 from typing import BinaryIO
 
-from cli import SERVE_VERSION, __version__, isolation, lifecycle
+from cli import SERVE_VERSION, __version__, catalog, isolation, lifecycle
 from cli.inputs import UsageError, parse_for
 from cli.lifecycle import Session
 from cli.manifest import ManifestError
@@ -426,6 +426,8 @@ class Server:
             return self._hello(msg_id, is_request)
         if method == "commands":
             self._commands(msg_id, is_request)
+        elif method == "search":
+            self._search(msg_id, params, is_request)
         elif method == "run":
             self._run(msg_id, params, is_request)
         elif method == "cancel":
@@ -458,6 +460,39 @@ class Server:
                     "inputs": [_input_json(spec) for spec in command.inputs or []],
                 })
         self.writer.reply(msg_id, {"commands": commands})
+
+    def _search(self, msg_id, params: dict, is_request: bool) -> None:
+        if not is_request:
+            return
+        words = params.get("words")
+        if not isinstance(words, list) or not words \
+                or not all(isinstance(w, str) and w.strip() for w in words):
+            self.writer.error(msg_id, INVALID_PARAMS, "words must be a non-empty list of non-empty strings")
+            return
+        try:
+            found = catalog.search(self.store, words)
+        except ManifestError as e:  # e.g. a bad [catalog] in config.toml
+            self.writer.error(msg_id, -32000, str(e))
+            return
+        matches = []
+        for m in found:
+            try:
+                manifest = self.store.get(m.plugin) if m.installed else m.manifest
+                command = next(c for c in manifest.commands if c.name == m.name)
+                inputs = [_input_json(spec) for spec in command.inputs or []]
+            except Exception as e:  # noqa: BLE001 - one broken plugin must not hide the others
+                print(f"dock: {m.plugin}: {e}", file=sys.stderr)
+                continue
+            item = {"name": m.name, "plugin": m.plugin, "version": m.version, "summary": m.summary,
+                    "keywords": list(m.keywords), "inputs": inputs, "installed": m.installed}
+            if not m.installed and m.folder is not None:
+                item["path"] = str(m.folder)
+            if m.installed and m.catalog_version:
+                item["catalog_version"] = m.catalog_version
+            if m.installed_version:
+                item["installed_version"] = m.installed_version
+            matches.append(item)
+        self.writer.reply(msg_id, {"matches": matches})
 
     # run ---------------------------------------------------------------------------
     def _run(self, msg_id, params: dict, is_request: bool) -> None:

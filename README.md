@@ -87,7 +87,7 @@ and folder. See [protocol/SERVE.md](protocol/SERVE.md).
 `python3 -m cli shell` (or bare `dock` on a terminal) opens a `dock>` prompt.
 Each line is an operation, split with shell-style quoting: `hello "Ada Lovelace"`.
 Plugins stay running between operations.
-Built-ins: `help`, `version`, `plugin ...`, `status`, `exit`/`quit` (or Ctrl-D).
+Built-ins: `help`, `version`, `plugin ...`, `search ...`, `status`, `exit`/`quit` (or Ctrl-D).
 `status` lists the running plugins with their idle time and the container runtime they run in.
 Tab completes commands, `plugin` subcommands and installed plugin ids.
 History is kept in `~/.dock/history` (last 1000 lines); set `DOCK_NO_READLINE=1`
@@ -114,6 +114,44 @@ dock checks their arguments before starting them (usage errors exit 2). A name o
 several words must be quoted (`hello "Ada Lovelace"`; `hello Ada Lovelace` is an
 error), and `count abc` is dock's "must be an integer" error. dock reads anything
 starting with `-` as a flag, so a negative number goes after `--` (`count -- -3`).
+
+### Find plugins before installing
+
+dock can read the `plugin.toml` of plugins that are not installed, from local catalog folders you list in
+`~/.dock/config.toml`. It only reads the manifests: nothing is built, started or copied.
+
+```toml
+[catalog]
+paths = ["~/projects/github/dock/plugin", "/opt/dock-plugins"]
+```
+
+Each entry is an absolute path or starts with `~` (a relative path is an error, as is any other key in `[catalog]`).
+An entry that holds a `plugin.toml` is one plugin; otherwise each immediate subfolder with a `plugin.toml` is one
+plugin (deeper folders are not searched). A missing entry, or a plugin whose manifest does not load, is skipped with
+a warning. Without `[catalog]` the catalog is empty.
+
+A command may list `keywords` in its `[[commands]]` entry (a list of non-empty strings) so people can find it:
+
+```toml
+[[commands]]
+name = "hello"
+summary = "Greet someone: hello [name]"
+keywords = ["greet", "welcome"]
+```
+
+`dock search <word>...` (also in the shell) lists the commands of installed and catalog plugins for which every word
+is a case-insensitive part of the command's name, summary or one of its keywords. It reads commands only, not plugin
+ids or descriptions. One line per command, sorted by name then plugin id, with the plugin id and version and either
+`installed` (plus `catalog has <version>` when the catalog holds another version) or `not installed:` and the command
+that installs it. A command that only a catalog copy of an installed plugin has is listed as
+`not in installed <version>:` and the command that installs the catalog copy. Exit 0 with a match, 1 with none, 2 without a word.
+
+When a command is not installed but a catalog plugin has it, the "unknown command" error names that plugin and how to
+install it (`dev.dock.hello 0.2.0 in the catalog has it (installed: 0.1.0)` when that plugin is installed at another
+version); nothing is installed or started. `dock plugin install <id>` installs a catalog plugin by its id (an
+existing folder is still a path; an id found in several catalog folders must be installed by path), and
+`dock plugin info <id|path>` shows a plugin's manifest, with its keywords and `installed: no (<folder>)` (or
+`installed: yes, <version> (<path>)` when that plugin id is installed), without installing it. Running a command of an installed plugin never reads the catalog.
 
 ### How plugins run
 
@@ -142,8 +180,8 @@ runtime = "podman"      # a command name looked up on PATH, or an absolute path
 
 A relative path such as `./docker` is refused (a plugin folder could ship its own). A configured runtime that is
 missing is an error: dock never falls back to another one. An unknown key or a misspelt table name (`[containr]`) is
-an error too, and so is a `config.toml` that does not parse. `config.toml` takes `[container]`, `[shell]
-idle_timeout` and `[serve] idle_timeout`; `[isolation]`, `[wasm]`, `[http]` and `[providers]` are errors with a
+an error too, and so is a `config.toml` that does not parse. `config.toml` takes `[container]`, `[catalog]
+paths` (see "Find plugins before installing"), `[shell] idle_timeout` and `[serve] idle_timeout`; `[isolation]`, `[wasm]`, `[http]` and `[providers]` are errors with a
 message that says what replaced them.
 
 A plugin that needs more of your environment, such as an API key, lists the variable names in its manifest:

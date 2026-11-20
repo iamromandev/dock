@@ -19,7 +19,7 @@ import sys
 import tomllib
 from pathlib import Path
 
-from cli import isolation
+from cli import catalog, isolation
 from cli.manifest import Manifest, ManifestError, NotAContainerPlugin, check_removed_tables
 
 
@@ -106,6 +106,7 @@ class Store:
             "path": str(dest),
             "description": installed.description,
             "commands": {c.name: c.summary for c in installed.commands},
+            "keywords": {c.name: c.keywords for c in installed.commands if c.keywords},
         }
         self._save_index(idx)
         if reinstall:
@@ -154,7 +155,7 @@ class Store:
 
         owners = [pid for pid, e in self.index().items() if name in e["commands"]]
         if not owners:
-            raise ManifestError(f"unknown command '{name}'. Run 'dock help'.")
+            raise ManifestError(catalog.hint(self, name) or f"unknown command '{name}'. Run 'dock help'.")
         if len(owners) > 1:
             choices = ", ".join(f"{pid}:{name}" for pid in owners)
             raise ManifestError(f"'{name}' is provided by several plugins; use one of: {choices}")

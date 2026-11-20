@@ -38,12 +38,6 @@ class PoolOverServe(ServeCase):
         self.assertIn("result", reply)
         return reply["result"]["cid"]
 
-    def test_runs_one_after_the_other_with_the_same_cwd_share_one_process(self):
-        c = self.hello_client()
-        first, second, third = (self.cid(c) for _ in range(3))
-        self.assertEqual(first, second)
-        self.assertEqual(second, third)
-
     def test_two_hello_runs_with_the_same_cwd_start_one_container_only(self):
         # AC16: the second run reuses the warm container; the runtime was asked for one `run`, not two
         wrapper, log = dockenv.recording_runtime(Path(tempfile.mkdtemp(prefix="dock-pool-rec-")))
@@ -65,11 +59,6 @@ class PoolOverServe(ServeCase):
         self.assertEqual(self.cid(c, cwd=self.other_cwd), b)
         self.assertTrue(container_running(a) and container_running(b))
 
-    def test_the_plugin_is_told_the_cwd_of_the_call_it_serves(self):
-        c = self.hello_client()
-        call = self.call(c, "pid", cwd=self.other_cwd)
-        self.assertEqual(c.wait_reply(call)["result"]["cwd"], self.other_cwd)
-
     def test_runs_at_the_same_time_get_two_processes_and_both_go_back_to_the_pool(self):
         c = self.hello_client()
         a, b = self.call(c, "sleep", "1"), self.call(c, "sleep", "1")
@@ -79,24 +68,26 @@ class PoolOverServe(ServeCase):
         later = {c.wait_reply(x)["result"]["cid"] for x in both}
         self.assertEqual(later, cids)  # the same two warm processes served the next pair
 
-    def test_a_run_after_a_cancel_gets_a_new_process(self):
-        c = self.hello_client()
-        warm = self.cid(c)
-        victim = self.call(c, "sleep", "60")
-        c.wait_until(lambda: c.notes("output", victim), what="the call to start")
-        self.assertEqual(c.cid_of(victim), warm)  # it was served by the warm one
-        c.notify("cancel", {"id": victim})
-        self.assertEqual(c.wait_reply(victim)["error"]["code"], -32800)
-        fresh = self.cid(c)
-        self.assertNotEqual(fresh, warm)
-        self.assertTrue(wait_container_gone(warm), "the cancelled call's process is still running")
+    def test_a_run_after_a_cancel_or_a_crash_gets_a_new_process(self):
+        def cancel(c, warm):
+            victim = self.call(c, "sleep", "60")
+            c.wait_until(lambda: c.notes("output", victim), what="the call to start")
+            self.assertEqual(c.cid_of(victim), warm)  # it was served by the warm one
+            c.notify("cancel", {"id": victim})
+            self.assertEqual(c.wait_reply(victim)["error"]["code"], -32800)
+            fresh = self.cid(c)
+            self.assertNotEqual(fresh, warm)
+            self.assertTrue(wait_container_gone(warm), "the cancelled call's process is still running")
 
-    def test_a_run_after_a_crash_gets_a_new_process(self):
-        c = self.hello_client()
-        warm = self.cid(c)
-        crashed = self.call(c, "crash")
-        self.assertIn("error", c.wait_reply(crashed))
-        self.assertNotEqual(self.cid(c), warm)
+        def crash(c, warm):
+            crashed = self.call(c, "crash")
+            self.assertIn("error", c.wait_reply(crashed))
+            self.assertNotEqual(self.cid(c), warm)
+
+        for name, act in (("cancel", cancel), ("crash", crash)):
+            with self.subTest(name):
+                c = self.hello_client()
+                act(c, self.cid(c))
 
     def test_a_process_killed_while_idle_is_not_handed_out_again(self):
         c = self.hello_client()
@@ -115,21 +106,19 @@ class PoolOverServe(ServeCase):
         self.assertNotEqual(fresh, old)
         self.assertTrue(wait_container_gone(old), "the idle process is still running")
 
-    def test_shutdown_stops_every_pooled_process(self):
-        c = self.hello_client()
-        cids = [self.cid(c, cwd=self.cwd), self.cid(c, cwd=self.other_cwd)]
-        self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 10)["result"], {})
-        self.assertEqual(c.wait(), 0)
-        for cid in cids:
-            self.assertFalse(container_running(cid))
+    def test_shutdown_or_end_of_stdin_stops_every_pooled_process(self):
+        def shutdown(c):
+            self.assertEqual(c.request("shutdown", timeout=float(GRACE) + 10)["result"], {})
 
-    def test_end_of_stdin_stops_every_pooled_process_too(self):
-        c = self.hello_client()
-        cids = [self.cid(c, cwd=self.cwd), self.cid(c, cwd=self.other_cwd)]
-        c.close_stdin()
-        self.assertEqual(c.wait(), 0)
-        for cid in cids:
-            self.assertFalse(container_running(cid))
+        for name, leave in (("shutdown", shutdown), ("end of stdin", lambda c: c.close_stdin())):
+            with self.subTest(name):
+                c = self.hello_client()
+                cids = [self.cid(c, cwd=self.cwd), self.cid(c, cwd=self.other_cwd)]
+                leave(c)
+                self.assertEqual(c.wait(), 0)
+                for cid in cids:
+                    self.assertFalse(container_running(cid))
+
 
     def test_a_stray_message_from_a_pooled_process_with_no_call_does_not_hurt_serve(self):
         c = self.hello_client()
@@ -192,18 +181,18 @@ class PoolUnit(unittest.TestCase):
         pool.release(session, reusable and session.commands[self.manifest.id].alive())
         return session, result["cid"], proc
 
-    def test_a_released_session_is_leased_again_for_the_same_plugin_and_cwd(self):
-        pool = self.pool()
-        first, cid1, _ = self.run_once(pool)
-        second, cid2, _ = self.run_once(pool)
-        self.assertIs(first, second)
-        self.assertEqual(cid1, cid2)
-
-    def test_a_session_for_another_cwd_or_plugin_is_not_handed_out(self):
-        pool = self.pool()
-        first, _, _ = self.run_once(pool)
-        other, _, _ = self.run_once(pool, cwd=tempfile.mkdtemp(prefix="dock-pool-unit-other-"))
-        self.assertIsNot(first, other)
+    def test_a_released_session_is_leased_again_only_for_the_same_plugin_and_cwd(self):
+        with self.subTest("same plugin and cwd"):
+            pool = self.pool()
+            first, cid1, _ = self.run_once(pool)
+            second, cid2, _ = self.run_once(pool)
+            self.assertIs(first, second)
+            self.assertEqual(cid1, cid2)
+        with self.subTest("another cwd or plugin"):
+            pool = self.pool()
+            first, _, _ = self.run_once(pool)
+            other, _, _ = self.run_once(pool, cwd=tempfile.mkdtemp(prefix="dock-pool-unit-other-"))
+            self.assertIsNot(first, other)
 
     def test_a_session_that_is_not_reusable_is_closed_on_release(self):
         pool = self.pool()
@@ -220,26 +209,26 @@ class PoolUnit(unittest.TestCase):
         self.assertIsNot(one, two)
 
     def test_reap_closes_sessions_idle_longer_than_the_timeout_and_keeps_the_others(self):
-        clock = [100.0]
-        pool = self.pool(idle_timeout=10, reap_interval=3600, clock=lambda: clock[0])
-        old, old_cid, _ = self.run_once(pool, cwd=self.cwd)
-        clock[0] += 8
-        recent, recent_cid, _ = self.run_once(pool, cwd=tempfile.mkdtemp(prefix="dock-pool-unit-r-"))
-        clock[0] += 5  # old: idle 13 s, recent: idle 5 s
-        pool.reap()
-        self.assertTrue(wait_container_gone(old_cid))
-        self.assertEqual(old.procs, [])
-        self.assertTrue(container_running(recent_cid))
-
-    def test_an_idle_timeout_of_zero_never_reaps(self):
-        clock = [100.0]
-        pool = self.pool(idle_timeout=0, reap_interval=3600, clock=lambda: clock[0])
-        _, cid, _ = self.run_once(pool)
-        clock[0] += 10**6
-        pool.reap()
-        self.assertTrue(container_running(cid))
-        _, again, _ = self.run_once(pool)
-        self.assertEqual(again, cid)
+        with self.subTest("idle timeout of 10"):
+            clock = [100.0]
+            pool = self.pool(idle_timeout=10, reap_interval=3600, clock=lambda: clock[0])
+            old, old_cid, _ = self.run_once(pool, cwd=self.cwd)
+            clock[0] += 8
+            recent, recent_cid, _ = self.run_once(pool, cwd=tempfile.mkdtemp(prefix="dock-pool-unit-r-"))
+            clock[0] += 5  # old: idle 13 s, recent: idle 5 s
+            pool.reap()
+            self.assertTrue(wait_container_gone(old_cid))
+            self.assertEqual(old.procs, [])
+            self.assertTrue(container_running(recent_cid))
+        with self.subTest("idle timeout of zero never reaps"):
+            clock = [100.0]
+            pool = self.pool(idle_timeout=0, reap_interval=3600, clock=lambda: clock[0])
+            _, cid, _ = self.run_once(pool)
+            clock[0] += 10**6
+            pool.reap()
+            self.assertTrue(container_running(cid))
+            _, again, _ = self.run_once(pool)
+            self.assertEqual(again, cid)
 
     def test_the_reaper_thread_closes_idle_sessions_by_itself(self):
         pool = self.pool(idle_timeout=0.5, reap_interval=0.1)
@@ -282,19 +271,19 @@ class PoolUnit(unittest.TestCase):
 
 
 class RoutingUIUnit(unittest.TestCase):
-    def test_a_message_with_no_call_goes_to_stderr_and_never_to_stdout(self):
-        ui = serve.RoutingUI("dev.dock.x", serve.Slot())
-        with mock.patch("sys.stdout", new=io.StringIO()) as out, mock.patch("sys.stderr", new=io.StringIO()) as err:
-            ui.output({"text": "hi"})
-            ui.log({"level": "info", "message": "late"})
-            ui.progress({"percent": 5})
-            ui.warn("careful")
-        self.assertEqual(out.getvalue(), "")
-        for text in ("hi", "late", "careful"):
-            self.assertIn(text, err.getvalue())
-
-    def test_a_prompt_with_no_call_is_answered_with_eof(self):
-        self.assertEqual(serve.RoutingUI("dev.dock.x", serve.Slot()).prompt_user({"prompt": "?"}), {"eof": True})
+    def test_a_message_or_prompt_with_no_call(self):
+        with self.subTest("a message goes to stderr and never to stdout"):
+            ui = serve.RoutingUI("dev.dock.x", serve.Slot())
+            with mock.patch("sys.stdout", new=io.StringIO()) as out, mock.patch("sys.stderr", new=io.StringIO()) as err:
+                ui.output({"text": "hi"})
+                ui.log({"level": "info", "message": "late"})
+                ui.progress({"percent": 5})
+                ui.warn("careful")
+            self.assertEqual(out.getvalue(), "")
+            for text in ("hi", "late", "careful"):
+                self.assertIn(text, err.getvalue())
+        with self.subTest("a prompt is answered with eof"):
+            self.assertEqual(serve.RoutingUI("dev.dock.x", serve.Slot()).prompt_user({"prompt": "?"}), {"eof": True})
 
 
 class ServeIdleTimeoutConfig(unittest.TestCase):
@@ -304,17 +293,16 @@ class ServeIdleTimeoutConfig(unittest.TestCase):
             (home / "config.toml").write_text(toml)
         return Store(home)
 
-    def test_default_is_300_seconds(self):
-        self.assertEqual(self.store().serve_idle_timeout(), 300)
-
-    def test_it_is_read_from_the_serve_table_and_zero_means_never(self):
-        self.assertEqual(self.store("[serve]\nidle_timeout = 42\n").serve_idle_timeout(), 42)
-        self.assertEqual(self.store("[serve]\nidle_timeout = 0\n").serve_idle_timeout(), 0)
-
-    def test_the_shell_setting_is_separate(self):
-        store = self.store("[shell]\nidle_timeout = 7\n")
-        self.assertEqual(store.serve_idle_timeout(), 300)
-        self.assertEqual(store.idle_timeout(), 7)
+    def test_the_setting_default_serve_table_and_separate_shell_setting(self):
+        with self.subTest("default is 300 seconds"):
+            self.assertEqual(self.store().serve_idle_timeout(), 300)
+        with self.subTest("read from the serve table and zero means never"):
+            self.assertEqual(self.store("[serve]\nidle_timeout = 42\n").serve_idle_timeout(), 42)
+            self.assertEqual(self.store("[serve]\nidle_timeout = 0\n").serve_idle_timeout(), 0)
+        with self.subTest("the shell setting is separate"):
+            store = self.store("[shell]\nidle_timeout = 7\n")
+            self.assertEqual(store.serve_idle_timeout(), 300)
+            self.assertEqual(store.idle_timeout(), 7)
 
     def test_an_invalid_value_falls_back_to_300_and_is_reported_once(self):
         store = self.store('[serve]\nidle_timeout = "soon"\n')

@@ -9,9 +9,11 @@ container = { cmd = "python3", args = ["/plugin/main.py"] }
 [[commands]]
 name = "hello"
 summary = "Greet someone: hello [name]"
+keywords = ["greet", "welcome", "name"]
 inputs = [{ name = "name", type = "string" }]
 
 [[commands]]
 name = "count"
 summary = "Count with a progress bar: count [n]"
+keywords = ["progress", "number", "demo"]
 inputs = [{ name = "n", type = "int", default = 10 }]

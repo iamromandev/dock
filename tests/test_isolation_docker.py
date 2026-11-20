@@ -98,16 +98,33 @@ class RealDocker(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout.strip()
 
-    # AC9 / R10
-    def test_isolated_hello_greets(self):
-        r = self.dock("hello", "Roman")
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "hello, Roman!")
-
-    def test_the_plugin_really_runs_inside_the_container(self):
-        # A native run would see the user's own HOME; the container sets HOME=/tmp.
-        self.assertEqual(self.jail("env", "HOME"), "set:/tmp")
-        self.assertEqual(self.jail("env", "DOCK_PLUGIN_ID"), "set:dev.dock.jail")
+    # AC9 / R10, F2: the host PATH points at host programs; the image's own PATH is the right one inside
+    def test_the_plugin_runs_inside_the_container_with_its_own_path(self):
+        with self.subTest("isolated hello greets"):
+            r = self.dock("hello", "Roman")
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), "hello, Roman!")
+        with self.subTest("the plugin really runs inside the container"):
+            # A native run would see the user's own HOME; the container sets HOME=/tmp.
+            self.assertEqual(self.jail("env", "HOME"), "set:/tmp")
+            self.assertEqual(self.jail("env", "DOCK_PLUGIN_ID"), "set:dev.dock.jail")
+        with self.subTest("the host path is not the container's path"):
+            host_path = f"/dock-test-host-only/bin{os.pathsep}{os.environ['PATH']}"
+            inside = self.jail("env", "PATH", env={**self.env, "PATH": host_path})
+            self.assertTrue(inside.startswith("set:"), inside)
+            self.assertNotIn("dock-test-host-only", inside)
+            self.assertNotEqual(inside, f"set:{host_path}")
+            self.assertIn("/usr/local/bin", inside.removeprefix("set:").split(":"))  # python:3.12-slim's PATH
+        with self.subTest("hello works when the host path lacks /usr/local/bin"):
+            bindir = self.tmp / "only-docker"
+            bindir.mkdir(exist_ok=True)
+            if not (bindir / "docker").exists():
+                (bindir / "docker").symlink_to(dockenv.require_runtime())
+            host_path = f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin"
+            self.assertNotIn("/usr/local/bin", host_path.split(os.pathsep))
+            r = self.dock("hello", "Roman", env={**self.env, "PATH": host_path})
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.strip(), "hello, Roman!")  # python3 was found on the image's PATH
 
     # NFR1: network
     def test_plugin_without_network_cannot_connect_out(self):
@@ -119,51 +136,28 @@ class RealDocker(unittest.TestCase):
         self.assertEqual(self.jail("net", plugin="jailnet"), "open")
 
     # NFR1: cwd
-    def test_plugin_without_fs_write_cwd_cannot_read_a_cwd_file(self):
+    def test_a_cwd_file_is_readable_only_with_fs_write_cwd(self):
         (self.work / "secret.txt").write_text("top secret")
-        self.assertEqual(self.jail("readcwd", "secret.txt"), "unreadable")
-
-    def test_plugin_with_fs_write_cwd_can_read_it(self):
-        (self.work / "secret.txt").write_text("top secret")
-        self.assertEqual(self.jail("readcwd", "secret.txt", plugin="jailcwd"), "top secret")
+        with self.subTest("without fs:write:cwd"):
+            self.assertEqual(self.jail("readcwd", "secret.txt"), "unreadable")
+        with self.subTest("with fs:write:cwd"):
+            self.assertEqual(self.jail("readcwd", "secret.txt", plugin="jailcwd"), "top secret")
 
     # NFR1: environment
     def test_host_variable_outside_the_allowlist_is_not_visible(self):
         self.assertEqual(self.jail("env", "DOCK_TEST_HOST_SECRET"), "unset")
 
     # AC10 / R7: a declared variable gets in by name; its undeclared neighbour does not
-    def test_declared_host_variable_is_visible(self):
-        self.assertEqual(self.jail("env", "DOCK_TEST_DECLARED"), "set:test-model")
-
-    def test_declared_host_variable_that_is_unset_is_not_visible(self):
-        env = {k: v for k, v in self.env.items() if k != "DOCK_TEST_DECLARED"}
-        self.assertEqual(self.jail("env", "DOCK_TEST_DECLARED", env=env), "unset")
-
-    def test_declared_host_variable_set_to_empty_is_passed_empty(self):
-        self.assertEqual(self.jail("env", "DOCK_TEST_DECLARED", env={**self.env, "DOCK_TEST_DECLARED": ""}), "set:")
-
-    def test_allowlisted_host_variable_is_visible(self):
-        self.assertEqual(self.jail("env", "TZ", env={**self.env, "TZ": "Europe/Oslo"}), "set:Europe/Oslo")
-
-    # F2: the host PATH points at host programs; the image's own PATH is the right one inside
-    def test_the_host_path_is_not_the_containers_path(self):
-        host_path = f"/dock-test-host-only/bin{os.pathsep}{os.environ['PATH']}"
-        inside = self.jail("env", "PATH", env={**self.env, "PATH": host_path})
-        self.assertTrue(inside.startswith("set:"), inside)
-        self.assertNotIn("dock-test-host-only", inside)
-        self.assertNotEqual(inside, f"set:{host_path}")
-        self.assertIn("/usr/local/bin", inside.removeprefix("set:").split(":"))  # python:3.12-slim's PATH
-
-    def test_hello_works_when_the_host_path_lacks_usr_local_bin(self):
-        bindir = self.tmp / "only-docker"
-        bindir.mkdir(exist_ok=True)
-        if not (bindir / "docker").exists():
-            (bindir / "docker").symlink_to(dockenv.require_runtime())
-        host_path = f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin"
-        self.assertNotIn("/usr/local/bin", host_path.split(os.pathsep))
-        r = self.dock("hello", "Roman", env={**self.env, "PATH": host_path})
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.strip(), "hello, Roman!")  # python3 was found on the image's PATH
+    def test_declared_and_allowlisted_host_variables(self):
+        with self.subTest("a declared host variable is visible"):
+            self.assertEqual(self.jail("env", "DOCK_TEST_DECLARED"), "set:test-model")
+        with self.subTest("a declared host variable that is unset is not visible"):
+            env = {k: v for k, v in self.env.items() if k != "DOCK_TEST_DECLARED"}
+            self.assertEqual(self.jail("env", "DOCK_TEST_DECLARED", env=env), "unset")
+        with self.subTest("a declared host variable set to empty is passed empty"):
+            self.assertEqual(self.jail("env", "DOCK_TEST_DECLARED", env={**self.env, "DOCK_TEST_DECLARED": ""}), "set:")
+        with self.subTest("an allowlisted host variable is visible"):
+            self.assertEqual(self.jail("env", "TZ", env={**self.env, "TZ": "Europe/Oslo"}), "set:Europe/Oslo")
 
     # NFR4
     def test_no_container_outlives_the_run(self):

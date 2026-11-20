@@ -5,16 +5,15 @@ from __future__ import annotations
 import os
 import shlex
 import sys
-from pathlib import Path
 
-from cli import __version__, isolation
+from cli import __version__, catalog, isolation
 from cli.inputs import UsageError
 from cli.lifecycle import Session
 from cli.manifest import Manifest, ManifestError
 from cli.store import Store
 
 PROMPT = "dock> "
-BUILTINS = ["help", "version", "plugin", "status", "exit", "quit"]
+BUILTINS = ["help", "version", "plugin", "search", "status", "exit", "quit"]
 PLUGIN_SUBS = ["list", "info", "install", "build", "remove"]
 
 
@@ -117,6 +116,8 @@ class Shell:
                 main.cmd_help(self.store, in_shell=True)
             elif name == "version":
                 print(f"dock {__version__}")
+            elif name == "search":
+                main.cmd_search(self.store, args)
             elif name == "status":
                 self._status()
             elif name == "plugin":
@@ -143,12 +144,16 @@ class Shell:
     def _plugin(self, main, args: list[str]) -> None:
         if len(args) == 2 and args[0] == "remove":
             self.session.stop_plugin(args[1])
+            main.cmd_plugin(self.store, args)
         elif len(args) == 2 and args[0] == "install":
+            folder = catalog.install_source(self.store, args[1])  # read the catalog once; errors reach run()
             try:
-                self.session.stop_plugin(Manifest.load(Path(args[1])).id)
+                self.session.stop_plugin(Manifest.load(folder).id)
             except ManifestError:
-                pass  # cmd_plugin reports the broken manifest
-        main.cmd_plugin(self.store, args)
+                pass  # install_from reports the broken manifest
+            main.install_from(self.store, folder)
+        else:
+            main.cmd_plugin(self.store, args)
 
 
 def _setup_readline(store: Store):
