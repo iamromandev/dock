@@ -36,6 +36,15 @@ class DockE2E(unittest.TestCase):
         r = self.dock("help")
         for cmd in ("hello", "count"):
             self.assertIn(cmd, r.stdout)
+        for line in r.stdout.splitlines():
+            self.assertNotRegex(line, r"\bserve\b")
+
+    def test_serve_was_removed(self):
+        message = "dock: serve was removed; run commands with 'dock <command>' or 'dock shell'\n"
+        for args in (("serve",), ("serve", "--x"), ("-v", "serve")):
+            with self.subTest(args=args):
+                r = self.dock(*args)
+                self.assertEqual((r.returncode, r.stdout, r.stderr), (1, "", message))
 
     def test_greeting(self):
         for name, args, expected in (("with args", ("Roman",), "hello, Roman!"),

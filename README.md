@@ -42,7 +42,6 @@ cli/ (Python host)
  ├─ lifecycle.py  session: start plugins, invoke, cancel, stop
  ├─ process.py    container process + JSON-RPC client, one shared inbox per session
  ├─ shell.py      the interactive dock> prompt
- ├─ serve.py      `dock serve`: JSON-RPC host mode for other programs
  └─ ui.py         the host owns the terminal: output, logs, progress, prompts
         │  stdio (through `<runtime> run -i`)
    ┌────┴─────────────┐
@@ -75,12 +74,6 @@ the runtime the tests use. Test modules that start no plugin (such as the unit c
 run without one. The first run builds a few small fixture images, which can take minutes; later runs reuse them.
 On macOS the test folders must be in a path the Docker VM shares (`/Users` by default); if mounts come up empty, set
 `TMPDIR` to a folder under `/Users`.
-
-### `dock serve`
-
-`python3 -m cli serve` runs dock as a JSON-RPC server on stdin/stdout so another program can run commands, many at a
-time, with progress, cancel and prompts. A finished call's container stays warm for a later call with the same plugin
-and folder. See [protocol/SERVE.md](protocol/SERVE.md).
 
 ### Interactive shell
 
@@ -156,7 +149,7 @@ existing folder is still a path; an id found in several catalog folders must be 
 ### How plugins run
 
 Every plugin runs in a container, started as `<runtime> run -i --rm`, so the stdio protocol and warm plugins in
-the shell and in `dock serve` work as for any child process. It gets only what the declared permissions allow:
+the shell work as for any child process. It gets only what the declared permissions allow:
 
 | Restriction | Detail |
 |-------------|--------|
@@ -181,7 +174,7 @@ runtime = "podman"      # a command name looked up on PATH, or an absolute path
 A relative path such as `./docker` is refused (a plugin folder could ship its own). A configured runtime that is
 missing is an error: dock never falls back to another one. An unknown key or a misspelt table name (`[containr]`) is
 an error too, and so is a `config.toml` that does not parse. `config.toml` takes `[container]`, `[catalog]
-paths` (see "Find plugins before installing"), `[shell] idle_timeout` and `[serve] idle_timeout`; `[isolation]`, `[wasm]`, `[http]` and `[providers]` are errors with a
+paths` (see "Find plugins before installing"), and `[shell] idle_timeout`; `[isolation]`, `[wasm]`, `[http]`, `[providers]` and `[serve]` are errors with a
 message that says what replaced them.
 
 A plugin that needs more of your environment, such as an API key, lists the variable names in its manifest:
@@ -223,7 +216,6 @@ Things to know:
   are not pinned to a digest.
 - The build context is the whole installed plugin folder, so anything in it is sent to
   the runtime; give your plugin a `.dockerignore` for what the image does not need.
-- Cancelling a call in `dock serve` does not stop an image build in progress: the cancel waits for it.
 - On SELinux hosts, bind mounts need the `:z` or `:Z` option, which dock does not
   add, so the plugin cannot read its mounts there.
 - On macOS the runtime's VM shares the files: Docker Desktop shares `/Users` by default, otherwise

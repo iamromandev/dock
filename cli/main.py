@@ -6,7 +6,6 @@ plugin index and forwarded, args untouched, to the plugin that owns it.
 
 from __future__ import annotations
 
-import signal
 import sys
 from pathlib import Path
 
@@ -14,6 +13,8 @@ from cli import __version__, catalog, isolation, lifecycle
 from cli.inputs import UsageError, parse_for
 from cli.manifest import Manifest, ManifestError
 from cli.store import Store
+
+SERVE_REMOVED = "dock: serve was removed; run commands with 'dock <command>' or 'dock shell'"
 
 BUILTIN_HELP = """\
 usage: dock <command> [args...]
@@ -23,7 +24,6 @@ built-in:
   version                   show dock version
   search <word>...          find commands by name, summary or keyword, installed or in the catalog
   shell                     open the interactive dock> prompt (default on a terminal)
-  serve                     serve another program over JSON-RPC on stdin/stdout (protocol/SERVE.md)
   plugin list               list installed plugins
   plugin info <id|path>     show a plugin's manifest details
   plugin install <path|id>  install a plugin from a folder, or a catalog plugin by id
@@ -142,20 +142,6 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
     return 2
 
 
-def _serve_signals() -> None:
-    """`dock serve` outlives a Ctrl-C aimed at its client, and leaves cleanly on SIGTERM.
-
-    Python-level handlers (not SIG_IGN) so the plugins it starts do not inherit an ignored SIGINT.
-    """
-    signal.signal(signal.SIGINT, lambda *_: None)
-
-    def terminate(*_):
-        signal.signal(signal.SIGTERM, lambda *_: None)  # once: the cleanup that follows must not be interrupted
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, terminate)
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     verbose = False
@@ -171,13 +157,8 @@ def main(argv: list[str] | None = None) -> int:
 
             return shell.start(store, verbose)
         if argv[:1] == ["serve"]:
-            if len(argv) > 1:
-                print("dock: serve takes no arguments", file=sys.stderr)
-                return 2
-            from cli import serve
-
-            _serve_signals()
-            return serve.serve(store, verbose)
+            print(SERVE_REMOVED, file=sys.stderr)
+            return 1
         if not argv or argv[0] in ("help", "-h", "--help"):
             return cmd_help(store)
         if argv[0] in ("version", "--version"):

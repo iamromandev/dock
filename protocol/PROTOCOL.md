@@ -187,7 +187,7 @@ spawn → initialize → invoke* → shutdown → (kill on timeout)
 ```
 
 `invoke` may repeat any number of times, sequentially, between
-`initialize` and `shutdown` (the interactive `dock shell` and `dock serve` keep
+`initialize` and `shutdown` (the interactive `dock shell` keeps
 plugins running between operations). A plugin must handle every `invoke` in
 the same process and must not leak per-invoke state into the next one, unless
 it documents otherwise. The host force-kills a plugin that ignores `cancel` past the grace period,

@@ -183,7 +183,7 @@ class ContainerConfig(unittest.TestCase):
             cfg = isolation.config(self.store('[shell]\nidle_timeout = 5\n[container]\nruntime = "podman"\n'))
             self.assertEqual(cfg.runtime, "podman")
         with self.subTest("unrelated tables are not mistaken for container"):
-            text = '[shell]\nidle_timeout = 5\n[serve]\nidle_timeout = 9\n[something_else]\na = 1\n'
+            text = '[shell]\nidle_timeout = 5\n[other]\nx = 9\n[something_else]\na = 1\n'
             self.assertEqual(isolation.config(self.store(text)), isolation.Config())
 
     def test_type_errors_are_reported(self):
@@ -221,7 +221,8 @@ class ContainerConfig(unittest.TestCase):
     # AC11: a table of a removed feature stops every command that starts a plugin
     def test_a_removed_table_is_refused_naming_it(self):
         for table, text in (("isolation", "[isolation]\nenabled = true\n"), ("wasm", '[wasm]\nruntime = "x"\n'),
-                            ("http", '[http]\nhosts = ["x"]\n'), ("providers", '[providers]\nllm = "x"\n')):
+                            ("http", '[http]\nhosts = ["x"]\n'), ("providers", '[providers]\nllm = "x"\n'),
+                            ("serve", "[serve]\nidle_timeout = 9\n")):
             with self.subTest(table=table):
                 for check in (isolation.config, lambda store: store.config()):
                     with self.assertRaisesRegex(ManifestError, rf"config\.toml: \[{table}\] "):
@@ -236,7 +237,7 @@ class ContainerConfig(unittest.TestCase):
 
     # a config that does not parse is fatal: nothing says which part would have been about the runtime
     def test_a_config_that_does_not_parse_is_refused_wherever_the_damage_is(self):
-        for text in ("[container\nruntime = 'x'\n", "[shell\nidle_timeout = 5\n", '[serve]\nidle_timeout = 9\n[shell\n',
+        for text in ("[container\nruntime = 'x'\n", "[shell\nidle_timeout = 5\n", '[catalog]\npaths = []\n[shell\n',
                      "[container]\nruntime = \n", "[[container\n", 'runtime = "x\n'):
             with self.subTest(text=text):
                 for check in (isolation.config, lambda store: store.config()):
@@ -615,8 +616,9 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
                 return {"output": self.output, "log": self.log, "progress": self.progress,
                         "prompt_user": self.prompt_user}
 
-        with mock.patch.object(process, "subprocess", Proxy()):
-            session = Session(self.store, ui_factory=lambda plugin_id: UI())
+        with mock.patch.object(process, "subprocess", Proxy()), \
+                mock.patch("cli.lifecycle.TerminalUI", side_effect=lambda *a, **k: UI()):
+            session = Session(self.store)
             try:
                 self.assertEqual(session.invoke(self.store.get("dev.dock.hello"), "hello", ["Ada"]), 0)
                 session.invoke(self.store.get("dev.dock.hello"), "count", ["1"])  # a second call: same process

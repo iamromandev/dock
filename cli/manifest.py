@@ -25,6 +25,7 @@ REMOVED_TABLES = {  # config.toml tables of features dock no longer has: no plug
     "wasm": "[wasm] is no longer supported: dock runs plugins only in a container",
     "http": "[http] is no longer supported: HTTP through dock was removed",
     "providers": "[providers] is no longer supported: capabilities were removed",
+    "serve": "[serve] is no longer supported: dock serve was removed",
 }
 
 

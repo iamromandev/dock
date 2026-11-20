@@ -118,7 +118,7 @@ class CatalogConfig(TmpCase):
             with mock.patch.dict(os.environ, {"HOME": str(self.tmp)}):
                 self.assertEqual(catalog.paths(self.store()), [self.tmp / "cat"])
         with self.subTest("other tables are not lookalikes"):
-            self.config('[container]\nruntime = "docker"\n[shell]\nidle_timeout = 5\n[serve]\nidle_timeout = 5\n')
+            self.config('[container]\nruntime = "docker"\n[shell]\nidle_timeout = 5\n')
             self.assertEqual(catalog.paths(self.store()), [])
 
     def test_bad_catalog_config_is_refused(self):  # AC1

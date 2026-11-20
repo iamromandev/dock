@@ -1,5 +1,6 @@
 """Manifests and config of removed features fail loudly; they are never half-honoured. No runtime needed."""
 
+import importlib
 import os
 import shutil
 import subprocess
@@ -184,7 +185,9 @@ class RemovedConfigTables(unittest.TestCase):
                 ("isolation points to container runtime", '[isolation]\nenabled = true\n',
                  '[isolation] was replaced by [container] runtime = "docker" (or podman, or a path)'),
                 ("wasm", '[wasm]\nruntime = "x"\n',
-                 "[wasm] is no longer supported: dock runs plugins only in a container")):
+                 "[wasm] is no longer supported: dock runs plugins only in a container"),
+                ("serve", "[serve]\nidle_timeout = 9\n",
+                 "[serve] is no longer supported: dock serve was removed")):
             with self.subTest(name):
                 store = self.store(text)
                 with self.assertRaises(ManifestError) as cm:
@@ -193,6 +196,21 @@ class RemovedConfigTables(unittest.TestCase):
 
     def test_a_config_without_removed_tables_loads(self):
         self.assertEqual(self.store("[shell]\nidle_timeout = 5\n").config(), {"shell": {"idle_timeout": 5}})
+
+
+class ServeIsGone(unittest.TestCase):
+    def test_the_serve_module_and_its_names_do_not_exist(self):
+        import cli
+
+        with self.assertRaises(ModuleNotFoundError):
+            importlib.import_module("cli.serve")
+        self.assertFalse(hasattr(cli, "SERVE_VERSION"))
+        self.assertFalse(hasattr(Store, "serve_idle_timeout"))
+
+    def test_the_serve_files_do_not_exist(self):
+        for name in ("cli/serve.py", "protocol/SERVE.md", "tests/serve_client.py"):
+            self.assertFalse((ROOT / name).exists(), name)
+        self.assertEqual(list((ROOT / "tests").glob("test_serve*.py")), [])
 
 
 class ReadOnlyFolders(unittest.TestCase):
