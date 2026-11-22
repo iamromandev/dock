@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import os
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -186,6 +187,75 @@ def find(store, plugin_id: str, warn: Callable[[str], None] = _warn) -> Availabl
         each = ", ".join(f"{a.folder} ({a.manifest.version})" for a in owners)
         raise ManifestError(f"{plugin_id} is in several catalog folders; install one by path: {each}")
     return owners[0] if owners else None
+
+
+def parse_version(v: str) -> tuple[int, ...] | None:
+    """A dotted-number version as ints with trailing zeros dropped (1.0 == 1.0.0); None when it is not one."""
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+)*", v):
+        return None
+    try:
+        parts = [int(p) for p in v.split(".")]
+    except ValueError:  # a part over Python's digit limit for int()
+        return None
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+
+@dataclass(frozen=True)
+class Check:
+    """What `plugin update` finds for one installed plugin id."""
+    plugin_id: str
+    status: str  # "update" | "current" | "skip" | "error"
+    old: str
+    new: str | None = None
+    folder: Path | None = None  # the catalog copy to install, when status is "update"
+    message: str | None = None  # the warning (skip) or error text
+
+
+def check_updates(store, ids: list[str], warn: Callable[[str], None] = _warn) -> list[Check]:
+    """Compare installed plugins (all, or `ids`) with the catalog; sorted by id, nothing is written."""
+    if not paths(store):
+        raise ManifestError(f"no catalog folders configured ([catalog] paths in {store.home / 'config.toml'})")
+    index = store.index()
+    named = bool(ids)
+    wanted = sorted(set(ids)) if named else sorted(index)
+    by_id: dict[str, list[tuple[tuple[int, ...], Available]]] = {}
+    for a in load(store, warn):
+        parsed = parse_version(a.manifest.version)
+        if parsed is None:
+            warn(f"catalog plugin {a.folder} skipped: version '{a.manifest.version}' is not dotted numbers")
+            continue
+        by_id.setdefault(a.manifest.id, []).append((parsed, a))
+
+    result: list[Check] = []
+    for pid in wanted:
+        if pid not in index:
+            result.append(Check(pid, "error", "", message=f"{pid} is not installed"))
+            continue
+        old = index[pid]["version"]
+        installed = parse_version(old)
+        if installed is None:
+            msg = f"{pid}: installed version '{old}' is not dotted numbers"
+            result.append(Check(pid, "error" if named else "skip", old, message=msg))
+            continue
+        copies = by_id.get(pid, [])
+        if not copies:
+            if named:
+                result.append(Check(pid, "error", old, message=f"{pid} is not in the catalog"))
+            continue
+        best = max(v for v, _ in copies)
+        top = sorted((a for v, a in copies if v == best), key=lambda a: str(a.folder))
+        if best <= installed:
+            result.append(Check(pid, "current", old))
+        elif len(top) > 1:
+            each = ", ".join(f"{a.folder}" for a in top)
+            result.append(Check(pid, "error", old, message=(
+                f"{pid} {top[0].manifest.version} is in several catalog folders; "
+                f"update by installing one by path: {each}")))
+        else:
+            result.append(Check(pid, "update", old, top[0].manifest.version, top[0].folder))
+    return result
 
 
 def install_source(store, arg: str) -> Path:

@@ -7,6 +7,7 @@ plugin index and forwarded, args untouched, to the plugin that owns it.
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 from cli import __version__, catalog, isolation, lifecycle
@@ -29,6 +30,8 @@ built-in:
   plugin install <path|id>  install a plugin from a folder, or a catalog plugin by id
   plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
+  plugin update [--dry-run] [<id>...]
+                            update installed plugins from the catalog
 
 options (before the command):
   -v, --verbose             show plugin debug logs
@@ -47,6 +50,8 @@ built-in:
   plugin install <path|id>  install a plugin from a folder, or a catalog plugin by id
   plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
+  plugin update [--dry-run] [<id>...]
+                            update installed plugins from the catalog
 
 anything else runs a plugin command: <command> [args...]
 """
@@ -96,8 +101,52 @@ def install_from(store: Store, folder: Path) -> int:
     return 0
 
 
+def cmd_plugin_update(store: Store, args: list[str], stop: Callable[[str], object] | None = None) -> int:
+    """Update installed plugins from the catalog; `stop(id)` runs right before each real update."""
+    dry_run = "--dry-run" in args
+    ids = [a for a in args if a != "--dry-run"]
+    for a in ids:
+        if a.startswith("-"):
+            print(f"dock: plugin update: unknown option '{a}'", file=sys.stderr)
+            print(BUILTIN_HELP, file=sys.stderr)
+            return 2
+    if not ids and not store.index():
+        print("no plugins installed")
+        return 0
+    failed = changed = False
+    for c in catalog.check_updates(store, ids):
+        if c.status == "update":
+            if dry_run:
+                print(f"would update {c.plugin_id} {c.old} → {c.new}")
+                changed = True
+                continue
+            try:
+                if stop is not None:
+                    stop(c.plugin_id)
+                old, m = store.update(c.plugin_id, c.folder)
+            except (ManifestError, OSError) as e:  # shutil.Error is an OSError
+                print(f"dock: {c.plugin_id}: {e}", file=sys.stderr)
+                failed = True
+                continue
+            print(f"updated {c.plugin_id} {old} → {m.version}")
+            changed = True
+        elif c.status == "current":
+            if ids:
+                print(f"{c.plugin_id} {c.old} is up to date")
+        elif c.status == "skip":
+            print(f"dock: {c.message}; skipped", file=sys.stderr)
+        else:
+            print(f"dock: {c.message}", file=sys.stderr)
+            failed = True
+    if not ids and not changed and not failed:
+        print("all plugins up to date")
+    return 1 if failed else 0
+
+
 def cmd_plugin(store: Store, args: list[str]) -> int:
     sub = args[0] if args else "list"
+    if sub == "update":
+        return cmd_plugin_update(store, args[1:])
     if sub == "list":
         idx = store.index()
         if not idx:

@@ -222,6 +222,27 @@ class ShellE2E(unittest.TestCase):
         self.assertNotIn("dev.dock.hello:", sh.err)
         self.assertEqual(self.starts("dev.dock.hello"), 1)
 
+    def test_plugin_update_stops_a_running_plugin_first_but_not_on_dry_run(self):
+        tmp = Path(tempfile.mkdtemp(prefix="dock-shell-upd-"))
+        copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp / "v1", "dev.dock.helloupd")
+        self.addCleanup(dockenv.remove_image, "dock/dev.dock.helloupd:0.1.0")
+        self.addCleanup(dockenv.remove_image, "dock/dev.dock.helloupd:0.2.0")
+        home = tempfile.mkdtemp(prefix="dock-shell-upd-home-")
+        env = {**self.env, "DOCK_HOME": home}
+        self.assertEqual(self.dock("plugin", "install", str(copy), env=env).returncode, 0)
+        newer = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp / "cat", "dev.dock.helloupd")
+        toml = newer / "plugin.toml"
+        toml.write_text(toml.read_text().replace('version = "0.1.0"', 'version = "0.2.0"', 1))
+        dockenv.write_config(home, dockenv.require_runtime())
+        dockenv.add_config(Path(home), f'[catalog]\npaths = ["{newer}"]\n')
+        r = self.dock("shell", stdin="hello a\nplugin update --dry-run\nhello b\nplugin update\nhello c\n", env=env)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("would update dev.dock.helloupd 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn("updated dev.dock.helloupd 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn("hello, c!", r.stdout)
+        log = Path(home, "logs", "dev.dock.helloupd.log").read_text()
+        self.assertEqual(log.count(" start "), 2)  # a and b shared one process; the update stopped it; c started anew
+
     # AC8
     def test_plugin_remove_or_install_of_a_running_id_stops_it_first(self):
         # a copy of hello under its own id: a remove or reinstall drops only that copy's image, never the shared hello one
@@ -305,7 +326,9 @@ class ShellE2E(unittest.TestCase):
         with self.subTest("first word"):
             self.assertEqual(sh.candidates("he", "he"), ["hello", "help"])
         with self.subTest("plugin subcommands and ids"):
-            self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "build", "remove"])
+            self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "build", "remove", "update"])
+            self.assertEqual(sh.candidates("plugin update ", ""), ["dev.dock.hello", "dev.dock.probe"])
+            self.assertEqual(sh.candidates("plugin update dev.dock.hello ", ""), ["dev.dock.probe"])
             self.assertEqual(sh.candidates("plugin info dev.dock.", "dev.dock."),
                              ["dev.dock.hello", "dev.dock.probe"])
             self.assertEqual(sh.candidates("plugin build dev.dock.h", "dev.dock.h"), ["dev.dock.hello"])

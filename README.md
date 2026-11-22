@@ -146,6 +146,28 @@ existing folder is still a path; an id found in several catalog folders must be 
 `dock plugin info <id|path>` shows a plugin's manifest, with its keywords and `installed: no (<folder>)` (or
 `installed: yes, <version> (<path>)` when that plugin id is installed), without installing it. Running a command of an installed plugin never reads the catalog.
 
+### Update plugins from the catalog
+
+`dock plugin update [--dry-run] [<id>...]` (also in the shell) compares installed plugins with the catalog and
+installs the newer ones. Without ids it checks every installed plugin; with ids, only those. It needs `[catalog]`
+paths in `config.toml`.
+
+Versions must be dotted numbers (`0.10.0`, `1.2`); they are compared part by part as integers and trailing zeros are
+ignored (`1.0` equals `1.0.0`). A plugin is updated only when the catalog version is strictly newer. When several
+catalog folders hold the same id, the highest version wins; if two or more folders tie for the highest, that plugin
+is an error naming each folder and nothing changes. A catalog copy whose version is not dotted numbers is ignored
+with a warning, and so is an installed plugin with such a version (an error when you named it).
+
+An update installs the catalog copy like `dock plugin install <folder>`, then removes the old version's folder
+under `plugin/<id>/` and, best effort, its `dock/<id>:<old>` image. A copy that cannot be installed leaves the old
+version in place. In the shell, a running copy of the plugin is stopped just before it is updated.
+
+`--dry-run` (before or after the ids) prints `would update <id> <old> → <new>` and changes nothing. Output is
+`updated <id> <old> → <new>` per plugin, `all plugins up to date` when nothing was newer, and `<id> <version> is up to
+date` for a named current plugin. A named id that is not installed or not in the catalog is an error. Plugins are
+processed in id order and one failure does not stop the others. Exit 0 when all went well, 1 when any failed, 2 for an
+unknown option.
+
 ### How plugins run
 
 Every plugin runs in a container, started as `<runtime> run -i --rm`, so the stdio protocol and warm plugins in
