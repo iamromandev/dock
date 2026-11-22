@@ -14,7 +14,7 @@ from cli.store import Store
 
 PROMPT = "dock> "
 BUILTINS = ["help", "version", "plugin", "search", "status", "exit", "quit"]
-PLUGIN_SUBS = ["list", "info", "install", "build", "remove"]
+PLUGIN_SUBS = ["list", "info", "install", "build", "remove", "update"]
 
 
 class Shell:
@@ -66,6 +66,8 @@ class Shell:
             return [s for s in PLUGIN_SUBS if s.startswith(text)]
         if len(done) == 2 and done[0] == "plugin" and done[1] in ("info", "build", "remove"):
             return sorted(i for i in self.store.index() if i.startswith(text))
+        if done[:2] == ["plugin", "update"]:
+            return sorted(i for i in self.store.index() if i.startswith(text) and i not in done)
         return []
 
     def complete(self, text: str, state: int) -> str | None:
@@ -152,6 +154,8 @@ class Shell:
             except ManifestError:
                 pass  # install_from reports the broken manifest
             main.install_from(self.store, folder)
+        elif args[:1] == ["update"]:
+            main.cmd_plugin_update(self.store, args[1:], stop=self.session.stop_plugin)
         else:
             main.cmd_plugin(self.store, args)
 

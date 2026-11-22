@@ -111,6 +111,50 @@ class Store:
             isolation.forget_image(self, installed)
         return installed
 
+    def update(self, plugin_id: str, folder: Path) -> tuple[str, Manifest]:
+        """Install `folder` over the installed plugin, then drop the old version's folder and image.
+
+        The old folder goes only after the index names the new version; a failed install changes nothing.
+        """
+        entry = self.index()[plugin_id]
+        old_version = entry["version"]
+        plugin_root = child(self.plugin_dir, plugin_id, "plugin id")
+        if plugin_root.is_symlink():
+            raise ManifestError(f"{plugin_root} is a symlink; not updating through it")
+        old_dir = child(plugin_root, old_version, "plugin version")
+        try:
+            old_manifest = Manifest.load(Path(entry["path"]))
+        except (ManifestError, OSError, KeyError) as e:
+            old_manifest = None
+            print(f"dock: old image dock/{plugin_id}:{old_version} was not removed: "
+                  f"could not read the old manifest ({e})", file=sys.stderr)
+        try:
+            new_dir = child(plugin_root, Manifest.load(folder).version, "plugin version")
+        except ManifestError:
+            new_dir = None  # install reports it
+        new_existed = new_dir is not None and os.path.lexists(new_dir)
+        try:
+            manifest = self.install(folder)  # ManifestError: nothing was changed
+        except (ManifestError, OSError):
+            if new_dir is not None and not new_existed and new_dir.is_dir() and not new_dir.is_symlink():
+                _make_writable(new_dir)
+                shutil.rmtree(new_dir, ignore_errors=True)  # a half-copied folder
+            raise
+        if old_dir != child(plugin_root, manifest.version, "plugin version"):
+            if Path(os.path.abspath(entry["path"])) != old_dir:
+                print(f"dock: left {entry['path']} in place: it is not {old_dir}", file=sys.stderr)
+            elif old_dir.is_symlink():
+                print(f"dock: left {old_dir} in place: it is a symlink", file=sys.stderr)
+            elif old_dir.exists():
+                try:
+                    _make_writable(old_dir)
+                    shutil.rmtree(old_dir)
+                except OSError as e:
+                    print(f"dock: could not remove old version folder {old_dir}: {e}", file=sys.stderr)
+        if old_manifest is not None and old_manifest.version != manifest.version:
+            isolation.forget_image(self, old_manifest)
+        return old_version, manifest
+
     def remove(self, plugin_id: str) -> None:
         idx = self.index()
         if plugin_id not in idx:
