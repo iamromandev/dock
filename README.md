@@ -209,14 +209,16 @@ python3 -m cli dm https://example.com/file.tar.gz -o name.tar.gz     # a file na
 python3 -m cli dm https://example.com/file.tar.gz -d downloads       # an existing subfolder; the name comes from the URL
 python3 -m cli dm ubuntu.torrent                                     # a .torrent file in the current folder
 python3 -m cli dm dataset.torrent -d downloads --stall-seconds 60    # same -o and -d rules; give up sooner
+python3 -m cli dm https://example.com/file.tar.gz --no-resume        # throw an old partial away, start from zero
 ```
 
 (After `pip install -e .`, `dock dm ...` works the same.) The install prompt shows `network, fs:write:cwd`: `network` to fetch the URL, `fs:write:cwd` to save the file in
 the folder you run it from.
 
 - It never overwrites: an existing `name.ext` gives `name (1).ext`, `name (2).ext`, and so on.
-- The download goes to a hidden `.name.<hex>.dm-part` file first and is moved into place only when complete, so a
-  partial file is never visible; on a failure or Ctrl-C it is removed.
+- The download goes to a hidden `.name.<key>.dm-part` file first and is moved into place only when complete, so a
+  partial file is never visible. On Ctrl-C or a failure that may succeed on a retry it is kept and the next run
+  continues it (see [Resume](#resume)); on any other failure it is removed.
 - URL credentials, the query and the fragment are never printed.
 - `-o` and `-d` cannot leave the current folder, and `-o` with `-d` together is a usage error (exit 2).
 - Like every plugin with `fs:write:cwd`, it will not run in your home folder itself (dock's cwd rule).
@@ -236,7 +238,7 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
 ```
 
 - **Supported:** v1 torrents with one file or many, from HTTP(S) and UDP trackers (`announce` and `announce-list`).
-  Not supported yet: magnet links, DHT, peer exchange, resume, v2-only torrents, choosing files, and `.torrent` files
+  Not supported yet: magnet links, DHT, peer exchange, v2-only torrents, choosing files, and `.torrent` files
   given as a URL.
 - **One file or a folder:** a single-file torrent saves one file; a multi-file torrent saves a folder with the
   torrent's name and its files in it, empty files included. The `(1)`, `(2)` naming of an existing name applies to
@@ -244,7 +246,7 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
   paths, a file that is also a folder) are refused, so nothing is written outside the target.
 - **Every piece is checked** against the torrent's hashes before it is stored. A peer that sends a bad piece or data
   nobody asked for is dropped and not contacted again. As for HTTP, the work happens in a hidden `.dm-part` file or
-  folder that is moved into place only when complete, and removed on a failure or Ctrl-C.
+  folder that is moved into place only when complete; an interrupted torrent can be resumed (see [Resume](#resume)).
 - **Outbound only, nothing listens.** `dm` connects to the peers the tracker gives it and never opens a port, so
   swarms where most peers cannot accept connections can be slow, or have no reachable peers at all.
 - **It uploads while it runs.** To the peers it has connected to, `dm` serves the pieces it has verified (four
@@ -262,6 +264,43 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
   like any other BitTorrent client does; a torrent can therefore make `dm` open connections to hosts on your network.
 - **Limits:** a torrent file over 10 MB, more than 100,000 files or about a million pieces, or very deep paths are refused; memory
   stays bounded (a 512 MiB download peaks well under 200 MB).
+
+#### Resume
+
+An interrupted `dm` keeps what it has, and running the same command again in the same folder continues from there.
+
+- **What is kept, and when.** On Ctrl-C, and on failures a retry may fix: a dropped or closed connection, a timeout,
+  HTTP 408, 429 and 5xx, a full disk, and for torrents `no peers found`, `stalled` and tracker errors. Everything
+  else removes the partial: other HTTP 4xx (404 and so on), an invalid URL or torrent, an unwritable folder, and
+  any failure before the first byte was written. For torrents, a failure that a retry may fix also removes the
+  partial when no piece has been verified yet (`no peers found` on a first run leaves nothing); Ctrl-C always keeps it.
+  A completed download leaves nothing behind.
+- **Automatic.** Run the same command (the same URL, or the same torrent, with the same `-o` or `-d`) in the same
+  folder and `dm` finds its partial by name. It prints `resuming from 1.9 GB of 4.0 GB` and fetches only the rest.
+  A different URL, `-o` name or folder never touches or uses another download's partial.
+- **`--no-resume`** deletes the matching partial and starts from zero.
+- **HTTP.** `dm` asks for the remaining bytes with a `Range` request that is conditional on the ETag or
+  Last-Modified date it saw first, and re-fetches the last 1 MiB of what it already holds (an OS crash can tear
+  the end of a file). A partial of 1 MiB or less is not worth resuming and starts over. If the server has no strong ETag (a `W/` one does not count) and no Last-Modified, or does
+  not know the length, the download cannot be resumed and starts over with `cannot resume: starting over`. The
+  same happens when the file changed on the server or the server ignores ranges: the partial is replaced, never
+  mixed with new content.
+- **Torrents.** On resume `dm` re-checks every piece already on disk against the torrent's hashes
+  (`checking existing data`; about 1-2 seconds per GB), counts only the pieces that pass, and asks peers for the
+  rest. A partial whose files do not match the torrent (missing, extra or wrong-sized files, a symlink) is deleted
+  and the download starts over.
+- **What is left in the folder.** Hidden items next to the download, named `.<name>.<key>.dm-part` (the file or
+  folder), `.<name>.<key>.dm-resume` (HTTP only, a few bytes: the length and the validator, never the URL or any
+  credentials) and `.<name>.<key>.dm-lock` (only while `dm` runs, or after it was killed). Partials made by `dm`
+  0.2.0 have a random name and are not resumed. To delete leftovers, including after a force-kill:
+  `find . -maxdepth 1 \( -name '.*.dm-part' -o -name '.*.dm-resume' -o -name '.*.dm-lock' \) -exec rm -r {} +`
+  (works in bash and zsh; it removes every `dm` partial, record and lock in the current folder, so run it only
+  when nothing is downloading there).
+- **Sizes.** A torrent partial shows its full size at once (the files are sparse), so `ls` and `du` differ until
+  it is filled.
+- **One at a time.** A second identical `dm` in the same folder fails at once with
+  `already being downloaded in this folder`. In `dock shell` this message can appear for a moment right after
+  Ctrl-C, while the cancelled download is still letting go of its partial; run it again.
 
 ### How plugins run
 

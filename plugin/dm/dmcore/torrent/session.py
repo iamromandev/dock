@@ -10,21 +10,20 @@ import collections
 import hashlib
 import os
 import random
-import secrets
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
-from .. import Cancelled
+from .. import Cancelled, resume as resume_mod
 from ..fmt import Throttle, human_size
-from ..names import _cut
 from ..target import DmError
 from . import layout, metainfo, tracker, wire
-from .handle import TorrentHandle, remove
+from .handle import TorrentHandle
 from .choker import choose
 from .peer import PeerConn
 from .picker import Picker
 from .place import place_dir, place_file
-from .storage import PrepareError, Storage
+from .recheck import recheck
+from .storage import LayoutMismatch, PrepareError, Storage
 
 REPORTED_PORT = 6881  # what we tell trackers, though nothing listens
 MAX_PENDING = 1000
@@ -51,7 +50,7 @@ def _span(seconds):
 
 
 class Session:
-    def __init__(self, meta, storage, progress, handle, opts, log=None, on_complete=None):
+    def __init__(self, meta, storage, progress, handle, opts, log=None, on_complete=None, have=()):
         self.meta = meta
         self.storage = storage
         self.report = progress
@@ -59,8 +58,9 @@ class Session:
         self.opts = opts
         self._log = log
         self.on_complete = on_complete  # places the finished download, before the tracker is told
-        self.peer_id = b"-DM0200-" + os.urandom(12)
+        self.peer_id = b"-DM0300-" + os.urandom(12)
         self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
+        self.picker.mark_verified(have)  # a resumed download: these pieces are ours before any peer connects
         self.conns = {}  # (host, port) -> PeerConn, connecting or connected
         self.banned = set()
         self.pending = collections.deque()
@@ -277,7 +277,7 @@ class Session:
                 event = ""
             else:
                 if first:  # every tracker failed on the first try: nothing else will find peers
-                    self.fail(DmError(f"tracker error: {reason}"))
+                    self.fail(DmError(f"tracker error: {reason}", keep=True))
                     return
                 wait = 60
             first = False
@@ -302,10 +302,10 @@ class Session:
             idle = loop.time() - self.last_progress
             if self.connected():
                 if idle >= 2.5 * self.opts.stall_s:
-                    self.fail(DmError(f"stalled: no progress for {_span(2.5 * self.opts.stall_s)}"))
+                    self.fail(DmError(f"stalled: no progress for {_span(2.5 * self.opts.stall_s)}", keep=True))
                     return
             elif idle >= self.opts.stall_s:
-                self.fail(DmError("no peers found"))
+                self.fail(DmError("no peers found", keep=True))
                 return
             self.progress()
 
@@ -320,6 +320,8 @@ class Session:
             worker.add_done_callback(self._worker_done)
         completed = False
         try:
+            if self.picker.done():  # everything was already on disk
+                self.finished.set()
             self.progress()
             await self.finished.wait()
             if self.fatal is not None:
@@ -362,14 +364,18 @@ class Session:
             self.reader_pool.shutdown(wait=False, cancel_futures=True)
 
 
-async def run_session(meta, storage, progress, handle, opts, log=None, on_complete=None):
-    await Session(meta, storage, progress, handle, opts, log, on_complete).run()
+async def run_session(meta, storage, progress, handle, opts, log=None, on_complete=None, have=(), out=None):
+    """Run one session; `out["session"]` is set at the start so the caller can ask what was verified."""
+    s = Session(meta, storage, progress, handle, opts, log, on_complete, have)
+    if out is not None:
+        out["session"] = s
+    await s.run()
 
 
-def _drive(meta, storage, progress, handle, opts, log, on_complete):
+def _drive(meta, storage, progress, handle, opts, log, on_complete, have=(), out=None):
     loop = asyncio.new_event_loop()
     try:
-        task = loop.create_task(run_session(meta, storage, progress, handle, opts, log, on_complete))
+        task = loop.create_task(run_session(meta, storage, progress, handle, opts, log, on_complete, have, out))
         handle.attach(loop, task)
         try:
             loop.run_until_complete(task)
@@ -384,27 +390,76 @@ def _drive(meta, storage, progress, handle, opts, log, on_complete):
         loop.close()  # no shutdown_default_executor(): a blocked lookup must not delay the exit
 
 
-def run_torrent(path, target, progress, handle=None, opts=None, log=None):
-    """Download the torrent at path into target.folder. Returns (final path, bytes, number of files)."""
+def _cannot_read(exc):
+    """Keep the partial: no torrent-chosen path in the text."""
+    return DmError(f"cannot read the partial download: {exc.strerror or type(exc).__name__}", keep=True)
+
+
+def _open_storage(meta, specs, tmp, target, handle, resume, note):
+    """(storage, resumed): the partial left by an earlier run when it is exactly right, else a new one."""
+    def new():
+        return Storage(tmp, specs, meta.piece_length, meta.total, single=not meta.multi)
+
+    if not resume:
+        resume_mod.discard(tmp)
+    elif resume_mod.exists(tmp):
+        storage = new()
+        try:
+            storage.open_existing()
+        except LayoutMismatch:
+            resume_mod.discard(tmp)
+            note("cannot resume: starting over")
+        except OSError as e:  # not a mismatch: the data may be fine, so it stays
+            raise _cannot_read(e) from None
+        else:
+            return storage, True
+    with handle.lock:  # an abandoned worker never creates the temp item after an abort
+        if handle.aborted:
+            raise Cancelled()
+        if meta.multi:
+            os.mkdir(tmp)  # the folder becomes the final one: normal permissions, not 0700
+    storage = new()
+    try:
+        storage.prepare()
+    except PrepareError as e:  # same wording as a folder we cannot create
+        raise DmError(f"cannot write to {target.folder}: {e.reason}") from None
+    return storage, False
+
+
+def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None):
+    """Download the torrent at path into target.folder. Returns (final path, bytes, number of files).
+
+    An interrupted download keeps its partial (`.<name>.<key>.dm-part`); the next run of the same torrent
+    re-checks every piece on disk and fetches the rest. `resume=False` throws an old partial away.
+    """
     handle = handle or TorrentHandle()
     opts = opts or Options()
+    say = note or (lambda text: None)
+    note = lambda text: handle.emit(say, text)  # noqa: E731 - silent once aborted, like progress
     meta = metainfo.load(path)
     specs = layout.plan_files(meta)
     base = target.fixed_name or layout.item_name(meta)
-    tmp = target.folder / f".{_cut(base, 100)}.{secrets.token_hex(8)}.dm-part"
-    storage = Storage(tmp, specs, meta.piece_length, meta.total, single=not meta.multi)
+    p = resume_mod.paths(target.folder, base, resume_mod.torrent_key(meta.info_hash, target))
+    tmp = p.part
+    lock = resume_mod.Lock(p.lock)
+    lock.acquire()
+    storage = None
+    keep = False
+    out = {}
     try:
         try:
-            with handle.lock:  # an abandoned worker never creates the temp item after an abort
-                if handle.aborted:
-                    raise Cancelled()
-                handle.tmp = tmp
-                if meta.multi:
-                    os.mkdir(tmp)  # the folder becomes the final one: normal permissions, not 0700
-            try:
-                storage.prepare()
-            except PrepareError as e:  # same wording as a folder we cannot create
-                raise DmError(f"cannot write to {target.folder}: {e.reason}") from None
+            storage, resumed = _open_storage(meta, specs, tmp, target, handle, resume, note)
+            have = ()
+            if resumed:
+                try:
+                    have = recheck(storage, meta, progress, handle)
+                except OSError as e:
+                    if handle.aborted:
+                        raise Cancelled() from None
+                    raise _cannot_read(e) from None
+                done_bytes = sum(storage.piece_size(i) for i in have)
+                if done_bytes:
+                    note(f"resuming from {human_size(done_bytes)} of {human_size(meta.total)}")
             done = []
 
             def place():
@@ -413,21 +468,40 @@ def run_torrent(path, target, progress, handle=None, opts=None, log=None):
                     if handle.aborted:
                         raise Cancelled()
                     move = place_dir if meta.multi else place_file
-                    done.append(move(tmp, target.folder, base))
+                    try:
+                        done.append(move(tmp, target.folder, base))
+                    except DmError as e:  # every piece is on disk: a rerun can place it
+                        raise DmError(str(e), keep=True) from None
+                    except OSError as e:
+                        raise DmError(f"cannot write to {target.folder}: {e.strerror or type(e).__name__}",
+                                      keep=True) from None
                     handle.placed = True
 
-            _drive(meta, storage, progress, handle, opts, log, place)
+            _drive(meta, storage, progress, handle, opts, log, place, have, out)
             final = done[0]
         except OSError as e:  # never show the raw error: it carries paths chosen by the torrent
             if handle.aborted:
                 raise Cancelled() from None
-            raise DmError(f"cannot write to {target.folder}: {e.strerror or type(e).__name__}") from None
+            raise DmError(f"cannot write to {target.folder}: {e.strerror or type(e).__name__}",
+                          keep=resume_mod.is_quota_error(e)) from None
         except DmError:
             if handle.aborted:
                 raise Cancelled() from None
             raise
+    except Cancelled:
+        keep = True
+        raise
+    except DmError as e:
+        # a retryable failure keeps the partial only when it holds something: a verified piece, this run or before
+        s = out.get("session")
+        keep = e.keep and (s is None or s.picker.verified_bytes() > 0 or s.picker.done())
+        raise
     finally:
-        storage.close()
-        if not handle.placed:
-            remove(tmp)
+        if storage is not None:
+            storage.close()
+        try:
+            if not handle.placed and not keep:
+                resume_mod.discard(tmp)
+        finally:
+            lock.release(remove=True)
     return final, meta.total, len(meta.files)

@@ -2,7 +2,7 @@
 
 Seeder: serves complete torrents from disk. Fault modes: corrupt=<piece or set of pieces> (flips a byte of
 them when served), unrequested (sends a block nobody asked for right after the unchoke), never_unchoke,
-delay=<seconds per block>.
+delay=<seconds per block>. `piece_requests` counts the block requests per piece.
 Leecher: has nothing. It connects out to a seeder (`connect`) or accepts a connection (`serve`), asks for
 pieces, checks them against the torrent's hashes and records the ones it got in `.pieces`.
 
@@ -12,6 +12,7 @@ In-process: build one, `await start(host)`, read `.port`. In a container: `pytho
 
 import argparse
 import asyncio
+import collections
 import hashlib
 import os
 import random
@@ -75,6 +76,7 @@ class Seeder:
         self.connections = 0  # accepted
         self.open_connections = 0
         self.requests = 0
+        self.piece_requests = collections.Counter()  # piece index -> block requests served
         self.closed = 0
         self.writers = set()
         self._server = None
@@ -145,6 +147,7 @@ class Seeder:
                 elif mid == wire.REQUEST and unchoked:
                     index, begin, length = wire.parse_request(payload)
                     self.requests += 1
+                    self.piece_requests[index] += 1
                     if self.delay:
                         await asyncio.sleep(self.delay)
                     data = content.read(index, begin, length)

@@ -10,6 +10,7 @@ import bisect
 import collections
 import errno
 import os
+import stat
 import threading
 
 from ..target import DmError
@@ -18,6 +19,8 @@ MAX_OPEN_FILES = 64
 
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
+# what opening an entry says when it is missing or of the wrong kind (a link, a device, a folder, a file)
+_NOT_OURS = {errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO, errno.EMLINK}
 
 
 class PrepareError(DmError):
@@ -26,6 +29,13 @@ class PrepareError(DmError):
     def __init__(self, name, reason):
         super().__init__(f"cannot create files in {name}: {reason}")
         self.reason = reason
+
+
+class LayoutMismatch(PrepareError):
+    """The existing partial is not exactly the layout of this torrent: it must not be trusted."""
+
+    def __init__(self, name):
+        super().__init__(name, "the partial does not match the torrent")
 
 
 _DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CLOEXEC
@@ -93,6 +103,58 @@ class Storage:
         except BaseException:
             self.close()
             raise
+
+    def open_existing(self):
+        """Reuse a partial made by prepare(): nothing is created, nothing followed through a link.
+
+        The root, every folder and every file must be exactly what prepare() makes: regular files of the
+        right size, no other entry anywhere. Anything else raises LayoutMismatch.
+        """
+        name = os.path.basename(self.root)
+        try:
+            try:
+                if self.single:
+                    self._base = os.open(os.path.dirname(self.root) or ".", _DIR & ~_NOFOLLOW)
+                else:
+                    self._base = os.open(self.root, _DIR)
+                    self._check_entries()
+                for i, f in enumerate(self.files):
+                    fd = self._open(i, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))
+                    try:
+                        st = os.fstat(fd)
+                    finally:
+                        os.close(fd)
+                    if not stat.S_ISREG(st.st_mode) or st.st_size != f.length or st.st_nlink != 1:
+                        raise LayoutMismatch(name)
+            except OSError as e:
+                if e.errno in _NOT_OURS:  # a missing or swapped entry: not what we made
+                    raise LayoutMismatch(name) from e
+                raise  # EMFILE, EIO, EACCES...: the data may be fine, the caller keeps it
+        except BaseException:
+            self.close()
+            raise
+
+    def _check_entries(self):
+        """Every entry under the root is one the layout names, of the right kind (links are never one)."""
+        expected = {(): set()}
+        for f in self.files:
+            for k in range(len(f.parts)):
+                expected.setdefault(f.parts[:k], set()).add(f.parts[k])
+        for folder, names in expected.items():
+            fd = self._parent(folder + ("x",))
+            try:
+                with os.scandir(fd) as entries:
+                    found = {e.name: e for e in entries}
+            finally:
+                if fd != self._base:
+                    os.close(fd)
+            if set(found) != names:
+                raise LayoutMismatch(os.path.basename(self.root))
+            for n, entry in found.items():
+                is_folder = folder + (n,) in expected
+                kind_ok = entry.is_dir(follow_symlinks=False) if is_folder else entry.is_file(follow_symlinks=False)
+                if not kind_ok:
+                    raise LayoutMismatch(os.path.basename(self.root))
 
     def piece_size(self, index):
         if not 0 <= index < -(-self.total // self.piece_length):

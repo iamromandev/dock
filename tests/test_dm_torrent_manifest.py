@@ -39,11 +39,11 @@ def cli(*args, home=None, cwd=ROOT):
 class Manifest02(unittest.TestCase):
     def test_version_summary_and_keywords(self):
         m = Manifest.load(DM)
-        self.assertEqual(m.version, "0.2.0")
+        self.assertEqual(m.version, "0.3.0")
         (command,) = m.commands
         self.assertEqual(command.summary,
                          "Download a URL or a .torrent into the current folder: "
-                         "dm <url|file.torrent> [-o name | -d folder]")
+                         "dm <url|file.torrent> [-o name | -d folder] [--no-resume]")
         for word in ("download", "fetch", "get", "url", "http", "torrent", "bittorrent"):
             self.assertIn(word, command.keywords)
 
@@ -58,7 +58,7 @@ class Manifest02(unittest.TestCase):
     def test_plugin_info_shows_the_new_summary(self):
         r = cli("plugin", "info", str(DM))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("0.2.0", r.stdout)
+        self.assertIn("0.3.0", r.stdout)
         self.assertIn(".torrent", r.stdout)
         self.assertIn("bittorrent", r.stdout)
 
@@ -79,13 +79,13 @@ class Update(unittest.TestCase):
         home.mkdir()
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(home, f'[catalog]\npaths = ["{catalog}"]\n')
-        for version in ("0.1.0", "0.2.0"):
+        for version in ("0.1.0", "0.3.0"):
             self.addCleanup(dockenv.remove_image, f"dock/{COPY_ID}:{version}")
         r = cli("plugin", "install", str(old), "--yes", home=home)
         self.assertEqual(r.returncode, 0, r.stderr)
         r = cli("plugin", "update", COPY_ID, home=home)  # no --yes, no terminal: a prompt would refuse
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.1.0 → 0.2.0")
+        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.1.0 → 0.3.0")
         self.assertNotIn("adds", r.stderr)
 
 

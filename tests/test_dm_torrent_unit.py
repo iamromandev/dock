@@ -436,6 +436,163 @@ class Storage(unittest.TestCase):
             st.read_block(0, 0, 1)
 
 
+class OpenExisting(unittest.TestCase):
+    """AC9, NFR2: an existing partial is only reused when it is exactly the layout prepare() makes."""
+
+    SPECS = (spec(["a"], 3, 0), spec(["empty"], 0, 3), spec(["sub", "deep", "b"], 6, 3), spec(["c"], 2, 9))
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.dir = Path(self._tmp.name)
+        self.root = self.dir / "root"
+
+    def make(self):
+        os.mkdir(self.root)
+        st = storage.Storage(self.root, self.SPECS, 4, 11, single=False)
+        st.prepare()
+        st.write_piece(0, b"0123")
+        st.close()
+
+    def reopen(self, specs=None, single=False, root=None):
+        st = storage.Storage(root or self.root, specs or self.SPECS, 4, 11, single=single)
+        self.addCleanup(st.close)
+        st.open_existing()
+        return st
+
+    def test_reopens_a_prepared_folder_and_reads_what_was_written(self):
+        self.make()
+        st = self.reopen()
+        self.assertEqual(st.read_block(0, 0, 4), b"0123")
+        st.write_piece(1, b"4567")
+        self.assertEqual(st.read_block(1, 0, 4), b"4567")
+
+    def test_reopens_a_single_file(self):
+        f = self.dir / "one"
+        st = storage.Storage(f, (spec(["one"], 8, 0),), 4, 8, single=True)
+        st.prepare()
+        st.write_piece(0, b"abcd")
+        st.close()
+        again = self.reopen((spec(["one"], 8, 0),), single=True, root=f)
+        self.assertEqual(again.read_block(0, 0, 4), b"abcd")
+
+    def assertMismatch(self, **kw):
+        with self.assertRaises(storage.LayoutMismatch):
+            self.reopen(**kw)
+
+    def test_missing_root(self):
+        self.assertMismatch()
+
+    def test_missing_file(self):
+        self.make()
+        os.unlink(self.root / "c")
+        self.assertMismatch()
+
+    def test_missing_folder(self):
+        self.make()
+        shutil.rmtree(self.root / "sub")
+        self.assertMismatch()
+
+    def test_only_missing_or_wrong_kind_errors_mean_a_mismatch(self):
+        import errno
+
+        self.make()
+        for code in (errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR, errno.ENXIO):
+            with self.subTest(errno.errorcode[code]):
+                with mock.patch.object(storage.os, "open", side_effect=OSError(code, "x")):
+                    self.assertMismatch()
+
+    def test_other_os_errors_propagate_so_the_data_is_kept(self):
+        import errno
+
+        self.make()
+        for code in (errno.EMFILE, errno.EIO, errno.EACCES):
+            with self.subTest(errno.errorcode[code]):
+                with mock.patch.object(storage.os, "open", side_effect=OSError(code, "x")):
+                    with self.assertRaises(OSError) as cm:
+                        self.reopen()
+                self.assertNotIsInstance(cm.exception, storage.LayoutMismatch)
+                self.assertEqual(cm.exception.errno, code)
+
+    def test_a_hard_linked_file_is_a_mismatch(self):
+        self.make()
+        os.link(self.root / "c", self.dir / "other-name")
+        self.assertMismatch()
+
+    def test_a_folder_swapped_for_a_symlink_after_opening_is_never_followed(self):
+        self.make()
+        st = self.reopen()
+        outside = self.dir / "outside"
+        outside.mkdir()
+        shutil.rmtree(self.root / "sub")
+        os.symlink(outside, self.root / "sub")
+        with self.assertRaises(OSError):
+            st.write_piece(1, b"4567")
+        self.assertEqual(os.listdir(outside), [])
+
+    def test_extra_file_at_the_top_and_in_a_subfolder(self):
+        for where in (self.root / "extra", self.root / "sub" / "extra"):
+            with self.subTest(where=where.name):
+                self.make()
+                where.write_bytes(b"x")
+                self.assertMismatch()
+                shutil.rmtree(self.root)
+
+    def test_extra_empty_folder(self):
+        self.make()
+        os.mkdir(self.root / "more")
+        self.assertMismatch()
+
+    def test_wrong_size_file(self):
+        self.make()
+        with open(self.root / "a", "ab") as f:
+            f.write(b"x")
+        self.assertMismatch()
+
+    def test_symlinked_file_is_refused_and_its_target_untouched(self):
+        self.make()
+        outside = self.dir / "outside"
+        outside.write_bytes(b"123")
+        os.unlink(self.root / "a")
+        os.symlink(outside, self.root / "a")
+        self.assertMismatch()
+        self.assertEqual(outside.read_bytes(), b"123")
+
+    def test_symlinked_folder_is_refused(self):
+        self.make()
+        elsewhere = self.dir / "elsewhere"
+        shutil.move(self.root / "sub", elsewhere)
+        os.symlink(elsewhere, self.root / "sub")
+        self.assertMismatch()
+
+    def test_symlinked_root_is_refused(self):
+        self.make()
+        moved = self.dir / "moved"
+        os.rename(self.root, moved)
+        os.symlink(moved, self.root)
+        self.assertMismatch()
+
+    def test_directory_or_fifo_in_place_of_a_file(self):
+        self.make()
+        os.unlink(self.root / "c")
+        os.mkdir(self.root / "c")
+        self.assertMismatch()
+        os.rmdir(self.root / "c")
+        os.mkfifo(self.root / "c")
+        self.assertMismatch()
+
+    def test_single_file_that_is_a_symlink_or_wrong_size(self):
+        f = self.dir / "one"
+        outside = self.dir / "outside"
+        outside.write_bytes(b"12345678")
+        os.symlink(outside, f)
+        self.assertMismatch(specs=(spec(["one"], 8, 0),), single=True, root=f)
+        os.unlink(f)
+        f.write_bytes(b"123")
+        self.assertMismatch(specs=(spec(["one"], 8, 0),), single=True, root=f)
+        self.assertEqual(outside.read_bytes(), b"12345678")
+
+
 class Place(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
