@@ -1,7 +1,5 @@
-"""Lets the main thread abort a running torrent download and clean up after it."""
+"""Lets the main thread abort a running torrent download. The worker decides what to keep."""
 
-import os
-import shutil
 import threading
 
 
@@ -14,7 +12,6 @@ class TorrentHandle:
         self.placed = False
         self.loop = None
         self.main_task = None
-        self.tmp = None  # the .dm-part file or folder
 
     def emit(self, fn, *args):
         """Call fn unless aborted; checked under the lock abort() takes."""
@@ -39,26 +36,11 @@ class TorrentHandle:
                 pass
 
     def abort(self):
-        """Stop the download. False if it was already moved into place."""
+        """Stop the download; nothing is deleted here. False if it was already moved into place."""
         with self.lock:
             if self.placed:
                 return False
             self.aborted = True
-            tmp, self.tmp = self.tmp, None
         self._stop()
-        if tmp is not None:
-            remove(tmp)
         return True
 
-
-def remove(path):
-    """Delete a temp file or folder. Storage never re-creates folders, so a late write cannot revive it."""
-    try:
-        if os.path.isdir(path) and not os.path.islink(path):
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            os.unlink(path)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        pass

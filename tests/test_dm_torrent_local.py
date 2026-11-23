@@ -25,7 +25,7 @@ import torrentkit  # noqa: E402
 import dmcore  # noqa: E402
 from dmcore import Cancelled, fetch  # noqa: E402
 from dmcore.target import DmError, Target  # noqa: E402
-from dmcore.torrent import session, tracker as tracker_mod  # noqa: E402
+from dmcore.torrent import layout, metainfo, session, tracker as tracker_mod  # noqa: E402
 from dmcore.torrent.handle import TorrentHandle  # noqa: E402
 
 PL = 16384
@@ -98,6 +98,14 @@ class Harness(Env):
 
     def listing(self):
         return sorted(p.name for p in self.cwd.iterdir())
+
+    def kept(self, t, *others):
+        """What a kept partial leaves in the folder (the .dm-part item) next to `others`."""
+        from dmcore import resume
+
+        meta = metainfo.load(t.write_torrent(self.dir / "k.torrent"))
+        key = resume.torrent_key(meta.info_hash, Target(self.cwd, None))
+        return sorted([resume.paths(self.cwd, layout.item_name(meta), key).part.name, *others])
 
     def single(self, size=4 * 1024 * 1024, piece_length=64 * 1024, **kw):
         return self.torrent([("a.bin", torrentkit.content(size))], name="a.bin", piece_length=piece_length,
@@ -251,7 +259,8 @@ class Download(Harness):
         with self.assertRaises(DmError) as cm:
             self.run_torrent(t)
         self.assertEqual(str(cm.exception), "tracker error: tracker says no")
-        self.assertEqual(self.listing(), [])
+        self.assertTrue(cm.exception.keep)
+        self.assertEqual(self.listing(), [])  # retryable, but nothing verified: nothing is kept
 
     def test_next_tracker_is_used_when_the_first_fails(self):
         bad = self.serve_tracker(mode="fail")
@@ -350,7 +359,7 @@ class Download(Harness):
         self.assertEqual(self.listing(), [])
 
     # AC10
-    def test_cancel_stops_within_two_seconds_and_leaves_nothing(self):
+    def test_cancel_stops_within_two_seconds_and_keeps_the_partial(self):
         tr = self.serve_tracker()
         t = self.single(size=64 * PL, tr=tr, piece_length=PL)
         seeder = self.seeder(t, delay=0.05)
@@ -374,7 +383,7 @@ class Download(Harness):
         self.assertFalse(thread.is_alive())
         self.assertLess(result["end"] - start, 2)
         self.assertIsInstance(result["err"], Cancelled)
-        self.assertEqual(self.listing(), [])
+        self.assertEqual(self.listing(), self.kept(t))
         self.assertTrue(self.wait_for(lambda: seeder.open_connections == 0))
         self.assertTrue(self.wait_for(lambda: tr.announces[-1]["event"] == "stopped"))
 
@@ -394,7 +403,7 @@ class Download(Harness):
         thread.start()
         self.assertTrue(self.wait_for(lambda: any(a["event"] == "completed" for a in tr.announces), 10))
         self.assertTrue(thread.is_alive())  # the farewell is still waiting for the tracker
-        self.assertEqual(self.listing(), ["a.bin"])
+        self.assertEqual([n for n in self.listing() if not n.endswith(".dm-lock")], ["a.bin"])
         self.assertEqual((self.cwd / "a.bin").read_bytes(), t.blob)
         self.assertFalse(handle.abort())  # too late to cancel: it is saved
         thread.join(10)
@@ -420,7 +429,7 @@ class Download(Harness):
         self.assertFalse(h.aborted)
 
     # NFR3: a full disk
-    def test_a_write_error_becomes_a_user_message_and_leaves_nothing(self):
+    def test_a_disk_full_error_becomes_a_user_message_and_deletes_the_empty_partial(self):
         tr = self.serve_tracker()
         t = self.single(size=50000, tr=tr)
         self.swarm(tr, self.seeder(t))
@@ -429,7 +438,8 @@ class Download(Harness):
             with self.assertRaises(DmError) as cm:
                 self.run_torrent(t)
         self.assertEqual(str(cm.exception), f"cannot write to {self.cwd}: No space left on device")
-        self.assertEqual(self.listing(), [])
+        self.assertTrue(cm.exception.keep)
+        self.assertEqual(self.listing(), [])  # nothing was verified, so nothing is kept
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores folder permissions")
     def test_a_read_only_folder_gives_the_same_message_for_single_and_multi_file(self):
@@ -587,7 +597,7 @@ class Run(Harness):
         self.assertEqual(self.dm("data.torrent", output="a", dir="b"), 2)
 
     # AC10
-    def test_cancel_raises_cancelled_and_removes_the_temp_item(self):
+    def test_cancel_raises_cancelled_and_keeps_the_partial(self):
         tr = self.serve_tracker()
         t = self.torrent([("a.bin", torrentkit.content(64 * PL))], name="a.bin", tr=tr)
         seeder = self.seeder(t, delay=0.05)
@@ -612,11 +622,11 @@ class Run(Harness):
         self.assertFalse(thread.is_alive())
         self.assertLess(result["end"] - start, 2)
         self.assertIsInstance(result["err"], Cancelled)
-        self.assertEqual(self.listing(), ["data.torrent"])
+        self.assertEqual(self.listing(), self.kept(t, "data.torrent"))
 
     # AC12
     def test_stall_seconds_sets_the_no_peers_time(self):
-        self.prepared([("a.bin", b"x" * 5000)], "a.bin", mode="empty")
+        t = self.prepared([("a.bin", b"x" * 5000)], "a.bin", mode="empty")
         start = time.monotonic()
         self.assertEqual(self.dm("data.torrent", stall=1), 1)
         self.assertEqual(self.errors(), ["dm: data.torrent: no peers found"])

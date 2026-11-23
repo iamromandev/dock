@@ -383,7 +383,7 @@ class Upload(local.Harness):
         self.assertFalse(thread.is_alive())
         self.assertLess(result["end"] - start, 2)
         self.assertIsInstance(result["err"], local.Cancelled)
-        self.assertEqual(self.listing(), [])
+        self.assertEqual(self.listing(), self.kept(t))
         self.assertTrue(self.wait_for(lambda: probe.closed_after is not None and not probe._writers))
         self.assertTrue(self.wait_for(lambda: slow.open_connections == 0))
 

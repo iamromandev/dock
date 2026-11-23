@@ -135,6 +135,35 @@ class Picker(unittest.TestCase):
     def drain(self, p, pid, n=1000):
         return p.next_requests(pid, n)
 
+    def test_mark_verified_counts_bytes_and_is_never_requested(self):
+        p = self.make(npieces=4, total=3 * self.PL + 100)
+        p.mark_verified([1, 3])
+        self.assertEqual(p.finished, {1, 3})
+        self.assertEqual(p.verified_bytes(), self.PL + 100)
+        self.assertEqual(p.missing, {0, 2})
+        p.peer_bitfield("a", [0, 1, 2, 3])
+        asked = {r[0] for r in self.drain(p, "a")}
+        self.assertEqual(asked, {0, 2})
+        self.assertEqual(p.want["a"], 2)  # only the unverified pieces are of interest
+
+    def test_mark_verified_is_idempotent_and_finishes_the_download(self):
+        p = self.make(npieces=2)
+        p.mark_verified([0, 1, 1])
+        p.mark_verified([0])
+        self.assertTrue(p.done())
+        self.assertEqual(p.verified_bytes(), 2 * self.PL)
+
+    def test_mark_verified_after_a_peer_announced_the_piece_lowers_its_want(self):
+        p = self.make()
+        p.peer_bitfield("a", [0, 1])
+        p.mark_verified([0])
+        self.assertEqual(p.want["a"], 1)
+        self.assertFalse(p.interesting("a") and p.next_requests("a", 100)[0][0] == 0)
+
+    def test_mark_verified_rejects_an_index_out_of_range(self):
+        with self.assertRaises(ValueError):
+            self.make().mark_verified([4])
+
     def test_nothing_is_requested_from_a_peer_without_pieces(self):
         p = self.make()
         self.assertEqual(p.next_requests("a", 10), [])

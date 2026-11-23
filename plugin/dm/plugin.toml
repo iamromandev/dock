@@ -1,5 +1,5 @@
 id = "dev.dock.dm"
-version = "0.2.0"
+version = "0.3.0"
 api_version = "1"
 description = "Download a URL or a .torrent into the current folder"
 
@@ -11,11 +11,12 @@ permissions = ["network", "fs:write:cwd"]
 
 [[commands]]
 name = "dm"
-summary = "Download a URL or a .torrent into the current folder: dm <url|file.torrent> [-o name | -d folder]"
+summary = "Download a URL or a .torrent into the current folder: dm <url|file.torrent> [-o name | -d folder] [--no-resume]"
 keywords = ["download", "fetch", "get", "url", "http", "torrent", "bittorrent"]
 inputs = [
   { name = "url", type = "string", required = true },
   { name = "output", type = "string", flag = "--output", short = "-o" },
   { name = "dir", type = "string", flag = "--dir", short = "-d" },
   { name = "stall", type = "int", flag = "--stall-seconds" },
+  { name = "no_resume", type = "bool", flag = "--no-resume" },
 ]

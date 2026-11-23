@@ -10,9 +10,10 @@ from .names import MAX_BYTES
 class DmError(Exception):
     """A user-facing failure; the message is the text after 'dm: '."""
 
-    def __init__(self, message, code=1):
+    def __init__(self, message, code=1, keep=False):
         super().__init__(message)
         self.code = code
+        self.keep = keep  # True: a retry may succeed, so the partial data is kept
 
 
 @dataclass(frozen=True)

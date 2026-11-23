@@ -50,7 +50,9 @@ def run(inputs, cwd, notify, cancelled):
 
     def work(target):
         try:
-            result["ok"] = fetch.download(arg, target, progress, cancelled, handle)
+            result["ok"] = fetch.download(arg, target, progress, cancelled, handle,
+                                          resume=not inputs.get("no_resume"),
+                                          note=lambda text: notify("output", text=text + "\n"))
         except BaseException as e:  # reported by the main thread
             result["err"] = e
         finally:
@@ -61,9 +63,11 @@ def run(inputs, cwd, notify, cancelled):
 
         try:
             result["ok"] = run_torrent(path, target, progress, handle, opts,
-                                       lambda m: notify("log", level="debug", message=m))
+                                       lambda m: notify("log", level="debug", message=m),
+                                       resume=not inputs.get("no_resume"),
+                                       note=lambda text: notify("output", text=text + "\n"))
         except DmError as e:  # which torrent failed is the part worth showing
-            result["err"] = DmError(f"{arg}: {e}", e.code)
+            result["err"] = DmError(f"{arg}: {e}", e.code, e.keep)
         except BaseException as e:
             result["err"] = e
         finally:
@@ -88,6 +92,7 @@ def run(inputs, cwd, notify, cancelled):
         while not done.wait(0.05):
             if cancelled.is_set():
                 if handle.abort():
+                    done.wait(1)  # the worker decides what to keep and frees the lock as soon as it is woken
                     raise Cancelled()
                 done.wait()  # already moved into place: report the success
         err = result.get("err")

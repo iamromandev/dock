@@ -271,6 +271,20 @@ class Picker:
                 if index in have:
                     self.want[pid] -= 1
 
+    def mark_verified(self, indexes):
+        """Count pieces as verified before any peer is asked for anything (a resumed download)."""
+        for index in indexes:
+            self._check(index)
+            if index in self.finished:
+                continue
+            self.active.pop(index, None)
+            self._unmiss(index)
+            self.finished.add(index)
+            self._done_bytes += self.piece_size(index)
+            for pid, have in self.peers.items():
+                if index in have:
+                    self.want[pid] -= 1
+
     def piece_failed(self, index):
         """Throw the piece away so it is fetched again; the peers that sent any block of it."""
         act = self.active.pop(index, None)

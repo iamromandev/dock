@@ -211,7 +211,7 @@ class E2E(unittest.TestCase):
         self.assertFailed(r, "use -o or -d, not both", code=2)
 
     # AC10
-    def test_ctrl_c_cancels_and_cleans_up(self):
+    def test_ctrl_c_cancels_and_keeps_the_partial(self):
         t = self.torrent([("slow.bin", torrentkit.content(256 * PL))], name="slow.bin")
         self.seed(t, "--delay", "0.1")
         t.write_torrent(self.cwd / "data.torrent")
@@ -230,7 +230,10 @@ class E2E(unittest.TestCase):
         except subprocess.TimeoutExpired:
             self.fail("dock did not exit within 15 s of Ctrl-C")
         self.assertEqual(p.returncode, 130, err)
-        self.assertEqual(sorted(x.name for x in self.cwd.iterdir()), ["data.torrent"])
+        left = sorted(x.name for x in self.cwd.iterdir())
+        self.assertEqual(len(left), 2, left)  # the torrent and the kept partial: no lock file
+        self.assertEqual(left[1], "data.torrent")
+        self.assertRegex(left[0], r"^\.slow\.bin\.[0-9a-f]{24}\.dm-part$")
         self.assertTrue(dockenv.wait_clients_gone(self.home), "a plugin container is still running")
 
     # AC11
@@ -250,7 +253,8 @@ class E2E(unittest.TestCase):
         r = self.dm(t, "--stall-seconds", "2")
         self.assertFailed(r, "data.torrent: no peers found")
         self.assertLess(time.monotonic() - start, 60)
-        self.assertEqual(self.found(), [])
+        left = sorted(x.name for x in self.cwd.iterdir())  # nothing was verified: no partial, no lock
+        self.assertEqual(left, ["data.torrent"], left)
 
     def aria2_image(self):
         if not dockenv.image_exists(ARIA2_IMAGE):
