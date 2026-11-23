@@ -380,7 +380,7 @@ class UpdateCli(tc.CliCase):
         self.assertEqual((r.returncode, r.stdout), (0, "no plugins installed\n"))
 
     def test_help_lists_it(self):
-        self.assertIn("plugin update [--dry-run] [<id>...]", self.dock("help").stdout)
+        self.assertIn("plugin update [--dry-run] [--yes] [<id>...]", self.dock("help").stdout)
 
     def test_works_without_a_runtime(self):
         self.bump("0.2.0")

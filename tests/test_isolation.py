@@ -1303,7 +1303,7 @@ class PluginInfoEnv(DockIsolated):
     def test_install_summary_lists_env_only_when_declared(self):
         root = make_plugin(CONTAINER, '\n[capabilities]\nenv = ["A_ONE", "B_TWO"]\n')
         (root / "Dockerfile").write_text("FROM scratch\n")
-        out = self.dock("plugin", "install", str(root)).stdout
+        out = self.dock("plugin", "install", "--yes", str(root)).stdout
         self.assertIn("  env:         A_ONE, B_TWO", out.splitlines())
         # hello under another id: a reinstall of hello itself would delete the image the whole run shares
         out = self.dock("plugin", "install", str(self.plugin_copy(ROOT / "plugin" / "hello", "dev.dock.hellosummary"))).stdout

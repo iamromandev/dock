@@ -45,6 +45,7 @@ class Command:
 
 _PLUGIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # one path component: it names folders under the store
 _TAG_PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+KNOWN_PERMISSIONS = ("network", "fs:write:cwd")
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 RESERVED_ENV = {"HOME", "PATH", "LANG", "TZ", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"}  # dock sets these itself
 
@@ -175,8 +176,14 @@ class Manifest:
                     "only letters, digits, '.', '_' and '-', not starting with '.' or '-'"
                 )
 
-        if "network:listen" in caps.get("permissions", []):
+        permissions = caps.get("permissions", [])
+        if not isinstance(permissions, list) or not all(isinstance(p, str) for p in permissions):
+            raise ManifestError(f"{path}: [capabilities].permissions must be a list of strings")
+        if "network:listen" in permissions:
             raise ManifestError(f"{data['id']}: permission 'network:listen' is no longer supported")
+        for p in permissions:
+            if p not in KNOWN_PERMISSIONS:
+                raise ManifestError(f"{path}: unknown permission {p!r} (known: {', '.join(KNOWN_PERMISSIONS)})")
 
         return cls(
             id=data["id"],
@@ -186,7 +193,7 @@ class Manifest:
             root=root,
             container=container,
             commands=commands,
-            permissions=list(caps.get("permissions", [])),
+            permissions=list(permissions),
             env=env,
         )
 

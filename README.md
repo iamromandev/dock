@@ -148,7 +148,7 @@ existing folder is still a path; an id found in several catalog folders must be 
 
 ### Update plugins from the catalog
 
-`dock plugin update [--dry-run] [<id>...]` (also in the shell) compares installed plugins with the catalog and
+`dock plugin update [--dry-run] [--yes] [<id>...]` (also in the shell) compares installed plugins with the catalog and
 installs the newer ones. Without ids it checks every installed plugin; with ids, only those. It needs `[catalog]`
 paths in `config.toml`.
 
@@ -167,6 +167,37 @@ version in place. In the shell, a running copy of the plugin is stopped just bef
 date` for a named current plugin. A named id that is not installed or not in the catalog is an error. Plugins are
 processed in id order and one failure does not stop the others. Exit 0 when all went well, 1 when any failed, 2 for an
 unknown option.
+
+### Permission prompts
+
+A plugin's `[capabilities]` can ask for `permissions` (only `network` and `fs:write:cwd` exist; any other entry, or a
+value that is not a list of strings, makes the manifest invalid and the install fail) and `env` (host variables passed into
+its container). `dock plugin install [--yes] <path|id>` and `dock plugin update` (also in the shell) ask before they
+grant them. The request is listed on stderr, in this order: `network`, `fs:write:cwd`, then
+`env <NAME>` per variable:
+
+```
+dev.example.tool 0.1.0 asks for: network, env MY_API_KEY
+Install it? [y/N]
+```
+
+`y` or `yes` (any case) approves; anything else, an empty answer or end of input declines (`not installed`, exit 1;
+an update prints `skipped <id>: new permissions not approved`, keeps the old version and is not a failure). Ctrl-C
+cancels. Nothing is written to `~/.dock` and no container runtime is called before approval; the plugin folder is copied once
+into a private temporary folder, and the request shown and the files installed both come from that copy, so changing
+the source while the question is open cannot add grants. A plugin that asks for nothing
+installs without a question.
+
+When the plugin is already installed, only grants it did not have are asked, as `<id> <old> → <new> adds: <grants>`;
+an update asks per plugin right before it updates it, and dropped grants need no approval. `update --dry-run` shows
+`(adds: <grants>)` on the `would update` lines and never asks.
+
+`-y` or `--yes` (any position) approves without asking; the request is still printed. Without a terminal (stdin or stderr is not
+a TTY, which includes a piped `dock shell`) dock never reads stdin: without `--yes` it prints
+`dock: <request>; rerun with --yes to approve` and installs nothing for that plugin (exit 1).
+
+**Behaviour change:** scripts and CI that install a plugin with permissions or env without a terminal now need
+`--yes`. Installs of plugins that ask for nothing (such as `hello`) are unchanged.
 
 ### How plugins run
 
