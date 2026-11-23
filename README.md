@@ -45,7 +45,7 @@ cli/ (Python host)
  └─ ui.py         the host owns the terminal: output, logs, progress, prompts
         │  stdio (through `<runtime> run -i`)
    ├─ hello (Python)   2 commands, prompts, progress
-   └─ dm (Python)      download a URL into the current folder
+   └─ dm (Python)      download a URL or a .torrent into the current folder
 ```
 
 ## Try it
@@ -200,13 +200,15 @@ a TTY, which includes a piped `dock shell`) dock never reads stdin: without `--y
 
 ### dm
 
-`dm` is a bundled plugin (`dev.dock.dm`) that downloads one http(s) URL into the current folder:
+`dm` is a bundled plugin (`dev.dock.dm`) that downloads one http(s) URL, or the content of a `.torrent` file, into the current folder:
 
 ```sh
 python3 -m cli plugin install plugin/dm        # by path, or `python3 -m cli plugin install dev.dock.dm` from the catalog
 python3 -m cli dm https://example.com/file.tar.gz
 python3 -m cli dm https://example.com/file.tar.gz -o name.tar.gz     # a file name, or a path in an existing subfolder
 python3 -m cli dm https://example.com/file.tar.gz -d downloads       # an existing subfolder; the name comes from the URL
+python3 -m cli dm ubuntu.torrent                                     # a .torrent file in the current folder
+python3 -m cli dm dataset.torrent -d downloads --stall-seconds 60    # same -o and -d rules; give up sooner
 ```
 
 (After `pip install -e .`, `dock dm ...` works the same.) The install prompt shows `network, fs:write:cwd`: `network` to fetch the URL, `fs:write:cwd` to save the file in
@@ -218,6 +220,48 @@ the folder you run it from.
 - URL credentials, the query and the fragment are never printed.
 - `-o` and `-d` cannot leave the current folder, and `-o` with `-d` together is a usage error (exit 2).
 - Like every plugin with `fs:write:cwd`, it will not run in your home folder itself (dock's cwd rule).
+
+#### Torrents
+
+An argument that ends in `.torrent` (any case) and names an existing file inside the current folder is a torrent;
+`dm https://example.com/x.torrent` still downloads that file over HTTP. A `.torrent` outside the current folder
+is not visible to `dm` (only the current folder is mounted in its container), so it is treated like any other argument
+and fails as an invalid URL.
+
+```
+$ python3 -m cli dm ubuntu.torrent
+saved ubuntu-24.04.iso (2.6 GB, 1 file)
+$ python3 -m cli dm dataset.torrent -d downloads
+saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset already existed
+```
+
+- **Supported:** v1 torrents with one file or many, from HTTP(S) and UDP trackers (`announce` and `announce-list`).
+  Not supported yet: magnet links, DHT, peer exchange, resume, v2-only torrents, choosing files, and `.torrent` files
+  given as a URL.
+- **One file or a folder:** a single-file torrent saves one file; a multi-file torrent saves a folder with the
+  torrent's name and its files in it, empty files included. The `(1)`, `(2)` naming of an existing name applies to
+  both, and `-o` names the file or the folder. Paths in the torrent that would leave the folder (`..`, absolute
+  paths, a file that is also a folder) are refused, so nothing is written outside the target.
+- **Every piece is checked** against the torrent's hashes before it is stored. A peer that sends a bad piece or data
+  nobody asked for is dropped and not contacted again. As for HTTP, the work happens in a hidden `.dm-part` file or
+  folder that is moved into place only when complete, and removed on a failure or Ctrl-C.
+- **Outbound only, nothing listens.** `dm` connects to the peers the tracker gives it and never opens a port, so
+  swarms where most peers cannot accept connections can be slow, or have no reachable peers at all.
+- **It uploads while it runs.** To the peers it has connected to, `dm` serves the pieces it has verified (four
+  unchoke slots plus one rotating every 10 seconds) until the download ends. Peers and trackers therefore see your
+  IP address. There is no seeding after the download completes: every connection closes.
+- **Stalls:** with no verified piece for 120 seconds and no connected peer it fails with `no peers found`; with
+  peers connected but still nothing for 300 seconds, `stalled: no progress for 5 minutes`. `--stall-seconds N`
+  (at least 1) sets the first time; the second is 2.5 times it.
+- **Errors** are one line, prefixed with the torrent name, for example `dm: data.torrent: no peers found`,
+  `tracker error: <reason>`, `invalid torrent: unsafe path`, `invalid torrent: conflicting paths`, or
+  `cannot write to <folder>: <reason>`. Exit code 1, as for a failed HTTP download.
+- **Privacy:** tracker URLs are never printed, and neither are peer addresses (except with `-v`). A login in a
+  tracker URL (`user:pass@host`) is stripped and not sent, so trackers that require one will not work.
+- **Private and loopback addresses:** trackers and peers on private, link-local or loopback addresses are contacted
+  like any other BitTorrent client does; a torrent can therefore make `dm` open connections to hosts on your network.
+- **Limits:** a torrent file over 10 MB, more than 100,000 files or about a million pieces, or very deep paths are refused; memory
+  stays bounded (a 512 MiB download peaks well under 200 MB).
 
 ### How plugins run
 

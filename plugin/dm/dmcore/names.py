@@ -99,9 +99,9 @@ def name_from(headers, final_url):
     return safe_name(raw)
 
 
-def candidates(name):
-    """name, then 'stem (1).ext' ... 'stem (999).ext'."""
+def candidates(name, is_dir=False):
+    """name, then 'stem (1).ext' ... 'stem (999).ext'; a folder has no extension to keep."""
     yield name
-    stem, ext = _split(name)
+    stem, ext = (name, "") if is_dir else _split(name)
     for i in range(1, 1000):
         yield _fit(stem, ext, f" ({i})")

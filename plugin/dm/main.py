@@ -1,4 +1,4 @@
-"""dm plugin for dock: download one http(s) URL into the current folder (stdlib only).
+"""dm plugin for dock: download one http(s) URL or .torrent file into the current folder (stdlib only).
 JSON-RPC 2.0, one JSON object per line on stdin/stdout. See protocol/PROTOCOL.md.
 """
 

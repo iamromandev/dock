@@ -1,7 +1,6 @@
 """Fetching a URL to a temp file in the target folder and moving it into place."""
 
 import base64
-import errno
 import http.client
 import os
 import secrets
@@ -14,14 +13,13 @@ from urllib.parse import unquote, urljoin, urlsplit
 
 from . import Cancelled
 from .fmt import Throttle, display_url, human_size
-from .names import _cut, candidates, name_from
+from .names import _cut, name_from
 from .target import DmError
+from .torrent.place import place_file
 
 CHUNK = 64 * 1024
 TIMEOUT = 30
 MAX_REDIRECTS = 10
-# link() is unsupported on some filesystems; fall back to exclusive create + replace
-_NO_LINK = {errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EXDEV}
 
 
 def _unsupported(url):
@@ -154,46 +152,7 @@ def _write_all(fd, data):
         view = view[os.write(fd, view):]
 
 
-def _drop_placeholder(path, made):
-    """Remove the empty file we created, unless someone replaced or filled it."""
-    try:
-        now = os.lstat(path)
-        if (now.st_dev, now.st_ino) == (made.st_dev, made.st_ino) and now.st_size == 0:
-            os.unlink(path)
-    except OSError:
-        pass
-
-
-def _place(tmp, folder, base):
-    """Move tmp to the first free name; never replaces an existing file."""
-    for name in candidates(base):
-        final = folder / name
-        try:
-            os.link(tmp, final)  # atomic, fails if the name exists
-        except FileExistsError:
-            continue
-        except OSError as e:
-            if e.errno not in _NO_LINK:
-                raise
-            # No hard links here: reserve the name with an exclusive create, then replace
-            # it. This briefly shows an empty file, only on filesystems without hard links.
-            try:
-                fd = os.open(final, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
-            except FileExistsError:
-                continue
-            try:
-                made = os.fstat(fd)
-            finally:
-                os.close(fd)
-            try:
-                os.replace(tmp, final)
-            except BaseException:
-                _drop_placeholder(final, made)
-                raise
-            return final
-        os.unlink(tmp)
-        return final
-    raise DmError(f"no free name for '{base}'")
+_place = place_file  # old name, kept for callers and tests that patch it
 
 
 def download(url, target, progress, cancelled, handle=None, throttle=None):
