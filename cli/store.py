@@ -15,7 +15,10 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import tomllib
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from cli import catalog, isolation
@@ -43,6 +46,34 @@ def _refuse_escaping_symlinks(root: Path, ignore) -> None:
                     f"{root}: symlink {entry.relative_to(root)} points outside the plugin folder "
                     f"({os.readlink(entry)}); plugin folders must hold their files, not links to the host"
                 )
+
+
+# The Dockerfile builds from the installed folder, so a plugin keeps all its sources.
+_IGNORE = shutil.ignore_patterns(".git", "__pycache__", "node_modules", "target")  # target: a Rust build's output
+
+
+def _copy_plugin(root: Path, dest: Path) -> None:
+    """Copy a plugin folder to `dest`; links stay links (never followed) and an escaping link is refused first."""
+    _refuse_escaping_symlinks(root, _IGNORE)  # before anything is written
+    shutil.copytree(root, dest, ignore=_IGNORE, symlinks=True)
+
+
+@contextmanager
+def staged(src: Path) -> Iterator[Path]:
+    """A private copy of the plugin folder `src`, removed on exit.
+
+    What the user approves is read from the copy and installed from the copy, so a change to `src` in between
+    cannot add anything. The copy lives outside $DOCK_HOME: a declined install leaves the store untouched.
+    """
+    root = Manifest.load(src).root  # the same errors as an install: no manifest, a broken one
+    stage = Path(tempfile.mkdtemp(prefix="dock-stage-"))  # mode 0700
+    try:
+        copy = stage / "plugin"
+        _copy_plugin(root, copy)
+        yield copy
+    finally:
+        _make_writable(stage)  # a read-only plugin file or folder would stop the removal
+        shutil.rmtree(stage, ignore_errors=True)  # never follows a link
 
 
 def _make_writable(path: Path) -> None:
@@ -88,13 +119,11 @@ class Store:
     def install(self, src: Path) -> Manifest:
         manifest = Manifest.load(src)
         dest = child(child(self.plugin_dir, manifest.id, "plugin id"), manifest.version, "plugin version")
-        # The Dockerfile builds from the installed folder, so a plugin keeps all its sources.
-        ignore = shutil.ignore_patterns(".git", "__pycache__", "node_modules", "target")  # target: a Rust build's output
-        _refuse_escaping_symlinks(manifest.root, ignore)  # before anything is replaced
+        _refuse_escaping_symlinks(manifest.root, _IGNORE)  # before anything is replaced
         if dest.exists():
             _make_writable(dest)  # an old install may have left the folder read-only
             shutil.rmtree(dest)
-        shutil.copytree(manifest.root, dest, ignore=ignore, symlinks=True)  # links stay links: never followed
+        _copy_plugin(manifest.root, dest)
         installed = Manifest.load(dest)
 
         idx = self.index()

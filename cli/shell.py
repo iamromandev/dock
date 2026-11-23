@@ -6,10 +6,10 @@ import os
 import shlex
 import sys
 
-from cli import __version__, catalog, isolation
+from cli import __version__, isolation
 from cli.inputs import UsageError
 from cli.lifecycle import Session
-from cli.manifest import Manifest, ManifestError
+from cli.manifest import ManifestError
 from cli.store import Store
 
 PROMPT = "dock> "
@@ -18,12 +18,15 @@ PLUGIN_SUBS = ["list", "info", "install", "build", "remove", "update"]
 
 
 class Shell:
-    def __init__(self, store: Store, session: Session, input_fn=input, readline=None, verbose: bool = False):
+    def __init__(self, store: Store, session: Session, input_fn=input, readline=None, verbose: bool = False,
+                 interactive: bool | None = None, ask=None):
         self.store = store
         self.session = session
         self.input_fn = input_fn
         self.readline = readline  # the readline module, or None when unavailable
         self.verbose = verbose
+        self.interactive = interactive  # None: stdin is a terminal; a piped shell never asks
+        self.ask = ask
         self._reap_error: str | None = None  # last config error shown, so it is shown once
 
     def _reap(self) -> None:
@@ -147,15 +150,12 @@ class Shell:
         if len(args) == 2 and args[0] == "remove":
             self.session.stop_plugin(args[1])
             main.cmd_plugin(self.store, args)
-        elif len(args) == 2 and args[0] == "install":
-            folder = catalog.install_source(self.store, args[1])  # read the catalog once; errors reach run()
-            try:
-                self.session.stop_plugin(Manifest.load(folder).id)
-            except ManifestError:
-                pass  # install_from reports the broken manifest
-            main.install_from(self.store, folder)
+        elif args[:1] == ["install"]:  # a running copy is stopped only after the install is approved
+            main.cmd_plugin_install(self.store, args[1:], stop=self.session.stop_plugin,
+                                    interactive=self.interactive, ask=self.ask)
         elif args[:1] == ["update"]:
-            main.cmd_plugin_update(self.store, args[1:], stop=self.session.stop_plugin)
+            main.cmd_plugin_update(self.store, args[1:], stop=self.session.stop_plugin,
+                                   interactive=self.interactive, ask=self.ask)
         else:
             main.cmd_plugin(self.store, args)
 

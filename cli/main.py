@@ -10,10 +10,10 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from cli import __version__, catalog, isolation, lifecycle
+from cli import __version__, approve, catalog, isolation, lifecycle
 from cli.inputs import UsageError, parse_for
 from cli.manifest import Manifest, ManifestError
-from cli.store import Store
+from cli.store import Store, staged
 
 SERVE_REMOVED = "dock: serve was removed; run commands with 'dock <command>' or 'dock shell'"
 
@@ -27,10 +27,11 @@ built-in:
   shell                     open the interactive dock> prompt (default on a terminal)
   plugin list               list installed plugins
   plugin info <id|path>     show a plugin's manifest details
-  plugin install <path|id>  install a plugin from a folder, or a catalog plugin by id
+  plugin install [--yes] <path|id>
+                            install a plugin from a folder, or a catalog plugin by id
   plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
-  plugin update [--dry-run] [<id>...]
+  plugin update [--dry-run] [--yes] [<id>...]
                             update installed plugins from the catalog
 
 options (before the command):
@@ -47,10 +48,11 @@ built-in:
   exit, quit                leave the shell (or press Ctrl-D)
   plugin list               list installed plugins
   plugin info <id|path>     show a plugin's manifest details
-  plugin install <path|id>  install a plugin from a folder, or a catalog plugin by id
+  plugin install [--yes] <path|id>
+                            install a plugin from a folder, or a catalog plugin by id
   plugin build <id>         (re)build a plugin's container image
   plugin remove <id>        uninstall a plugin
-  plugin update [--dry-run] [<id>...]
+  plugin update [--dry-run] [--yes] [<id>...]
                             update installed plugins from the catalog
 
 anything else runs a plugin command: <command> [args...]
@@ -101,10 +103,56 @@ def install_from(store: Store, folder: Path) -> int:
     return 0
 
 
-def cmd_plugin_update(store: Store, args: list[str], stop: Callable[[str], object] | None = None) -> int:
+def installed_manifest(store: Store, plugin_id: str) -> Manifest | None:
+    """The installed plugin's manifest, or None when it is not installed or cannot be read."""
+    try:
+        return store.get(plugin_id)
+    except (ManifestError, OSError, KeyError):
+        return None
+
+
+def cmd_plugin_install(store: Store, args: list[str], stop: Callable[[str], object] | None = None,
+                       interactive: bool | None = None, ask: Callable[[str], str | None] | None = None) -> int:
+    """Install a folder or catalog plugin; ask first when it asks for permissions or env it is not yet granted."""
+    yes = "--yes" in args or "-y" in args
+    rest = [a for a in args if a not in ("--yes", "-y")]
+    for a in rest:
+        if a.startswith("-"):
+            print(f"dock: plugin install: unknown option '{a}'", file=sys.stderr)
+            print(BUILTIN_HELP, file=sys.stderr)
+            return 2
+    if len(rest) != 1:
+        print(BUILTIN_HELP, file=sys.stderr)
+        return 2
+    source = catalog.install_source(store, rest[0])
+    with staged(source) as folder:  # what is shown and approved is what gets installed
+        new = Manifest.load(folder)
+        index = store.index()
+        installed = new.id in index
+        old = installed_manifest(store, new.id) if installed else None
+        add = approve.added(new, old)
+        if add:
+            if installed:
+                line = f"{new.id} {index[new.id]['version']} → {new.version} adds: {', '.join(add)}"
+            else:
+                line = f"{new.id} {new.version} asks for: {', '.join(add)}"
+            decision = approve.Approver(yes, interactive, ask).decide(line, "Install it? [y/N] ")
+            if decision == "no":
+                print("not installed")
+                return 1
+            if decision == "refused":
+                return 1
+        if stop is not None:
+            stop(new.id)
+        return install_from(store, folder)
+
+
+def cmd_plugin_update(store: Store, args: list[str], stop: Callable[[str], object] | None = None,
+                      interactive: bool | None = None, ask: Callable[[str], str | None] | None = None) -> int:
     """Update installed plugins from the catalog; `stop(id)` runs right before each real update."""
     dry_run = "--dry-run" in args
-    ids = [a for a in args if a != "--dry-run"]
+    yes = "--yes" in args or "-y" in args
+    ids = [a for a in args if a not in ("--dry-run", "--yes", "-y")]
     for a in ids:
         if a.startswith("-"):
             print(f"dock: plugin update: unknown option '{a}'", file=sys.stderr)
@@ -113,17 +161,31 @@ def cmd_plugin_update(store: Store, args: list[str], stop: Callable[[str], objec
     if not ids and not store.index():
         print("no plugins installed")
         return 0
+    approver = approve.Approver(yes, interactive, ask)
     failed = changed = False
     for c in catalog.check_updates(store, ids):
         if c.status == "update":
-            if dry_run:
-                print(f"would update {c.plugin_id} {c.old} → {c.new}")
-                changed = True
-                continue
             try:
-                if stop is not None:
-                    stop(c.plugin_id)
-                old, m = store.update(c.plugin_id, c.folder)
+                if dry_run:
+                    add = approve.added(Manifest.load(c.folder), installed_manifest(store, c.plugin_id))
+                    print(f"would update {c.plugin_id} {c.old} → {c.new}" + (f" (adds: {', '.join(add)})" if add else ""))
+                    changed = True
+                    continue
+                with staged(c.folder) as folder:  # what is shown and approved is what gets installed
+                    add = approve.added(Manifest.load(folder), installed_manifest(store, c.plugin_id))
+                    if add:
+                        line = f"{c.plugin_id} {c.old} → {c.new} adds: {', '.join(add)}"
+                        decision = approver.decide(line, "Update it? [y/N] ")
+                        if decision == "no":
+                            print(f"skipped {c.plugin_id}: new permissions not approved")
+                            changed = True
+                            continue
+                        if decision == "refused":
+                            failed = True
+                            continue
+                    if stop is not None:
+                        stop(c.plugin_id)
+                    old, m = store.update(c.plugin_id, folder)
             except (ManifestError, OSError) as e:  # shutil.Error is an OSError
                 print(f"dock: {c.plugin_id}: {e}", file=sys.stderr)
                 failed = True
@@ -157,8 +219,8 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
                 parts.append("commands: " + ", ".join(e["commands"]))
             print(f"{pid:<22} {e['version']:<8} {'  '.join(parts)}")
         return 0
-    if sub == "install" and len(args) == 2:
-        return install_from(store, catalog.install_source(store, args[1]))
+    if sub == "install":
+        return cmd_plugin_install(store, args[1:])
     if sub == "remove" and len(args) == 2:
         store.remove(args[1])
         print(f"removed {args[1]}")
