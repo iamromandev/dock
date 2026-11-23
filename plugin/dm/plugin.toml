@@ -1,0 +1,20 @@
+id = "dev.dock.dm"
+version = "0.1.0"
+api_version = "1"
+description = "Download a URL into the current folder"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["network", "fs:write:cwd"]
+
+[[commands]]
+name = "dm"
+summary = "Download a URL into the current folder: dm <url> [-o file | -d folder]"
+keywords = ["download", "fetch", "get", "url", "http"]
+inputs = [
+  { name = "url", type = "string", required = true },
+  { name = "output", type = "string", flag = "--output", short = "-o" },
+  { name = "dir", type = "string", flag = "--dir", short = "-d" },
+]

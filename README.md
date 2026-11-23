@@ -44,9 +44,8 @@ cli/ (Python host)
  ├─ shell.py      the interactive dock> prompt
  └─ ui.py         the host owns the terminal: output, logs, progress, prompts
         │  stdio (through `<runtime> run -i`)
-   ┌────┴─────────────┐
- hello (Python)
- 2 commands, prompts, progress
+   ├─ hello (Python)   2 commands, prompts, progress
+   └─ dm (Python)      download a URL into the current folder
 ```
 
 ## Try it
@@ -198,6 +197,27 @@ a TTY, which includes a piped `dock shell`) dock never reads stdin: without `--y
 
 **Behaviour change:** scripts and CI that install a plugin with permissions or env without a terminal now need
 `--yes`. Installs of plugins that ask for nothing (such as `hello`) are unchanged.
+
+### dm
+
+`dm` is a bundled plugin (`dev.dock.dm`) that downloads one http(s) URL into the current folder:
+
+```sh
+python3 -m cli plugin install plugin/dm        # by path, or `python3 -m cli plugin install dev.dock.dm` from the catalog
+python3 -m cli dm https://example.com/file.tar.gz
+python3 -m cli dm https://example.com/file.tar.gz -o name.tar.gz     # a file name, or a path in an existing subfolder
+python3 -m cli dm https://example.com/file.tar.gz -d downloads       # an existing subfolder; the name comes from the URL
+```
+
+(After `pip install -e .`, `dock dm ...` works the same.) The install prompt shows `network, fs:write:cwd`: `network` to fetch the URL, `fs:write:cwd` to save the file in
+the folder you run it from.
+
+- It never overwrites: an existing `name.ext` gives `name (1).ext`, `name (2).ext`, and so on.
+- The download goes to a hidden `.name.<hex>.dm-part` file first and is moved into place only when complete, so a
+  partial file is never visible; on a failure or Ctrl-C it is removed.
+- URL credentials, the query and the fragment are never printed.
+- `-o` and `-d` cannot leave the current folder, and `-o` with `-d` together is a usage error (exit 2).
+- Like every plugin with `fs:write:cwd`, it will not run in your home folder itself (dock's cwd rule).
 
 ### How plugins run
 
