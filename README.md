@@ -278,8 +278,8 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
 ```
 
 - **Supported:** v1 torrents with one file or many, from HTTP(S) and UDP trackers (`announce` and `announce-list`).
-  Magnet links are covered [below](#magnet-links), and the DHT [here](#the-dht). Not supported yet: peer exchange,
-  v2-only torrents, choosing files, and `.torrent` files given as a URL.
+  Magnet links are covered [below](#magnet-links), and the DHT [here](#the-dht). Peer exchange is receive-only (see
+  [below](#the-dht)). Not supported yet: v2-only torrents, choosing files, and `.torrent` files given as a URL.
 - **One file or a folder:** a single-file torrent saves one file; a multi-file torrent saves a folder with the
   torrent's name and its files in it, empty files included. The `(1)`, `(2)` naming of an existing name applies to
   both, and `-o` names the file or the folder. Paths in the torrent that would leave the folder (`..`, absolute
@@ -387,6 +387,9 @@ $ python3 -m cli dm --no-dht file.torrent                                       
 - **Privacy.** The bootstrap hosts and the DHT nodes `dm` asks learn your IP address and the info-hash you are looking
   for; peers found there learn your IP address, as with any BitTorrent client. Use `--no-dht` to avoid that. Node and
   peer addresses are never written to a log, an output line or an error; peers appear only in the peers table.
+- **Peer exchange (PEX, BEP 11).** `dm` also takes the peers that connected peers name in their `ut_pex` messages
+  (at most 50 per message, one message per peer per minute). It never sends any. PEX stays on with `--no-dht` and is
+  off for private torrents.
 
 #### Resume
 

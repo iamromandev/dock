@@ -81,7 +81,20 @@ def _hs_info_hash(head):
 
 class Seeder:
     def __init__(self, corrupt=None, unrequested=False, never_unchoke=False, delay=0.0, metadata="honest",
-                 ext_body=None, ext_noise=0, metadata_delay=0.0, sybil_size=BLOCK * 2, ext_delay=0.0):
+                 ext_body=None, ext_noise=0, metadata_delay=0.0, sybil_size=BLOCK * 2, ext_delay=0.0,
+                 pex_peers=None, pex_mode="normal", pex_id=1, pex_advertise=True):
+        # pex_peers: [(host, port)] sent to dm in one ut_pex after the extension handshake (None: we do not
+        # speak ut_pex). pex_mode: "normal", "twice" (the same message again at once), "flood" (1000 addresses
+        # made up from pex_peers' host), "garbage" (not bencode), "early" (before the handshake, then a valid one after it),
+        # "extra" (added plus added6 and dropped). pex_id: the id we claim for ut_pex; pex_advertise False: we
+        # send ut_pex messages without listing ut_pex in our handshake.
+        self.pex_peers = pex_peers
+        self.pex_mode = pex_mode
+        self.pex_id = pex_id
+        self.pex_advertise = pex_advertise
+        self.pex_sent = 0  # ut_pex messages we sent dm
+        self.dm_ids = []  # the "m" dictionaries of dm's extension handshakes
+        self.pex_received = 0  # ut_pex messages dm sent us: always 0
         self.metadata_delay = metadata_delay
         self.sybil_size = sybil_size
         self.ext_delay = ext_delay
@@ -137,6 +150,22 @@ class Seeder:
         if self._server:
             await self._server.wait_closed()
 
+    def pex_message(self):
+        """The ut_pex message for dm (it advertised ut_pex as id 4)."""
+        self.pex_sent += 1
+        if self.pex_mode == "garbage":
+            return wire.extended(4, b"\xffnot bencode")
+        peers = list(self.pex_peers)
+        if self.pex_mode == "flood":
+            host = peers[0][0]
+            peers = [(host, 10000 + i) for i in range(1000)]
+        added = b"".join(bytes(int(x) for x in h.split(".")) + p.to_bytes(2, "big") for h, p in peers)
+        body = {"added": added, "added.f": bytes(len(peers))}
+        if self.pex_mode == "extra":
+            body["added6"] = bytes([1] * 16) + (4000).to_bytes(2, "big")
+            body["dropped"] = bytes([9, 9, 9, 9]) + (5000).to_bytes(2, "big")
+        return wire.extended(4, bencode.encode(body))
+
     def announced_size(self, content):
         """The metadata_size we claim: the real one, unless the mode lies about it."""
         if self.metadata == "size0":
@@ -182,11 +211,20 @@ class Seeder:
                 if self.ext_delay:
                     await asyncio.sleep(self.ext_delay)
                 ids = {"ut_metadata": 2} if self.metadata != "none" else {}
+                if self.pex_peers is not None:
+                    if self.pex_advertise:
+                        ids["ut_pex"] = self.pex_id
+                    if self.pex_mode == "early":
+                        writer.write(self.pex_message())
                 size = self.announced_size(content)
                 writer.write(wire.extended(0, self.ext_body if self.ext_body is not None else bencode.encode(
                     {"m": ids, "metadata_size": size, "v": "test seeder"})))
                 if self.ext_noise:
                     writer.write(wire.extended(99, b"\x00" * self.ext_noise))
+                if self.pex_peers is not None:
+                    writer.write(self.pex_message())
+                    if self.pex_mode == "twice":
+                        writer.write(self.pex_message())
             n = len(meta.hashes)
             bits = bytearray(-(-n // 8))
             for i in range(n):
@@ -202,6 +240,9 @@ class Seeder:
                 if mid == wire.EXTENDED:
                     if payload[0] == 0:
                         their_ut = metadata.parse_ext_handshake(payload[1:]).ut_metadata
+                        self.dm_ids.append(bencode.decode(payload[1:])[0].get(b"m"))
+                    elif payload[0] in (self.pex_id, 4) and self.pex_peers is not None:  # a ut_pex id: dm must never use it
+                        self.pex_received += 1
                     elif payload[0] == 2 and self.metadata != "none":
                         kind, piece, _, _ = metadata.parse_metadata_msg(payload[1:])
                         self.metadata_requests += 1

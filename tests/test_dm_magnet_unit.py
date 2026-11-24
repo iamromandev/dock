@@ -199,13 +199,13 @@ def blocks(blob):
 class Messages(unittest.TestCase):
     def test_ext_handshake_advertises_ut_metadata_and_size_only_when_known(self):
         plain = bencode.decode(metadata.ext_handshake())[0]
-        self.assertEqual(plain[b"m"], {b"ut_metadata": metadata.OUR_UT_METADATA})
+        self.assertEqual(plain[b"m"], {b"ut_metadata": metadata.OUR_UT_METADATA, b"ut_pex": metadata.OUR_UT_PEX})
         self.assertNotIn(b"metadata_size", plain)
         self.assertEqual(bencode.decode(metadata.ext_handshake(1234))[0][b"metadata_size"], 1234)
 
     def test_parse_ext_handshake(self):
         body = bencode.encode({"m": {"ut_metadata": 7, "ut_pex": 1}, "metadata_size": 999, "v": "x"})
-        self.assertEqual(metadata.parse_ext_handshake(body), metadata.ExtInfo(7, 999, "x"))
+        self.assertEqual(metadata.parse_ext_handshake(body), metadata.ExtInfo(7, 999, "x", 1))
         self.assertEqual(metadata.parse_ext_handshake(bencode.encode({"m": {}})),
                          metadata.ExtInfo(None, None))
         self.assertEqual(metadata.parse_ext_handshake(bencode.encode({"m": {"ut_metadata": 0}})),
@@ -807,7 +807,7 @@ class ServeMetadata(unittest.TestCase):
 
     def conn(self, known=True):
         sess = SimpleNamespace(meta=None, metadata=self.info if known else None, picker=None, banned=set(),
-                               log=lambda m: None, assembler=None, clock=time.monotonic)
+                               log=lambda m: None, assembler=None, clock=time.monotonic, pex_on=lambda: True)
         peer = PeerConn(sess, ("127.0.0.1", 1))
         peer.handshaken = True
         peer.their_ut = 7

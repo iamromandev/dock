@@ -1,4 +1,4 @@
-"""AC15: dm 0.6.0 has --no-dht, the same permissions, and `plugin update` from 0.5.0 asks nothing."""
+"""AC15: dm 0.7.0 has --no-dht, the same permissions, and `plugin update` from 0.5.0 asks nothing."""
 
 import re
 import shutil
@@ -26,7 +26,7 @@ OLD_SUMMARY = ("Download a URL, a .torrent or a magnet link into the current fol
 class Manifest06(unittest.TestCase):
     def test_version_and_the_no_dht_bool_input(self):
         m = Manifest.load(DM)
-        self.assertEqual(m.version, "0.6.0")
+        self.assertEqual(m.version, "0.7.0")
         (command,) = m.commands
         flag = {i.name: i for i in command.inputs}["no_dht"]
         self.assertEqual((flag.type, flag.flag, flag.required), ("bool", "--no-dht", False))
@@ -44,8 +44,8 @@ class Manifest06(unittest.TestCase):
                             info_hash=b"\x00" * 20)
         self.addCleanup(s.pool.shutdown, wait=False)
         self.addCleanup(s.reader_pool.shutdown, wait=False)
-        self.assertTrue(s.peer_id.startswith(b"-DM0600-"))
-        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.6.0")
+        self.assertTrue(s.peer_id.startswith(b"-DM0700-"))
+        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.7.0")
 
     def test_the_test_only_address_switches_are_not_inputs_or_manifest_keys(self):
         (command,) = Manifest.load(DM).commands
@@ -72,13 +72,13 @@ class Update(unittest.TestCase):
         home.mkdir()
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(home, f'[catalog]\npaths = ["{catalog}"]\n')
-        for version in ("0.5.0", "0.6.0"):
+        for version in ("0.5.0", "0.7.0"):
             self.addCleanup(dockenv.remove_image, f"dock/{COPY_ID}:{version}")
         r = cli("plugin", "install", str(old), "--yes", home=home)
         self.assertEqual(r.returncode, 0, r.stderr)
         r = cli("plugin", "update", COPY_ID, home=home)  # no --yes, no terminal: a prompt would refuse
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.5.0 → 0.6.0")
+        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.5.0 → 0.7.0")
         self.assertNotIn("adds", r.stderr)
 
 
