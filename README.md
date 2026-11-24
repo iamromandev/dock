@@ -42,9 +42,11 @@ cli/ (Python host)
  ├─ lifecycle.py  session: start plugins, invoke, cancel, stop
  ├─ process.py    container process + JSON-RPC client, one shared inbox per session
  ├─ shell.py      the interactive dock> prompt
- └─ ui.py         the host owns the terminal: output, logs, progress, prompts
+ ├─ editor.py     the inline shell's line editor (keys.py reads the keys)
+ ├─ live.py       the live renderer: layout, in-place redraw, forms (term.py owns the terminal)
+ └─ ui.py         the host owns the terminal: output, logs, bars, tables, panels, prompts, forms (plain text)
         │  stdio (through `<runtime> run -i`)
-   ├─ hello (Python)   2 commands, prompts, progress
+   ├─ hello (Python)   2 commands, prompts, a progress bar
    └─ dm (Python)      download a URL, a .torrent or a magnet link into the current folder
 ```
 
@@ -83,7 +85,8 @@ Built-ins: `help`, `version`, `plugin ...`, `search ...`, `status`, `exit`/`quit
 `status` lists the running plugins with their idle time and the container runtime they run in.
 Tab completes commands, `plugin` subcommands and installed plugin ids.
 History is kept in `~/.dock/history` (last 1000 lines); set `DOCK_NO_READLINE=1`
-to run without readline (no completion or history).
+to run without readline (no history saved; in the line-based fallback, used when stdin or stderr is not a
+terminal or with `DOCK_PLAIN=1`, no Tab completion either).
 A plugin idle longer than `idle_timeout` seconds (default 300) is stopped
 before each prompt and again when a line is entered (so a long wait at the
 prompt counts), and restarts on demand; set it in `~/.dock/config.toml`:
@@ -97,6 +100,42 @@ Ctrl-C cancels the running operation and returns to the prompt. A non-zero exit
 code is printed as `exit <n>`. Every plugin is stopped on exit.
 `dock shell` also works without a terminal: lines are read from stdin, so
 `printf 'hello Bob\nstatus\n' | python3 -m cli shell` runs them in one session.
+
+#### Live and plain output
+
+dock draws in one of two ways, chosen once per process:
+
+- **Live**: stderr is a terminal and `TERM` is set and not `dumb`. `dock` and `dock shell` open the inline shell
+  (the prompt sits at the bottom, the output scrolls above it), and every command, one-shot or in the shell, shows its
+  bars, tables and panels in place below the text, then leaves their final state in the scrollback.
+  Forms are answered with the keys. Nothing is shown in colour only; the one colour is a bold panel title, and
+  `NO_COLOR=1` turns it off.
+- **Plain**: stderr is redirected or piped, `TERM` is `dumb` or unset, or `DOCK_PLAIN=1`. dock prints text only, with no
+  escape codes: a bar prints one line when it is done or when the command ends, a table or panel prints once as aligned
+  text, a form asks numbered questions on stderr and reads the answers from stdin. In this mode `dock` and
+  `dock shell` run the line-based shell (readline, as before).
+
+Keys at the inline prompt:
+
+| Key | Does |
+|---|---|
+| Left, Right, Home, End (Ctrl-B, Ctrl-F, Ctrl-A, Ctrl-E) | move the cursor |
+| Backspace, Delete (Ctrl-D) | delete before or at the cursor |
+| Ctrl-K, Ctrl-U, Ctrl-W | delete to the end of the line, to the start, the word before the cursor |
+| Up, Down | previous and next history entry (what you were typing is kept) |
+| Tab | complete; with several matches they are listed below the prompt |
+| Ctrl-C | clear the line |
+| Ctrl-D on an empty line | exit |
+| Ctrl-L | clear the screen |
+| Ctrl-Z | suspend dock; `fg` brings it back and redraws |
+
+While a command runs the prompt is hidden and keys are ignored, except Ctrl-C (cancel) and Ctrl-Z, and the answers
+to a form. A terminal that cannot be restored is the thing to report as a bug: dock restores the settings, shows the
+cursor and erases what it drew on normal exit, Ctrl-D, an error, SIGTERM, SIGHUP, SIGQUIT (Ctrl-\) and Ctrl-Z. In a background job (`dock ... &`) it leaves the
+terminal's modes alone. If the live drawing ever
+misbehaves in your terminal, `DOCK_PLAIN=1` turns it off. A resize redraws at the new width; when the window is made
+narrower, dock climbs over the old lines as many rows as a reflowing terminal made of them. A terminal that does
+not reflow may lose a line or two above the drawing.
 
 Behaviour change: bare `dock` on a terminal now opens the shell instead of
 printing help (`dock help` still prints it; piped stdin still prints help).
@@ -259,7 +298,13 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
 - **Errors** are one line, prefixed with the torrent name, for example `dm: data.torrent: no peers found`,
   `tracker error: <reason>`, `invalid torrent: unsafe path`, `invalid torrent: conflicting paths`, or
   `cannot write to <folder>: <reason>`. Exit code 1, as for a failed HTTP download.
-- **Privacy:** tracker URLs are never printed, and neither are peer addresses (except with `-v`). A login in a
+- **The live view:** in a terminal a torrent shows a bar for each of the 8 largest unfinished files (at most 28
+  files get one in a run), a total bar, a small panel (download and upload speed, peers connected of known, ETA,
+  ratio) and a table of up to 10 peers with their address, client and speeds. It updates at most 5 times a second.
+  Piped (`dm x.torrent 2>log`), each finished file and the total print one line, followed once by the final panel and
+  peers table. A magnet link shows `fetching metadata` as a bar without a percentage until the metadata arrives.
+- **Privacy:** tracker URLs are never printed, and peer addresses appear only in that peers table (on your screen, or
+  in the piped stderr), never in logs or errors (except with `-v`). A login in a
   tracker URL (`user:pass@host`) is stripped and not sent, so trackers that require one will not work.
 - **Private and loopback addresses:** trackers and peers on private, link-local or loopback addresses are contacted
   like any other BitTorrent client does; a torrent can therefore make `dm` open connections to hosts on your network.
@@ -431,7 +476,7 @@ Things to know:
 | Lazy discovery | `dock help` reads `index.json`; no plugin is started |
 | Namespacing and collisions | ids are `vendor.name`; on a clash use `dock dev.dock.hello:hello` |
 | Ctrl-C | Host sends `cancel`, then force-kills the container after a grace period |
-| Host owns the UI | Plugins never print; they send `output` / `log` / `progress` / `prompt_user` |
+| Host owns the UI | Plugins never print; they send `output` / `log` / `bar` / `table` / `panel` / `clear` / `prompt_user` / `form` |
 | Isolation | A plugin crash is an error message, not a host crash; stderr goes to `~/.dock/logs/`; the container only sees what its permissions allow |
 
 ## Write a plugin
@@ -441,7 +486,7 @@ Things to know:
    ```toml
    id = "you.thing"
    version = "0.1.0"
-   api_version = "1"
+   api_version = "2"
    [run]
    container = { cmd = "python3", args = ["/plugin/main.py"] }  # dockerfile = "Dockerfile" by default
    [[commands]]

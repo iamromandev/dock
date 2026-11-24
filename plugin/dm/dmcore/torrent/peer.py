@@ -7,7 +7,7 @@ pieces we have verified.
 import asyncio
 import collections
 
-from . import metadata, wire
+from . import metadata, stats, wire
 from .picker import BadBlock
 
 MAX_QUEUED = 128  # requests a peer may have waiting; one more and it is dropped
@@ -16,9 +16,14 @@ MAX_EARLY_HAVES = 8192  # HAVE messages kept while the piece count is unknown; l
 
 
 class PeerConn:
-    def __init__(self, session, addr):
+    def __init__(self, session, addr, number=0):
         self.s = session
+        self.tag = f"peer #{number}"  # what a log says about it: never the address, which only the peers table shows
         self.addr = addr  # (host, port): also the peer's key in the picker
+        self.peer_id = None  # from its handshake
+        self.client = None  # the `v` of its extension handshake
+        self.down = stats.Rate(session.clock)  # block bytes it sends us, per second
+        self.up = stats.Rate(session.clock)  # block bytes we send it, per second
         self.task = None
         self.writer = None
         self.handshaken = False
@@ -87,7 +92,8 @@ class PeerConn:
             if peer_id == s.peer_id:  # we dialed ourselves
                 return
             self.handshaken = True
-            s.log(f"peer {self.addr[0]}:{self.addr[1]} connected")
+            self.peer_id = peer_id
+            s.log(f"{self.tag} connected")
             self.ext = wire.supports_extensions(reserved)
             if self.ext:
                 self.send(wire.extended(0, metadata.ext_handshake(self.metadata_size())))
@@ -109,9 +115,9 @@ class PeerConn:
             raise
         except (BadBlock, ValueError) as e:  # the peer broke the protocol: never talk to it again
             s.banned.add(self.addr)
-            s.log(f"peer {self.addr[0]}:{self.addr[1]} dropped: {e}")
+            s.log(f"{self.tag} dropped: {type(e).__name__}")
         except (OSError, EOFError, asyncio.TimeoutError) as e:
-            s.log(f"peer {self.addr[0]}:{self.addr[1]} lost: {type(e).__name__}")
+            s.log(f"{self.tag} lost: {type(e).__name__}")
         finally:
             self.close()
             self.report_served()
@@ -140,18 +146,19 @@ class PeerConn:
                     continue
                 self.send(wire.piece(index, begin, data))
                 self.served += 1
+                s.sent_block(self, len(data))
                 await asyncio.wait_for(self.writer.drain(), s.opts.idle_timeout)  # a peer that never reads
         except asyncio.CancelledError:
             raise
         except (OSError, ValueError, RuntimeError, asyncio.TimeoutError) as e:  # ends this peer only
-            s.log(f"peer {self.addr[0]}:{self.addr[1]} not served: {type(e).__name__}")
+            s.log(f"{self.tag} not served: {type(e).__name__}")
             self.close()
             if self.task is not None and self.task is not asyncio.current_task():
                 self.task.cancel()
 
     def report_served(self):
         if self.served:
-            self.s.log(f"peer {self.addr[0]}:{self.addr[1]} served {self.served} blocks")
+            self.s.log(f"{self.tag} served {self.served} blocks")
 
     def metadata_size(self):
         """What we advertise as metadata_size: the size once the metadata is verified, else nothing."""
@@ -192,6 +199,7 @@ class PeerConn:
                 self.their_ut = None
                 return
             self.their_ut = info.ut_metadata
+            self.client = info.client
             if s.meta is None and info.ut_metadata and info.metadata_size is not None:
                 if not s.assembler.offer(self.addr, info.metadata_size):
                     raise ValueError("bad metadata size")
@@ -255,7 +263,7 @@ class PeerConn:
                 s.picker.peer_has(self.addr, index)
         except ValueError as e:  # the peer broke the protocol: never talk to it again
             s.banned.add(self.addr)
-            s.log(f"peer {self.addr[0]}:{self.addr[1]} dropped: {e}")
+            s.log(f"{self.tag} dropped: {type(e).__name__}")
             self.close()
             if self.task is not None and self.task is not asyncio.current_task():
                 self.task.cancel()
@@ -318,6 +326,7 @@ class PeerConn:
             index, begin, data = wire.parse_piece(payload)
             self.last_block = now
             self.received += len(data)
+            s.got_block(self, len(data))
             whole = picker.block_received(self.addr, index, begin, data)
             for pid, i, b, n in picker.drain_cancels():
                 other = s.conns.get(pid)

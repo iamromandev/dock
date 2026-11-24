@@ -1,5 +1,6 @@
 """Turning torrent paths into safe paths relative to the downloaded item."""
 
+import bisect
 import unicodedata
 from dataclasses import dataclass
 
@@ -63,3 +64,19 @@ def plan_files(meta):
         if any(parts[:i] in seen for i in range(1, len(parts))):
             raise TorrentError("invalid torrent: conflicting paths")
     return tuple(specs)
+
+
+def piece_files(specs, piece_length, total, index, offsets=None):
+    """[(file index, bytes)]: how piece `index` is spread over the files (empty files take nothing)."""
+    start = index * piece_length
+    end = min(total, start + piece_length)
+    offsets = offsets or [f.offset for f in specs]  # a caller walking many pieces passes its own
+    out = []
+    i = max(0, bisect.bisect_right(offsets, start) - 1)
+    while i < len(specs) and specs[i].offset < end:
+        f = specs[i]
+        n = min(end, f.offset + f.length) - max(start, f.offset)
+        if n > 0:
+            out.append((i, n))
+        i += 1
+    return out

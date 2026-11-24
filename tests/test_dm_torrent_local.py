@@ -136,6 +136,26 @@ class Download(Harness):
         self.assertEqual(final.read_bytes(), t.blob)
         self.assertEqual(self.listing(), ["a.bin"])
 
+    def test_a_failing_live_view_does_not_stop_the_download(self):
+        tr = self.serve_tracker()
+        t = self.torrent([("a", torrentkit.content(60000, "a")), ("b", torrentkit.content(60000, "b"))],
+                         name="pack", tr=tr, piece_length=PL)
+        self.swarm(tr, self.seeder(t, delay=0.01))
+        path = t.write_torrent(self.dir / "x.torrent")
+        logs = []
+
+        def broken(*args, **kw):
+            raise RuntimeError("secret detail")
+
+        final, size, nfiles = session.run_torrent(path, Target(self.cwd, None), broken, TorrentHandle(), FAST,
+                                                  logs.append, on_stats=broken)
+        self.assertEqual((size, nfiles), (120000, 2))
+        self.assertEqual(torrentkit.tree(final), {"a": torrentkit.content(60000, "a"),
+                                                  "b": torrentkit.content(60000, "b")})
+        failed = [m for m in logs if "RuntimeError" in m]
+        self.assertEqual(len(failed), 1, logs)  # the class of the first failure, once, never again
+        self.assertFalse([m for m in logs if "secret" in m], logs)
+
     def test_multi_file_with_nested_and_empty_files(self):
         tr = self.serve_tracker()
         files = [("one.txt", torrentkit.content(70000, "1")), ("sub/two.bin", torrentkit.content(40000, "2")),
@@ -533,8 +553,92 @@ class Run(Harness):
         self.assertEqual(self.output(), "saved a.bin (50.0 kB, 1 file)\n")
         self.assertEqual((self.cwd / "a.bin").read_bytes(), t.blob)
         self.assertEqual(self.listing(), ["a.bin", "data.torrent"])
-        self.assertTrue([m for m, _ in self.events if m == "progress"])
+        self.assertTrue([m for m, _ in self.events if m == "bar"])
         self.assertTrue([p for m, p in self.events if m == "log" and "peak_rss_kb=" in p["message"]])
+
+    def timed(self, arg, **inputs):
+        """dmcore.run with the time of every event: (exit code, [(seconds, method, params)])."""
+        events = []
+        start = time.monotonic()
+        code = dmcore.run({"url": arg, **inputs}, str(self.cwd),
+                          lambda method, **p: events.append((time.monotonic() - start, method, p)), threading.Event())
+        self.events = [(m, p) for _, m, p in events]
+        return code, events
+
+    # AC15 (R21, R22)
+    def test_a_three_file_torrent_shows_file_bars_a_total_a_panel_and_a_peers_table(self):
+        tr = self.serve_tracker()
+        t = self.torrent([("x", torrentkit.content(90000, "x")), ("y/z", torrentkit.content(60000, "z")),
+                          ("w", torrentkit.content(40000, "w"))], name="pack", tr=tr, piece_length=PL)
+        self.swarm(tr, self.seeder(t, delay=0.03))
+        t.write_torrent(self.cwd / "data.torrent")
+        code, events = self.timed("data.torrent")
+        self.assertEqual(code, 0, self.errors())
+        self.assertEqual(self.output(), "saved pack (190.0 kB, 3 files)\n")
+        bars = {}
+        for _, m, p in events:
+            if m == "bar":
+                bars.setdefault(p["id"], []).append(p)
+        self.assertEqual(sorted(bars), ["f0", "f1", "f2", "total"])
+        self.assertEqual({bars[f"f{i}"][0]["label"] for i in range(3)}, {"x", "y/z", "w"})
+        for id, items in bars.items():
+            self.assertEqual([p.get("done", False) for p in items].count(True), 1, id)
+            self.assertTrue(items[-1]["done"], id)
+        panels = [p for _, m, p in events if m == "panel"]
+        self.assertTrue(panels and {k for k, _ in panels[-1]["items"]} == {"down", "up", "peers", "eta", "ratio"})
+        tables = [p for _, m, p in events if m == "table"]
+        self.assertTrue(tables)
+        self.assertTrue(any(row[0].startswith("127.0.0.1:") for t_ in tables for row in t_["rows"]))
+        # success clears nothing: the host freezes the panel and the table, as last updated, into scrollback
+        self.assertEqual([p for _, m, p in events if m == "clear"], [])
+        saved = next(i for i, (_, m, _) in enumerate(events) if m == "output")
+        last_panel = max(i for i, (_, m, _) in enumerate(events) if m == "panel")
+        self.assertLess(last_panel, saved, "the final update comes before the saved line")
+
+    def test_updates_are_at_most_five_a_second_for_each_area(self):
+        tr = self.serve_tracker()
+        t = self.torrent([("a", torrentkit.content(120000, "a")), ("b", torrentkit.content(120000, "b"))],
+                         name="pack", tr=tr, piece_length=PL)
+        self.swarm(tr, self.seeder(t, delay=0.01))
+        t.write_torrent(self.cwd / "data.torrent")
+        code, events = self.timed("data.torrent")
+        self.assertEqual(code, 0, self.errors())
+        per_area = {}
+        for at, m, p in events:
+            if m in ("bar", "panel", "table"):
+                per_area.setdefault((m, p["id"]), []).append((at, p.get("done", False)))
+        for key, items in per_area.items():
+            live = [at for at, done in items if not done]  # the closing update is exempt
+            for i, at in enumerate(live):
+                in_second = [x for x in live[i:] if x < at + 1]
+                self.assertLessEqual(len(in_second), 5, (key, in_second))
+
+    def test_no_peer_address_reaches_a_log_or_the_output(self):
+        tr = self.serve_tracker()
+        t = self.torrent([("a", torrentkit.content(60000, "a")), ("b", torrentkit.content(60000, "b"))],
+                         name="pack", tr=tr, piece_length=PL)
+        self.swarm(tr, self.seeder(t, delay=0.01))
+        t.write_torrent(self.cwd / "data.torrent")
+        self.timed("data.torrent")
+        # every level, debug included (`dock -v` prints it), and every message but the peers table, the one
+        # place an address may be: the host draws it
+        shown = " ".join(str(v) for m, p in self.events if m != "table" for v in p.values())
+        self.assertNotIn("127.0.0.1", shown)
+        self.assertTrue([1 for m, p in self.events if m == "log" and p["level"] == "debug"
+                         and p["message"].startswith("peer #")], "peers are still logged, by number")
+
+    def test_a_failed_torrent_leaves_no_area_behind(self):
+        tr = self.serve_tracker()  # nobody announces it
+        t = self.torrent([("a", torrentkit.content(60000, "a")), ("b", torrentkit.content(60000, "b"))],
+                         name="pack", tr=tr, piece_length=PL)
+        t.write_torrent(self.cwd / "data.torrent")
+        code, events = self.timed("data.torrent", stall=1)
+        self.assertEqual(code, 1)
+        shown = {(m, p["id"]) for _, m, p in events if m in ("bar", "panel", "table")}
+        cleared = {(p["kind"], p["id"]) for _, m, p in events if m == "clear"}
+        self.assertTrue(shown)
+        self.assertEqual(shown, cleared)
+        self.assertFalse([1 for _, m, p in events if m == "bar" and p.get("done")])
 
     def test_a_multi_file_torrent_reports_the_file_count(self):
         self.prepared([("x", b"1" * 40000), ("y/z", b"2" * 40000), ("e", b"")], "pack")

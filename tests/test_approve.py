@@ -411,7 +411,7 @@ class PromptCli(tc.CliCase):
         r = self.dock("plugin", "install", str(self.hello))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stderr, "")
-        self.assertTrue(r.stdout.startswith("installed dev.dock.hello 0.1.0\n"))
+        self.assertTrue(r.stdout.startswith("installed dev.dock.hello 0.2.0\n"))
 
     def test_update_refuses_one_and_updates_the_other(self):
         self.store().install(plugin(self.tmp, "a", ["network"]))

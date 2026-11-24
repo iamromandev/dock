@@ -15,24 +15,25 @@ from cli.inputs import parse_for
 from cli.manifest import Manifest
 from cli.process import CANCELLED, Hub, PluginError, PluginProcess
 from cli.store import Store
-from cli.ui import UI, TerminalUI
+from cli.ui import UI, make_ui
 
 INIT_TIMEOUT = 10
 CANCEL_GRACE = float(os.environ.get("DOCK_CANCEL_GRACE", 5))  # seconds a plugin gets to honour `cancel`
 
 
 class Session:
-    def __init__(self, store: Store, verbose: bool = False):
+    def __init__(self, store: Store, verbose: bool = False, term=None):
         self.store = store
         self.verbose = verbose
+        self.term = term                             # the Terminal in live mode: plugins' messages are drawn on it
         self.hub = Hub()                             # all plugins of the session share one inbox
         self.procs: list[PluginProcess] = []        # start order
         self.commands: dict[str, PluginProcess] = {}   # plugin id -> running command plugin
         self.last_used: dict[PluginProcess, float] = {}  # time.monotonic()
 
     def _ui(self, plugin_id: str) -> UI:
-        """Who shows this plugin's messages: the terminal."""
-        return TerminalUI(plugin_id, self.verbose)
+        """Who shows this plugin's messages: the live renderer on our Terminal, or plain text."""
+        return make_ui(plugin_id, self.verbose, self.term)
 
     # starting plugins ------------------------------------------------------
     def start(self, manifest: Manifest, ui: UI) -> PluginProcess:
@@ -112,17 +113,17 @@ class Session:
                 return False
             self.hub.pump(remaining)
 
-    def _stop_unresponsive(self) -> None:
+    def _stop_unresponsive(self, ui: UI | None = None) -> None:
         """After cancel and its grace period: a plugin still owing a reply is stuck.
 
         It would answer the next request late (or never) and leak output into it,
         so it is killed and starts afresh on next use. Replies that nobody waits
-        for any more are dropped.
+        for any more are dropped. `ui` is who says so: the one of the run, as it may be drawing.
         """
         for proc in list(self.procs):
             if proc.pending:
                 if proc.alive():
-                    self._ui(proc.manifest.id).warn("did not stop on cancel; stopped it")
+                    (ui or self._ui(proc.manifest.id)).warn("did not stop on cancel; stopped it")
                 self.stop_proc(proc, force=True)
         self.hub.replies.clear()
 
@@ -139,7 +140,7 @@ class Session:
         except (PluginError, KeyboardInterrupt):
             pass
         finally:
-            self._stop_unresponsive()
+            self._stop_unresponsive(ui)  # the UI that draws this run: a second one would draw over it
 
     def stop_plugin(self, plugin_id: str) -> bool:
         victims = [p for p in self.procs if p.manifest.id == plugin_id]
@@ -189,6 +190,13 @@ class Session:
                 self.commands[manifest.id] = proc
 
             self.last_used[proc] = time.monotonic()
+            # A process outlives its invokes (the shell reuses it), so what it says goes to the UI of the invoke
+            # it is answering. Between invokes it has no UI: whatever it said late (after a cancel) is dropped
+            # now, so it can not show up in this run's UI.
+            proc.handlers = {}
+            while self.hub.pump(0):
+                pass
+            proc.handlers = ui.handlers()
             params = {"command": command, "args": args, "cwd": os.getcwd()}  # what prepare() mounts for fs:write:cwd
             if inputs is not None:
                 params["inputs"] = inputs
@@ -199,6 +207,7 @@ class Session:
                 self._interrupted(ui)
                 return {"exit_code": 130}
             finally:
+                proc.handlers = {}
                 if proc in self.procs:
                     self.last_used[proc] = time.monotonic()
             return result if isinstance(result, dict) else {"exit_code": 0}
@@ -214,17 +223,20 @@ class Session:
 
     def invoke(self, manifest: Manifest, command: str, args: list[str]) -> int:
         ui = self._ui(manifest.id)
+        ui.begin()
         try:
             result = self._invoke(manifest, command, args, ui)
         except PluginError as e:
             if e.code != CANCELLED:
                 ui.warn(f"{manifest.id}: {e}")
             return 1
+        finally:
+            ui.end()  # whatever the plugin left on screen goes to scrollback, on every way out
         return int(result.get("exit_code", 0))
 
 
-def run(store: Store, manifest: Manifest, command: str, args: list[str], verbose: bool = False) -> int:
-    session = Session(store, verbose)
+def run(store: Store, manifest: Manifest, command: str, args: list[str], verbose: bool = False, term=None) -> int:
+    session = Session(store, verbose, term)
     try:
         return session.invoke(manifest, command, args)
     finally:

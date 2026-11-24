@@ -19,7 +19,7 @@ from cli.store import Store  # noqa: E402
 BASE = """\
 id = "dev.dock.sample"
 version = "1.2.3"
-api_version = "1"
+api_version = "2"
 description = "x"
 
 [run]
@@ -158,6 +158,28 @@ class RemovedCapabilities(unittest.TestCase):
         (root / "plugin.toml").write_text(BASE.format(run=CONTAINER).split("[[commands]]")[0])
         with self.assertRaisesRegex(ManifestError, r"a plugin needs at least one command$"):
             Manifest.load(root)
+
+    def test_a_command_name_with_control_characters_or_odd_characters_is_refused_at_load(self):
+        for bad in ("\\u001b]0;pwned\\u0007", "a\\u001b[2J", "has space", "", "-lead", "a:b", "new\\nline", "\\u009b2J"):
+            with self.subTest(name=bad):
+                root = make_plugin(CONTAINER)
+                text = (root / "plugin.toml").read_text().replace('name = "go"', f'name = "{bad}"')
+                (root / "plugin.toml").write_text(text)
+                with self.assertRaisesRegex(ManifestError, r"command name .* may only hold"):
+                    Manifest.load(root)
+
+    def test_a_command_name_that_is_not_a_string_is_refused_at_load(self):
+        root = make_plugin(CONTAINER)
+        (root / "plugin.toml").write_text((root / "plugin.toml").read_text().replace('name = "go"', "name = 7"))
+        with self.assertRaisesRegex(ManifestError, r"command name .* may only hold"):
+            Manifest.load(root)
+
+    def test_ordinary_command_names_load(self):
+        for good in ("go", "dm", "Go.v2", "a_b-c", "7zip"):
+            with self.subTest(name=good):
+                root = make_plugin(CONTAINER)
+                (root / "plugin.toml").write_text((root / "plugin.toml").read_text().replace('name = "go"', f'name = "{good}"'))
+                self.assertEqual(Manifest.load(root).commands[0].name, good)
 
     def test_requires_permission_on_a_command_fails_the_install(self):
         root = make_plugin(CONTAINER)

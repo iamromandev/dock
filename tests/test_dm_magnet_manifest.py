@@ -26,7 +26,7 @@ SUMMARY = ("Download a URL, a .torrent or a magnet link into the current folder:
 class Manifest04(unittest.TestCase):
     def test_version_summary_and_description_mention_magnet_links(self):
         m = Manifest.load(DM)
-        self.assertEqual(m.version, "0.4.0")
+        self.assertEqual(m.version, "0.5.0")
         (command,) = m.commands
         self.assertEqual(command.summary, SUMMARY)
         self.assertIn("magnet", m.description)
@@ -44,9 +44,9 @@ class Manifest04(unittest.TestCase):
         s = session.Session(None, None, lambda *a: None, None, session.Options(), info_hash=b"\x00" * 20)
         self.addCleanup(s.pool.shutdown, wait=False)
         self.addCleanup(s.reader_pool.shutdown, wait=False)
-        self.assertTrue(s.peer_id.startswith(b"-DM0400-"))
+        self.assertTrue(s.peer_id.startswith(b"-DM0500-"))
         self.assertEqual(len(s.peer_id), 20)
-        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.4.0")
+        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.5.0")
 
 
 class Update(unittest.TestCase):
@@ -66,13 +66,13 @@ class Update(unittest.TestCase):
         home.mkdir()
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(home, f'[catalog]\npaths = ["{catalog}"]\n')
-        for version in ("0.3.0", "0.4.0"):
+        for version in ("0.3.0", "0.5.0"):
             self.addCleanup(dockenv.remove_image, f"dock/{COPY_ID}:{version}")
         r = cli("plugin", "install", str(old), "--yes", home=home)
         self.assertEqual(r.returncode, 0, r.stderr)
         r = cli("plugin", "update", COPY_ID, home=home)  # no --yes, no terminal: a prompt would refuse
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.3.0 → 0.4.0")
+        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.3.0 → 0.5.0")
         self.assertNotIn("adds", r.stderr)
 
 

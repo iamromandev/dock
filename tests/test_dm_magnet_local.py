@@ -5,9 +5,11 @@ AC3, AC4, AC6, AC7, AC8, AC11, AC12, AC15 and a Ctrl-C resume that fetches the m
 
 import errno
 import hashlib
+import random
 import sys
 import threading
 import time
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -32,6 +34,12 @@ class MagnetHarness(Harness):
     def magnet(self, t, tr=None, peers=(), **kw):
         trackers = [self.announce_url(tr)] if tr is not None else []
         return torrentkit.magnet_for(t, trackers, peers, **kw)
+
+    def in_listed_order(self):
+        """Peers are dialed in the order the tracker lists them: no shuffle, so `peer #n` in a log line is the
+        n-th seeder of `swarm()`. A log never carries an address, so this is how a test tells the peers apart."""
+        return mock.patch.object(session, "random", types.SimpleNamespace(shuffle=lambda items: None,
+                                                                         sample=random.sample))
 
     def run_magnet(self, link, opts=FAST, fixed_name=None, handle=None, resume=True):
         self.progress, self.notes = [], []
@@ -59,7 +67,7 @@ class MagnetHarness(Harness):
         """dmcore.run for a magnet: (exit code, events)."""
         events = []
         code = dmcore.run({"url": link, **inputs}, str(self.cwd),
-                          lambda kind, **kw: events.append((kind, kw)), threading.Event())
+                          lambda method, **kw: events.append((method, kw)), threading.Event())
         return code, events
 
     @staticmethod
@@ -175,13 +183,14 @@ class Hostile(MagnetHarness):
                 self.swarm(tr, *((good, evil) if order == 0 else (evil, good)))
                 logs = []
                 self.progress, self.notes = [], []
-                final, _, nfiles, info = session.run_magnet(
-                    magnet.parse(self.magnet(t, tr)), Target(self.cwd, None), lambda p, x: None,
-                    TorrentHandle(), FAST, logs.append, note=self.notes.append)
+                with self.in_listed_order():
+                    final, _, nfiles, info = session.run_magnet(
+                        magnet.parse(self.magnet(t, tr)), Target(self.cwd, None), lambda p, x: None,
+                        TorrentHandle(), FAST, logs.append, note=self.notes.append)
                 self.assertEqual(nfiles, 700)
                 self.assertEqual(hashlib.sha1(info).digest(), t.info_hash)
                 dropped = [m for m in logs if "dropped" in m]
-                self.assertFalse([m for m in dropped if f":{good.port} " in m], dropped)
+                self.assertFalse([m for m in dropped if m.startswith(f"peer #{order + 1} ")], dropped)
 
 
 class HostileMetadata(MagnetHarness):
@@ -201,22 +210,26 @@ class HostileMetadata(MagnetHarness):
         self.swarm(tr, *evil, good)
         logs = []
         self.progress, self.notes = [], []
-        final, _, nfiles, info = session.run_magnet(
-            magnet.parse(self.magnet(self.t, tr)), Target(self.cwd, None), lambda p, x: None,
-            TorrentHandle(), FAST, logs.append, note=self.notes.append)
+        with self.in_listed_order():
+            final, _, nfiles, info = session.run_magnet(
+                magnet.parse(self.magnet(self.t, tr)), Target(self.cwd, None), lambda p, x: None,
+                TorrentHandle(), FAST, logs.append, note=self.notes.append)
         self.assertEqual(torrentkit.tree(final), dict(self.files))
         self.assertEqual(hashlib.sha1(info).digest(), self.t.info_hash)
         dropped = [m for m in logs if "dropped" in m]
-        self.assertFalse([m for m in dropped if f":{good.port} " in m], dropped)  # never the honest one
+        # never the honest one, listed last; and what is logged is the peer's number and the kind of error only
+        self.assertFalse([m for m in dropped if m.startswith(f"peer #{len(evil) + 1} ")], dropped)
+        for m in dropped:
+            self.assertRegex(m, r"^peer #\d+ dropped: \w+$")
         return dropped
 
-    def dropped_port(self, dropped, peer):
-        return any(f":{peer.port} " in m for m in dropped)
+    def dropped_peer(self, dropped, number):
+        return any(m.startswith(f"peer #{number} dropped") for m in dropped)
 
     def hostile(self, mode):
         evil = self.seeder(self.t, metadata=mode)
         dropped = self.run_with(evil)
-        self.assertTrue(self.dropped_port(dropped, evil), (mode, dropped))
+        self.assertTrue(self.dropped_peer(dropped, 1), (mode, dropped))
         self.assertLessEqual(evil.metadata_requests, 3)
 
     def test_metadata_size_zero_drops_the_peer(self):
@@ -263,7 +276,7 @@ class HostileMetadata(MagnetHarness):
             peak = tracemalloc.get_traced_memory()[1] - base
         finally:
             tracemalloc.stop()
-        self.assertTrue(self.dropped_port(dropped, junk), dropped)  # its whole set was assembled, and failed
+        self.assertTrue(self.dropped_peer(dropped, 1), dropped)  # its whole set was assembled, and failed
         self.assertGreaterEqual(junk.metadata_requests, 600)
         peers = 2
         self.assertLess(peak, metadata.MAX_METADATA + peers * metadata.BLOCK + 2 * 1024 * 1024,
@@ -789,11 +802,12 @@ class Saved(MagnetHarness):
         self.assertEqual(out, "saved a.bin (131.1 kB, 1 file)\nsaved a.bin.torrent\n")
         self.assertEqual(self.listing(), ["a.bin", "a.bin.torrent"])
         self.assertEqual((self.cwd / "a.bin").read_bytes(), t.blob)
-        shown = " ".join(str(v) for _, kw in events for v in kw.values() if kw.get("level") != "debug")
+        # the peers table is the one place an address may be: the host draws it, nothing else shows it
+        shown = " ".join(str(v) for k, kw in events if k != "table" for v in kw.values())  # every log level
         self.assertNotIn("Secret", shown)
         self.assertNotIn("127.0.0.1", shown)
         self.assertTrue(any(str(kw.get("message")).startswith("fetching metadata · ")
-                            and kw.get("percent") is None for k, kw in events if k == "progress"))
+                            and kw.get("percent") is None for k, kw in events if k == "bar"))
 
     # AC11
     def test_the_saved_torrent_has_the_same_hash_and_the_magnets_trackers(self):

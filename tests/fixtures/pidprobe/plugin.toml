@@ -1,6 +1,6 @@
 id = "dev.dock.pidprobe"
 version = "0.1.0"
-api_version = "1"
+api_version = "2"
 description = "Test fixture: reports its pid, container id and cwd, and asks the host for removed methods"
 
 [run]

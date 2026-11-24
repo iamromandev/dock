@@ -44,7 +44,8 @@ class Command:
 
 
 _PLUGIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # one path component: it names folders under the store
-_TAG_PART = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
+_COMMAND_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # typed at a prompt, completed, listed: no ':' (plugin:command)
+_TAG_PART =re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
 KNOWN_PERMISSIONS = ("network", "fs:write:cwd")
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 RESERVED_ENV = {"HOME", "PATH", "LANG", "TZ", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"}  # dock sets these itself
@@ -102,7 +103,8 @@ class Manifest:
     env: list[str] = field(default_factory=list)  # host variables passed into the container, by name
 
     @classmethod
-    def load(cls, root: Path) -> Manifest:
+    def load(cls, root: Path, any_api: bool = False) -> Manifest:
+        """any_api: skip the protocol check, to read an old install (to compare permissions, or to remove it)."""
         root = Path(root).resolve()
         path = root / "plugin.toml"
         if not path.is_file():
@@ -115,7 +117,7 @@ class Manifest:
         for key in ("id", "version", "api_version", "run"):
             if key not in data:
                 raise ManifestError(f"{path}: missing '{key}'")
-        if str(data["api_version"]) != API_VERSION:
+        if not any_api and str(data["api_version"]) != API_VERSION:
             raise ManifestError(
                 f"{data['id']} needs protocol v{data['api_version']}, this dock speaks v{API_VERSION}"
             )
@@ -154,6 +156,11 @@ class Manifest:
 
         commands = []
         for c in data.get("commands", []):
+            if not isinstance(c.get("name"), str) or not _COMMAND_NAME.fullmatch(c["name"]):
+                raise ManifestError(  # repr: the name is not trusted to be printable
+                    f"{path}: command name {c.get('name')!r} may only hold letters, digits, '.', '_' and '-', "
+                    "and must start with a letter or digit"
+                )
             if "requires_permission" in c:
                 raise ManifestError(f"{data['id']}: {c['name']}: requires_permission is no longer supported")
             inputs = None

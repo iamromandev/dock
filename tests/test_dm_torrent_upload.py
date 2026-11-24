@@ -64,6 +64,7 @@ class FakeSession:
     def __init__(self, npieces=8, piece_length=PL, have=(0, 1)):
         class Meta:
             hashes = [b"x" * 20] * npieces
+            files = ("one",)  # a single file: the session keeps no per-file progress
         self.meta = Meta()
         self.meta.piece_length = piece_length
         self.meta.total = npieces * piece_length
@@ -71,6 +72,13 @@ class FakeSession:
         self.finished = set(have)
         self.picker = self
         self.log_lines = []
+        self.clock = time.monotonic
+
+    def got_block(self, conn, n):
+        pass
+
+    def sent_block(self, conn, n):
+        pass
 
     def piece_size(self, index):
         return self.meta.piece_length
@@ -208,7 +216,7 @@ class ChokeEpoch(unittest.IsolatedAsyncioTestCase):
         fake.storage = Storage()
         fake.reader_pool = ThreadPoolExecutor(1)
         self.addCleanup(fake.reader_pool.shutdown)
-        c = PeerConn(fake, ("127.0.0.1", 1))
+        c = PeerConn(fake, ("127.0.0.1", 1), 7)
         c.writer = FakeWriter()
         c.handshaken = True
         c.am_choking = False
@@ -219,7 +227,7 @@ class ChokeEpoch(unittest.IsolatedAsyncioTestCase):
         while c.served < 2:
             await asyncio.sleep(0.01)
         c.report_served()
-        self.assertEqual(fake.log_lines, ["peer 127.0.0.1:1 served 2 blocks"])
+        self.assertEqual(fake.log_lines, ["peer #7 served 2 blocks"])
 
 
 class Rechoke(unittest.TestCase):

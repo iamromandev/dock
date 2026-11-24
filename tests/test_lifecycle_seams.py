@@ -18,7 +18,7 @@ from cli import isolation  # noqa: E402
 from cli.lifecycle import Session  # noqa: E402
 from cli.process import PluginProcess  # noqa: E402
 from cli.store import Store  # noqa: E402
-from cli.ui import TerminalUI  # noqa: E402
+from cli.ui import PlainUI  # noqa: E402
 
 
 class RecordingUI:
@@ -34,8 +34,27 @@ class RecordingUI:
     def log(self, p):
         self.events.append((self.plugin_id, "log", p.get("message")))
 
-    def progress(self, p):
-        self.events.append((self.plugin_id, "progress", p.get("percent")))
+    def bar(self, p):
+        self.events.append((self.plugin_id, "bar", p.get("percent")))
+
+    def table(self, p):
+        self.events.append((self.plugin_id, "table", p.get("id")))
+
+    def panel(self, p):
+        self.events.append((self.plugin_id, "panel", p.get("id")))
+
+    def clear(self, p):
+        self.events.append((self.plugin_id, "clear", p.get("id")))
+
+    def form(self, p):
+        self.events.append((self.plugin_id, "form", p.get("title")))
+        return {"eof": True}
+
+    def begin(self):
+        self.events.append((self.plugin_id, "begin", None))
+
+    def end(self):
+        self.events.append((self.plugin_id, "end", None))
 
     def prompt_user(self, p):
         self.events.append((self.plugin_id, "prompt", p.get("prompt")))
@@ -45,7 +64,8 @@ class RecordingUI:
         self.events.append((self.plugin_id, "warn", message))
 
     def handlers(self):
-        return {"output": self.output, "log": self.log, "progress": self.progress, "prompt_user": self.prompt_user}
+        return {"output": self.output, "log": self.log, "bar": self.bar, "table": self.table, "panel": self.panel,
+                "clear": self.clear, "prompt_user": self.prompt_user, "form": self.form}
 
 
 PLUGINS = (ROOT / "plugin" / "hello", ROOT / "tests" / "fixtures" / "pidprobe")
@@ -62,8 +82,8 @@ class SessionSeams(unittest.TestCase):
         self.made = []
 
     def session(self):
-        patch = mock.patch("cli.lifecycle.TerminalUI",
-                           side_effect=lambda plugin_id, verbose=False: self.make_ui(plugin_id))
+        patch = mock.patch("cli.lifecycle.make_ui",
+                           side_effect=lambda plugin_id, verbose=False, term=None: self.make_ui(plugin_id))
         patch.start()
         self.addCleanup(patch.stop)
         session = Session(self.store)
@@ -74,18 +94,18 @@ class SessionSeams(unittest.TestCase):
         self.made.append(plugin_id)
         return RecordingUI(plugin_id, self.events)
 
-    def test_default_ui_is_the_terminal_ui(self):
+    def test_default_ui_is_the_plain_ui_when_not_live(self):
         session = Session(self.store, verbose=True)
         ui = session._ui("dev.dock.hello")
-        self.assertIsInstance(ui, TerminalUI)
+        self.assertIsInstance(ui, PlainUI)
         self.assertEqual((ui.plugin_id, ui.verbose), ("dev.dock.hello", True))
 
-    def test_invoke_sends_output_and_progress_to_the_ui(self):
+    def test_invoke_sends_output_and_bars_to_the_ui(self):
         session = self.session()
         code = session.invoke(self.store.get("dev.dock.hello"), "count", ["2"])
         self.assertEqual(code, 0)
         self.assertEqual(self.made, ["dev.dock.hello"])
-        self.assertIn(("dev.dock.hello", "progress", 100.0), self.events)
+        self.assertIn(("dev.dock.hello", "bar", 100.0), self.events)
         self.assertIn(("dev.dock.hello", "output", "counted to 2\n"), self.events)
 
     def test_warnings_go_through_the_ui(self):
@@ -116,6 +136,39 @@ class SessionSeams(unittest.TestCase):
         self.assertEqual(prepare.call_args.args, (self.store, self.store.get("dev.dock.pidprobe")))
         self.assertNotIn("cwd", prepare.call_args.kwargs)
         self.assertTrue(any(kind == "output" and f"cwd {project}" in text for _, kind, text in self.events), self.events)
+
+
+class InvokeBracketsTheUI(unittest.TestCase):
+    """No runtime needed: a run's live areas are frozen (ui.end) on every way out of Session.invoke."""
+
+    def run_invoke(self, outcome):
+        events = []
+        session = Session(Store(Path(tempfile.mkdtemp(prefix="dock-seams-ui-"))))
+
+        def fake_invoke(*args):
+            events.append(("plugin", "invoke", None))
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        with mock.patch("cli.lifecycle.make_ui", side_effect=lambda *a, **k: RecordingUI("p", events)), \
+                mock.patch.object(Session, "_invoke", side_effect=fake_invoke):
+            try:
+                code = session.invoke(mock.Mock(id="p"), "go", [])
+            except BaseException as e:  # noqa: BLE001
+                code = type(e)
+        return code, [kind for _, kind, _ in events]
+
+    def test_begin_then_invoke_then_end(self):
+        self.assertEqual(self.run_invoke({"exit_code": 3}), (3, ["begin", "invoke", "end"]))
+
+    def test_end_runs_when_the_plugin_fails(self):
+        code, kinds = self.run_invoke(cli.process.PluginError("boom"))
+        self.assertEqual((code, kinds), (1, ["begin", "invoke", "warn", "end"]))
+
+    def test_end_runs_on_an_unexpected_exception(self):
+        code, kinds = self.run_invoke(RuntimeError("bug"))
+        self.assertEqual((code, kinds), (RuntimeError, ["begin", "invoke", "end"]))
 
 
 class RemovedSeams(unittest.TestCase):
@@ -153,7 +206,8 @@ class PluginAsksTheHost(unittest.TestCase):
                 texts.append(p.get("text"))
 
         manifest = store.get("dev.dock.pidprobe")
-        with mock.patch("cli.lifecycle.TerminalUI", side_effect=lambda plugin_id, verbose=False: UI(plugin_id, events)):
+        with mock.patch("cli.lifecycle.make_ui",
+                        side_effect=lambda plugin_id, verbose=False, term=None: UI(plugin_id, events)):
             session = Session(store)
             try:
                 self.assertEqual(session.invoke(manifest, "askhost", []), 0)

@@ -74,8 +74,22 @@ def run(inputs, cwd, notify, cancelled):
     result = {}
     done = threading.Event()
 
+    last = {}  # the newest percent and message: the bar is closed with them when the download succeeds
+    view = None  # a torrent run: its bars, panel and table (see view.py); an HTTP download has the one bar
+
     def progress(percent, message):
-        notify("progress", percent=percent, message=message)
+        if view is not None:
+            view.progress(percent, message)
+            return
+        last.update(percent=percent, message=message)
+        notify("bar", id="dm", label="", percent=percent, message=message)
+
+    def drop_bar():
+        """A download that did not finish leaves no bar behind: the error line (or the cancel) is all there is to show."""
+        if view is not None:
+            view.drop()
+        elif last:
+            notify("clear", id="dm", kind="bar")
 
     def work(target):
         try:
@@ -94,7 +108,8 @@ def run(inputs, cwd, notify, cancelled):
             result["ok"] = run_torrent(path, target, progress, handle, opts,
                                        lambda m: notify("log", level="debug", message=m),
                                        resume=not inputs.get("no_resume"),
-                                       note=lambda text: notify("output", text=text + "\n"))
+                                       note=lambda text: notify("output", text=text + "\n"),
+                                       on_stats=view.stats)
         except DmError as e:  # which torrent failed is the part worth showing
             result["err"] = DmError(f"{arg}: {e}", e.code, e.keep)
         except BaseException as e:
@@ -110,7 +125,8 @@ def run(inputs, cwd, notify, cancelled):
             final, size, nfiles, info = run_magnet(link, target, progress, handle, opts,
                                                    lambda m: notify("log", level="debug", message=m),
                                                    resume=not inputs.get("no_resume"),
-                                                   note=lambda text: notify("output", text=text + "\n"))
+                                                   note=lambda text: notify("output", text=text + "\n"),
+                                                   on_stats=view.stats)
             result["ok"] = (final, size, nfiles)
             try:  # the download is in place: failing to write the .torrent only warns
                 saved, name = save_torrent(final, target, info, link.trackers)
@@ -139,7 +155,9 @@ def run(inputs, cwd, notify, cancelled):
         if link is not None or torrent is not None:
             from .torrent.handle import TorrentHandle
             from .torrent.session import Options
+            from .view import TorrentView
 
+            view = TorrentView(notify)
             stall = inputs.get("stall")
             if stall is not None and (isinstance(stall, bool) or not isinstance(stall, int) or stall < 1):
                 raise DmError("--stall-seconds must be at least 1", 2)
@@ -164,16 +182,23 @@ def run(inputs, cwd, notify, cancelled):
         path, size, *files = result["ok"]
         rel = os.path.relpath(path, os.path.realpath(cwd))
         count = f", {files[0]} file{'s' if files[0] != 1 else ''}" if files else ""
+        if view is not None:
+            view.finish()
+        elif last:
+            notify("bar", id="dm", label="", done=True, **last)
         notify("output", text=f"saved {rel} ({human_size(size)}{count})\n")
         if "saved" in result:
             notify("output", text=f"saved {os.path.relpath(result['saved'], os.path.realpath(cwd))}\n")
         notify("log", level="debug", message=f"peak_rss_kb={_peak_rss_kb()}")
         return 0
     except DmError as e:
+        drop_bar()
         notify("log", level="error", message=f"dm: {e}")
         return e.code
     except Cancelled:
+        drop_bar()
         raise
     except Exception as e:  # its text may hold the URL: show the class only
+        drop_bar()
         notify("log", level="error", message=f"dm: {type(e).__name__}")
         return 1

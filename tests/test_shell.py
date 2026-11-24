@@ -19,7 +19,7 @@ import dockenv  # noqa: E402
 from cli import __version__  # noqa: E402
 from cli.lifecycle import Session  # noqa: E402
 from cli.store import Store  # noqa: E402
-from cli.ui import TerminalUI  # noqa: E402
+from cli.ui import PlainUI  # noqa: E402
 
 PROMPT = "dock> "
 
@@ -225,20 +225,20 @@ class ShellE2E(unittest.TestCase):
     def test_plugin_update_stops_a_running_plugin_first_but_not_on_dry_run(self):
         tmp = Path(tempfile.mkdtemp(prefix="dock-shell-upd-"))
         copy = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp / "v1", "dev.dock.helloupd")
-        self.addCleanup(dockenv.remove_image, "dock/dev.dock.helloupd:0.1.0")
         self.addCleanup(dockenv.remove_image, "dock/dev.dock.helloupd:0.2.0")
+        self.addCleanup(dockenv.remove_image, "dock/dev.dock.helloupd:0.3.0")
         home = tempfile.mkdtemp(prefix="dock-shell-upd-home-")
         env = {**self.env, "DOCK_HOME": home}
         self.assertEqual(self.dock("plugin", "install", str(copy), env=env).returncode, 0)
         newer = dockenv.plugin_copy(ROOT / "plugin" / "hello", tmp / "cat", "dev.dock.helloupd")
         toml = newer / "plugin.toml"
-        toml.write_text(toml.read_text().replace('version = "0.1.0"', 'version = "0.2.0"', 1))
+        toml.write_text(toml.read_text().replace('version = "0.2.0"', 'version = "0.3.0"', 1))
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(Path(home), f'[catalog]\npaths = ["{newer}"]\n')
         r = self.dock("shell", stdin="hello a\nplugin update --dry-run\nhello b\nplugin update\nhello c\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("would update dev.dock.helloupd 0.1.0 → 0.2.0", r.stdout)
-        self.assertIn("updated dev.dock.helloupd 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn("would update dev.dock.helloupd 0.2.0 → 0.3.0", r.stdout)
+        self.assertIn("updated dev.dock.helloupd 0.2.0 → 0.3.0", r.stdout)
         self.assertIn("hello, c!", r.stdout)
         log = Path(home, "logs", "dev.dock.helloupd.log").read_text()
         self.assertEqual(log.count(" start "), 2)  # a and b shared one process; the update stopped it; c started anew
@@ -399,7 +399,7 @@ class ShellE2E(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("plugin install", r.stdout)
         self.assertIn(f"dock {__version__}", r.stdout)
-        self.assertRegex(r.stdout, r"dev\.dock\.hello\s+0\.1\.0")
+        self.assertRegex(r.stdout, r"dev\.dock\.hello\s+0\.2\.0")
         self.assertIn("id:          dev.dock.hello", r.stdout)
         # the help it printed lists the shell built-ins and not `shell`
         for word in ("status", "exit, quit"):
@@ -462,15 +462,15 @@ class SessionUnit(unittest.TestCase):
     def test_stop_proc_forgets_the_process(self):
         manifest = self.store.get("dev.dock.hello")
         with self.subTest("drops replies still queued for it"):
-            proc = self.session.start(manifest, TerminalUI(manifest.id))
-            other = self.session.start(manifest, TerminalUI(manifest.id))
+            proc = self.session.start(manifest, PlainUI(manifest.id))
+            other = self.session.start(manifest, PlainUI(manifest.id))
             self.session.hub.replies[(proc, 99)] = {"id": 99}
             self.session.hub.replies[(other, 99)] = {"id": 99}
             self.session.stop_proc(proc)
             self.assertEqual(list(self.session.hub.replies), [(other, 99)])
         with self.subTest("messages from a forgotten process are ignored"):
             self.session.hub.replies.clear()
-            proc = self.session.start(manifest, TerminalUI(manifest.id))
+            proc = self.session.start(manifest, PlainUI(manifest.id))
             self.session.stop_proc(proc)
             self.session.hub.inbox.put((proc, "msg", {"id": 99, "result": {}}))
             self.session.hub.pump(5)
@@ -480,7 +480,7 @@ class SessionUnit(unittest.TestCase):
         manifest = self.store.get("dev.dock.hello")
         with self.subTest("returns once nothing is pending"):
             self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
-            proc = self.session.start(manifest, TerminalUI(manifest.id))
+            proc = self.session.start(manifest, PlainUI(manifest.id))
             proc.pending.add(99)  # a reply that never comes
             started = time.monotonic()
             self.assertFalse(self.session.drain_pending(started + 0.3))
@@ -488,7 +488,7 @@ class SessionUnit(unittest.TestCase):
             proc.pending.clear()
             self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
         with self.subTest("collects a reply that arrives before the deadline"):
-            proc = self.session.start(manifest, TerminalUI(manifest.id))
+            proc = self.session.start(manifest, PlainUI(manifest.id))
             proc.pending.add(99)
             threading.Timer(0.2, lambda: self.session.hub.inbox.put((proc, "msg", {"id": 99, "result": {}}))).start()
             self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
@@ -502,9 +502,9 @@ class SessionUnit(unittest.TestCase):
             warnings.simplefilter("always")
             for plugin_id in ("dev.dock.hello", "dev.dock.hello"):
                 manifest = self.store.get(plugin_id)
-                proc = self.session.start(manifest, TerminalUI(manifest.id))
+                proc = self.session.start(manifest, PlainUI(manifest.id))
                 self.session.stop_proc(proc)  # graceful
-            killed = self.session.start(manifest, TerminalUI(manifest.id))
+            killed = self.session.start(manifest, PlainUI(manifest.id))
             self.session.stop_proc(killed, force=True)
             del proc, killed
             gc.collect()
@@ -516,7 +516,7 @@ class SessionUnit(unittest.TestCase):
             with self.subTest(step=step), \
                     mock.patch.object(Session, step, side_effect=KeyboardInterrupt), \
                     mock.patch.object(Session, "_stop_unresponsive") as stop:
-                self.session._interrupted(TerminalUI("dev.dock.test"))
+                self.session._interrupted(PlainUI("dev.dock.test"))
                 stop.assert_called_once()
 
     def test_close_keeps_stopping_after_one_stop_fails(self):

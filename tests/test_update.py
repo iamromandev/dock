@@ -4,6 +4,7 @@ Helpers come from test_catalog (imported as a module so unittest does not collec
 """
 
 import os
+import re
 import shutil
 import sys
 import unittest
@@ -294,15 +295,15 @@ class UpdateCli(tc.CliCase):
     def bump(self, version, folder=None):
         """The catalog copy of hello at another version."""
         path = Path(folder or self.hello) / "plugin.toml"
-        path.write_text(path.read_text().replace('version = "0.1.0"', f'version = "{version}"', 1))
+        path.write_text(re.sub(r'(?m)^version = ".*"$', f'version = "{version}"', path.read_text(), count=1))
 
     def test_updates_every_installed_plugin(self):
-        self.bump("0.2.0")
+        self.bump("0.3.0")
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines(), ["updated dev.dock.hello 0.1.0 → 0.2.0"])
-        self.assertEqual(self.index()["dev.dock.hello"]["version"], "0.2.0")
-        self.assertFalse((self.home / "plugin" / "dev.dock.hello" / "0.1.0").exists())
+        self.assertEqual(r.stdout.splitlines(), ["updated dev.dock.hello 0.2.0 → 0.3.0"])
+        self.assertEqual(self.index()["dev.dock.hello"]["version"], "0.3.0")
+        self.assertFalse((self.home / "plugin" / "dev.dock.hello" / "0.2.0").exists())
         self.assertIn("image rm", self.runtime_calls())
 
     def test_nothing_newer(self):
@@ -312,16 +313,16 @@ class UpdateCli(tc.CliCase):
 
     def test_named_and_current(self):
         r = self.dock("plugin", "update", "dev.dock.hello")
-        self.assertEqual((r.returncode, r.stdout), (0, "dev.dock.hello 0.1.0 is up to date\n"))
+        self.assertEqual((r.returncode, r.stdout), (0, "dev.dock.hello 0.2.0 is up to date\n"))
 
     def test_dry_run_changes_nothing(self):
-        self.bump("0.2.0")
+        self.bump("0.3.0")
         for args in (("--dry-run",), ("--dry-run", "dev.dock.hello"), ("dev.dock.hello", "--dry-run")):
             with self.subTest(args=args):
                 before = tree(self.home)
                 r = self.dock("plugin", "update", *args)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertEqual(r.stdout, "would update dev.dock.hello 0.1.0 → 0.2.0\n")
+                self.assertEqual(r.stdout, "would update dev.dock.hello 0.2.0 → 0.3.0\n")
                 self.assertEqual(tree(self.home), before)
                 self.assertEqual(self.runtime_calls(), "")
 
@@ -331,20 +332,20 @@ class UpdateCli(tc.CliCase):
         self.assertIn("dock: dev.t.nope is not installed", r.stderr)
 
     def test_one_failure_does_not_stop_the_others(self):
-        self.bump("0.2.0")
+        self.bump("0.3.0")
         other = tc.make_plugin(self.tmp / "o", "p", PID, "0.1.0")
         self.assertEqual(self.dock("plugin", "install", str(other)).returncode, 0)
         newer = tc.make_plugin(self.cat, "p", PID, "0.2.0")
         (newer / "link").symlink_to(self.tmp / "runtime-calls")  # escapes the plugin folder
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("updated dev.dock.hello 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn("updated dev.dock.hello 0.2.0 → 0.3.0", r.stdout)
         self.assertIn(f"dock: {PID}: ", r.stderr)
         self.assertEqual(self.index()[PID]["version"], "0.1.0")
 
     @unittest.skipIf(os.geteuid() == 0, "root ignores file modes")
     def test_os_error_in_one_plugin_does_not_stop_the_others(self):
-        self.bump("0.2.0")
+        self.bump("0.3.0")
         other = tc.make_plugin(self.tmp / "o", "p", PID, "0.1.0")
         self.assertEqual(self.dock("plugin", "install", str(other)).returncode, 0)
         newer = tc.make_plugin(self.cat, "p", "dev.aaa.first", "0.2.0")
@@ -356,7 +357,7 @@ class UpdateCli(tc.CliCase):
         self.addCleanup(locked.chmod, 0o600)
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn("updated dev.dock.hello 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn("updated dev.dock.hello 0.2.0 → 0.3.0", r.stdout)
         self.assertIn("dock: dev.aaa.first: ", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
         self.assertFalse((self.home / "plugin" / "dev.aaa.first" / "0.2.0").exists())
@@ -383,12 +384,12 @@ class UpdateCli(tc.CliCase):
         self.assertIn("plugin update [--dry-run] [--yes] [<id>...]", self.dock("help").stdout)
 
     def test_works_without_a_runtime(self):
-        self.bump("0.2.0")
+        self.bump("0.3.0")
         self.config('[container]\nruntime = "/nonexistent/docker"\n')
         self.catalog_config(self.cat)
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("updated dev.dock.hello 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn("updated dev.dock.hello 0.2.0 → 0.3.0", r.stdout)
         self.assertIn("may be stale", r.stderr)
 
 

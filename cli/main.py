@@ -10,10 +10,12 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from cli import __version__, approve, catalog, isolation, lifecycle
+from cli import __version__, approve, catalog, isolation, lifecycle, uimsg
 from cli.inputs import UsageError, parse_for
 from cli.manifest import Manifest, ManifestError
 from cli.store import Store, staged
+from cli.term import Terminal
+from cli.ui import live_mode
 
 SERVE_REMOVED = "dock: serve was removed; run commands with 'dock <command>' or 'dock shell'"
 
@@ -66,7 +68,7 @@ def cmd_help(store: Store, in_shell: bool = False) -> int:
         print("plugin commands:")
         for pid, entry in sorted(idx.items()):
             for name, summary in entry["commands"].items():
-                print(f"  {name:<25} {summary}  ({pid})")
+                print(f"  {uimsg.sanitize(name):<25} {uimsg.sanitize(summary)}  ({pid})")
     else:
         print("no plugins installed yet: dock plugin install <path>")
     return 0
@@ -106,7 +108,7 @@ def install_from(store: Store, folder: Path) -> int:
 def installed_manifest(store: Store, plugin_id: str) -> Manifest | None:
     """The installed plugin's manifest, or None when it is not installed or cannot be read."""
     try:
-        return store.get(plugin_id)
+        return store.get(plugin_id, any_api=True)
     except (ManifestError, OSError, KeyError):
         return None
 
@@ -283,7 +285,14 @@ def main(argv: list[str] | None = None) -> int:
         manifest, command = store.resolve(argv[0])
         parse_for(manifest, command, argv[1:])  # a bad invocation must start no process
         isolation.sweep(store)
-        return lifecycle.run(store, manifest, command, argv[1:], verbose=verbose)
+        term = Terminal() if live_mode() else None  # live areas are drawn on it; given back on every way out
+        if term is not None:
+            term.install()
+        try:
+            return lifecycle.run(store, manifest, command, argv[1:], verbose=verbose, term=term)
+        finally:
+            if term is not None:
+                term.close()
     except ManifestError as e:
         print(f"dock: {e}", file=sys.stderr)
         return 1

@@ -65,7 +65,7 @@ def count(inputs):
     for i in range(1, n + 1):
         if cancelled.is_set():
             raise Cancelled()
-        notify("progress", percent=i * 100 / n, message=f"{i}/{n}")
+        notify("bar", id="count", label="count", percent=i * 100 / n, message=f"{i}/{n}", done=i == n)
         time.sleep(0.05)
     output(f"counted to {n}")
 
