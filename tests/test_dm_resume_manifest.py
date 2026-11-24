@@ -18,7 +18,7 @@ from test_dm_torrent_manifest import cli  # noqa: E402
 DM = ROOT / "plugin" / "dm"
 COPY_ID = "dev.dock.dmresume"
 SUMMARY = ("Download a URL, a .torrent or a magnet link into the current folder: "
-           "dm <url|file.torrent|magnet> [-o name | -d folder] [--no-resume]")
+           "dm <url|file.torrent|magnet> [-o name | -d folder] [--no-resume] [--no-dht]")
 # the 0.2.0 inputs: everything but --no-resume
 OLD_INPUTS = '''inputs = [
   { name = "url", type = "string", required = true },
@@ -32,7 +32,7 @@ OLD_INPUTS = '''inputs = [
 class Manifest03(unittest.TestCase):
     def test_version_summary_and_the_no_resume_flag(self):
         m = Manifest.load(DM)
-        self.assertEqual(m.version, "0.5.0")
+        self.assertEqual(m.version, "0.6.0")
         (command,) = m.commands
         self.assertEqual(command.summary, SUMMARY)
         flag = {i.name: i for i in command.inputs}["no_resume"]
@@ -58,13 +58,13 @@ class Update(unittest.TestCase):
         home.mkdir()
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(home, f'[catalog]\npaths = ["{catalog}"]\n')
-        for version in ("0.2.0", "0.5.0"):
+        for version in ("0.2.0", "0.6.0"):
             self.addCleanup(dockenv.remove_image, f"dock/{COPY_ID}:{version}")
         r = cli("plugin", "install", str(old), "--yes", home=home)
         self.assertEqual(r.returncode, 0, r.stderr)
         r = cli("plugin", "update", COPY_ID, home=home)  # no --yes, no terminal: a prompt would refuse
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.2.0 → 0.5.0")
+        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.2.0 → 0.6.0")
         self.assertNotIn("adds", r.stderr)
 
 

@@ -147,17 +147,26 @@ class ParseErrors(unittest.TestCase):
         self.fails("magnet:?xt=urn:btmh:1220" + "ab" * 32 + "&tr=udp://a:1",
                    "v2-only magnet links are not supported")
 
-    def test_no_trackers_and_no_peers(self):
-        message = "magnet link has no trackers or peers (DHT is not supported)"
-        exc = self.fails(f"magnet:?xt=urn:btih:{HEX}&dn=Secret+Name", message)
-        self.assertEqual(exc.info_hash, IH)
-        self.fails(f"magnet:?xt=urn:btih:{HEX}&tr=ftp://a.example/&x.pe=nonsense", message)
+    def test_no_trackers_and_no_peers_parse_and_need_the_dht(self):
+        message = "magnet link has no trackers or peers (and the DHT is off)"
+        for arg in (f"magnet:?xt=urn:btih:{HEX}&dn=Secret+Name",
+                    f"magnet:?xt=urn:btih:{HEX}&tr=ftp://a.example/&x.pe=nonsense"):
+            link = magnet.parse(arg)
+            self.assertEqual((link.info_hash, link.trackers, link.peers), (IH, (), ()))
+            magnet.require_sources(link, dht=True)  # the DHT is a source
+            with self.assertRaises(magnet.MagnetError) as cm:
+                magnet.require_sources(link, dht=False)
+            self.assertEqual((str(cm.exception), cm.exception.info_hash), (message, IH))
+
+    def test_a_tracker_or_a_peer_is_a_source_without_the_dht(self):
+        for arg in (f"magnet:?xt=urn:btih:{HEX}&tr=udp://a:1", f"magnet:?xt=urn:btih:{HEX}&x.pe=1.2.3.4:5"):
+            magnet.require_sources(magnet.parse(arg), dht=False)
 
     def test_errors_never_show_the_link(self):
         for arg in (f"magnet:?xt=urn:btih:{HEX}&dn=Secret+Name&tr=wss://secret.example/pass",
                     "magnet:?xt=urn:btih:zz"):
             with self.assertRaises(metainfo.TorrentError) as cm:
-                magnet.parse(arg)
+                magnet.require_sources(magnet.parse(arg), dht=False)
             for part in ("Secret", "secret.example", HEX, "zz"):
                 self.assertNotIn(part, str(cm.exception))
 

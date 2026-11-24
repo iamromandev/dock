@@ -189,8 +189,8 @@ class Stats(unittest.TestCase):
         self.assertEqual((st["files"], st["eta_s"]), ([], None))
 
     def test_our_peer_id_and_extension_name_say_0_5_0(self):
-        self.assertTrue(three_files().peer_id.startswith(b"-DM0500-"))
-        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.5.0")
+        self.assertTrue(three_files().peer_id.startswith(b"-DM0600-"))
+        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.6.0")
 
 
 if __name__ == "__main__":

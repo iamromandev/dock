@@ -21,6 +21,7 @@ class Failure(Exception):
 
 inbox: queue.Queue = queue.Queue()
 cancelled = threading.Event()
+data_dir = None  # the plugin's private folder, from initialize
 send_lock = threading.Lock()
 
 
@@ -36,17 +37,21 @@ def notify(method, **params):
 
 
 def handle(msg):
+    global data_dir
     method, msg_id, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if method is None or msg_id is None:
         return False
     try:
         if method == "initialize":
+            given = params.get("data_dir")
+            data_dir = given if isinstance(given, str) and given else None
             result = {"name": "dm"}
         elif method == "invoke":
             if params.get("command") != "dm":
                 raise Failure(f"unknown command {params.get('command')}", -32601)
             cancelled.clear()
-            code = dmcore.run(params.get("inputs") or {}, params.get("cwd") or os.getcwd(), notify, cancelled)
+            code = dmcore.run(params.get("inputs") or {}, params.get("cwd") or os.getcwd(), notify, cancelled,
+                              data_dir=data_dir)
             result = {"exit_code": code}
         elif method == "shutdown":
             send({"id": msg_id, "result": {}})

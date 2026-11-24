@@ -66,7 +66,7 @@ class MagnetHarness(Harness):
     def dm(self, link, **inputs):
         """dmcore.run for a magnet: (exit code, events)."""
         events = []
-        code = dmcore.run({"url": link, **inputs}, str(self.cwd),
+        code = dmcore.run({"url": link, "no_dht": True, **inputs}, str(self.cwd),
                           lambda method, **kw: events.append((method, kw)), threading.Event())
         return code, events
 
@@ -316,7 +316,7 @@ class Stalls(MagnetHarness):
         tr = self.serve_tracker()
         t = self.single(size=4 * PL)
         self.swarm(tr, self.seeder(t, metadata="silent"))
-        opts = session.Options(stall_s=1, connect_timeout=2, idle_timeout=10)
+        opts = session.Options(dht=False, stall_s=1, connect_timeout=2, idle_timeout=10)
         start = time.monotonic()
         with self.assertRaises(DmError) as cm:
             self.run_magnet(self.magnet(t, tr), opts)
@@ -327,7 +327,7 @@ class Stalls(MagnetHarness):
     def test_no_peers_found(self):
         tr = self.serve_tracker(mode="empty")
         t = self.single(size=4 * PL)
-        opts = session.Options(stall_s=1, connect_timeout=2, idle_timeout=10)
+        opts = session.Options(dht=False, stall_s=1, connect_timeout=2, idle_timeout=10)
         with self.assertRaises(DmError) as cm:
             self.run_magnet(self.magnet(t, tr), opts)
         self.assertEqual(str(cm.exception), "no peers found")
@@ -349,7 +349,7 @@ class Stalls(MagnetHarness):
         self.swarm(tr)  # nobody to ask
         tr.static = []
         with self.assertRaises(DmError):
-            self.run_magnet(link, session.Options(stall_s=1, connect_timeout=2, idle_timeout=10))
+            self.run_magnet(link, session.Options(dht=False, stall_s=1, connect_timeout=2, idle_timeout=10))
         self.assertEqual(self.listing(), before)
 
 
@@ -527,7 +527,7 @@ class StoredMetadata(MagnetHarness):
         with self.assertRaises(DmError):
             session.run_torrent(t.write_torrent(self.dir / "x.torrent"), Target(self.cwd, None),
                                 lambda p, x: None, TorrentHandle(),
-                                session.Options(stall_s=1, connect_timeout=2, idle_timeout=10), resume=False)
+                                session.Options(dht=False, stall_s=1, connect_timeout=2, idle_timeout=10), resume=False)
         self.assertEqual(self.listing(), [])
 
     def test_a_torrent_file_run_never_reads_the_stored_metadata(self):
@@ -564,7 +564,7 @@ class StoredMetadata(MagnetHarness):
         tr.mode = "empty"  # nobody to ask: the run fails, and the old files are gone anyway
         self.swarm(tr)
         with self.assertRaises(DmError):
-            self.run_magnet(link, session.Options(stall_s=1, connect_timeout=2, idle_timeout=10), resume=False)
+            self.run_magnet(link, session.Options(dht=False, stall_s=1, connect_timeout=2, idle_timeout=10), resume=False)
         self.assertEqual(self.listing(), [])
 
     def test_no_resume_downloads_everything_again(self):
@@ -583,7 +583,7 @@ class StoredMetadata(MagnetHarness):
         tr = self.serve_tracker()
         t = self.single(size=4 * PL, piece_length=PL)
         self.swarm(tr, self.seeder(t, never_unchoke=True))
-        opts = session.Options(stall_s=1, connect_timeout=2, idle_timeout=10)
+        opts = session.Options(dht=False, stall_s=1, connect_timeout=2, idle_timeout=10)
         with self.assertRaises(DmError) as cm:
             self.run_magnet(self.magnet(t, tr), opts)
         self.assertTrue(str(cm.exception).startswith("stalled"), str(cm.exception))
@@ -597,7 +597,7 @@ class StoredMetadata(MagnetHarness):
         tr.mode = "empty"
         self.swarm(tr)
         with self.assertRaises(DmError):
-            self.run_magnet(self.magnet(t, tr), session.Options(stall_s=1, connect_timeout=2, idle_timeout=10))
+            self.run_magnet(self.magnet(t, tr), session.Options(dht=False, stall_s=1, connect_timeout=2, idle_timeout=10))
         self.assertEqual(self.listing(), sorted([part.name, meta.name]))
 
     def test_a_file_in_the_way_of_a_symlinked_metadata_name_is_not_followed(self):
@@ -774,15 +774,15 @@ class Saved(MagnetHarness):
         return tr, t
 
     # AC3
-    def test_a_magnet_without_trackers_or_peers_fails_at_once_naming_only_the_hash(self):
+    def test_a_magnet_without_trackers_or_peers_and_no_dht_fails_at_once_naming_only_the_hash(self):
         t = self.single(size=4 * PL)
         link = f"magnet:?xt=urn:btih:{t.info_hash.hex()}&dn=Secret+Name"
         with mock.patch.object(session, "run_magnet", side_effect=AssertionError("network used")):
-            code, events = self.dm(link)
+            code, events = self.dm(link, no_dht=True)
         self.assertEqual(code, 1)
         errors = self.texts(events, "log")
         self.assertEqual(errors, [f"dm: magnet {t.info_hash.hex()[:8]}…: magnet link has no trackers or "
-                                  "peers (DHT is not supported)"])
+                                  "peers (and the DHT is off)"])
         self.assertEqual(self.listing(), [])
 
     def test_invalid_and_v2_links_fail_without_a_label_or_the_link(self):

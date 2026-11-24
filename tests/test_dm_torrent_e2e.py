@@ -89,6 +89,11 @@ class E2E(unittest.TestCase):
 
     @classmethod
     def dock(cls, *args, cwd, timeout=RUN_TIMEOUT):
+        args = list(args)
+        # hermetic: the DHT tests are in test_dm_dht_e2e. The command is the first argument that is not a flag.
+        command = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
+        if command is not None and args[command] == "dm" and not getattr(cls, "dht", False):
+            args.insert(command + 1, "--no-dht")
         return subprocess.run([sys.executable, "-m", "cli", *args], capture_output=True, text=True,
                               env=cls.env(), cwd=cwd, timeout=timeout, check=False,
                               **dockenv.SIGINT_DEFAULT)
@@ -215,7 +220,7 @@ class E2E(unittest.TestCase):
         t = self.torrent([("slow.bin", torrentkit.content(256 * PL))], name="slow.bin")
         self.seed(t, "--delay", "0.1")
         t.write_torrent(self.cwd / "data.torrent")
-        p = subprocess.Popen([sys.executable, "-m", "cli", "dm", "data.torrent"], stdout=subprocess.PIPE,
+        p = subprocess.Popen([sys.executable, "-m", "cli", "dm", "--no-dht", "data.torrent"], stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, env=self.env(), cwd=self.cwd,
                              **dockenv.SIGINT_DEFAULT)
         self.addCleanup(lambda: (p.poll() is None and p.kill(), p.communicate()))

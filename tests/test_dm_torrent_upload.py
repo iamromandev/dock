@@ -65,6 +65,7 @@ class FakeSession:
         class Meta:
             hashes = [b"x" * 20] * npieces
             files = ("one",)  # a single file: the session keeps no per-file progress
+            private = False
         self.meta = Meta()
         self.meta.piece_length = piece_length
         self.meta.total = npieces * piece_length
@@ -360,7 +361,7 @@ class Upload(local.Harness):
         self.start(probe)
         self.swarm(tr, slow, probe)
         lines = []
-        opts = session.Options(stall_s=3, connect_timeout=2, idle_timeout=1)
+        opts = session.Options(dht=False, stall_s=3, connect_timeout=2, idle_timeout=1)
         final, _, _ = self.run_torrent(t, opts=opts, log=lines.append)
         self.assertEqual(final.read_bytes(), t.blob)
         self.assertTrue(probe.muted)

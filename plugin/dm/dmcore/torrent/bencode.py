@@ -14,13 +14,14 @@ def _spend(budget):
         raise BencodeError("too many items")
 
 
-def decode(data, max_depth=64, max_nodes=2_000_000):
+def decode(data, max_depth=64, max_nodes=2_000_000, sorted_keys=True):
     """(value, span): span is the (start, end) of the top-level dict's b"info" value, or None.
 
     max_nodes caps the total number of lists, dicts, integers and strings (keys included).
+    sorted_keys=False accepts dict keys in any order; a repeated key is still an error.
     """
     data = bytes(data)
-    pos, value, span = _value(data, 0, 0, max_depth, [max_nodes], True)
+    pos, value, span = _value(data, 0, 0, max_depth, [max_nodes], True, sorted_keys)
     if pos != len(data):
         raise BencodeError("trailing data")
     return value, span
@@ -65,7 +66,7 @@ def _string(data, pos):
     return end, data[colon + 1:end]
 
 
-def _value(data, pos, depth, max_depth, budget, top=False):
+def _value(data, pos, depth, max_depth, budget, top=False, sorted_keys=True):
     _spend(budget)
     if pos >= len(data):
         raise BencodeError("truncated input")
@@ -88,7 +89,7 @@ def _value(data, pos, depth, max_depth, budget, top=False):
                 raise BencodeError("truncated list")
             if data[pos:pos + 1] == b"e":
                 return pos + 1, items, None
-            pos, item, _ = _value(data, pos, depth + 1, max_depth, budget)
+            pos, item, _ = _value(data, pos, depth + 1, max_depth, budget, False, sorted_keys)
             items.append(item)
     out = {}
     span = None
@@ -102,11 +103,14 @@ def _value(data, pos, depth, max_depth, budget, top=False):
             raise BencodeError("dict key is not a string")
         _spend(budget)
         pos, key = _string(data, pos)
-        if last is not None and key <= last:
-            raise BencodeError("dict keys not strictly ascending")
-        last = key
+        if sorted_keys:
+            if last is not None and key <= last:
+                raise BencodeError("dict keys not strictly ascending")
+            last = key
+        elif key in out:
+            raise BencodeError("duplicate dict key")
         start = pos
-        pos, out[key], _ = _value(data, pos, depth + 1, max_depth, budget)
+        pos, out[key], _ = _value(data, pos, depth + 1, max_depth, budget, False, sorted_keys)
         if top and key == b"info":
             span = (start, pos)
 
