@@ -3,6 +3,17 @@
 Seeder: serves complete torrents from disk. Fault modes: corrupt=<piece or set of pieces> (flips a byte of
 them when served), unrequested (sends a block nobody asked for right after the unchoke), never_unchoke,
 delay=<seconds per block>. `piece_requests` counts the block requests per piece.
+Metadata (BEP 9/10): `metadata="honest"` (default) advertises ut_metadata and serves the info dictionary;
+"silent" advertises it and never answers; "none" speaks the extension protocol without ut_metadata;
+"corrupt" serves every block with its first byte flipped. Hostile ones: "size0" announces metadata_size 0,
+"huge" 64 MiB, "short" answers with blocks one byte short, "extra" follows each block with unsolicited ones,
+"junk" announces just under the 10 MiB maximum and serves right-length blocks that hash to nothing.
+"sybil" announces `sybil_size` and answers one request with a right-length junk block, then hangs up.
+`ext_delay=<s>` waits before our extension handshake. `metadata_delay=<s>` waits before each answer.
+`ext_body=<bytes>` replaces our extension handshake (to send an odd one); `ext_noise=<n>` follows it with
+an extension message of n bytes.
+`metadata_requests` counts the ut_metadata requests, `metadata_pieces` them per block index.
+MetadataProbe: asks dm for its metadata (see its docstring).
 Leecher: has nothing. It connects out to a seeder (`connect`) or accepts a connection (`serve`), asks for
 pieces, checks them against the torrent's hashes and records the ones it got in `.pieces`.
 
@@ -19,13 +30,16 @@ import random
 import sys
 
 try:
-    from dmcore.torrent import metainfo, tracker, wire
+    from dmcore.torrent import bencode, metadata, metainfo, tracker, wire
 except ImportError:  # run straight from the repository
     here = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, os.path.join(here, "..", "..", "..", "plugin", "dm"))
-    from dmcore.torrent import metainfo, tracker, wire
+    from dmcore.torrent import bencode, metadata, metainfo, tracker, wire
 
 BLOCK = wire.MAX_BLOCK
+HUGE = 64 * 1024 * 1024  # a metadata_size no honest torrent has
+JUNK = 10 * 1024 * 1024 - 2 * BLOCK  # just under the biggest metadata dm accepts, leaving room for an honest two blocks
+_ANSWERING = ("honest", "corrupt", "short", "extra", "junk", "sybil")  # modes that answer metadata requests
 
 
 def peer_id(tag=b"SD"):
@@ -35,8 +49,9 @@ def peer_id(tag=b"SD"):
 class _Content:
     """A torrent's payload on disk: root/<name> is the file, or the folder holding the files."""
 
-    def __init__(self, meta, root):
+    def __init__(self, meta, root, info=b""):
         self.meta = meta
+        self.info = info  # the bencoded info dictionary, as ut_metadata serves it
         base = os.path.join(root, meta.name)
         self.files, offset = [], 0
         for entry in meta.files:
@@ -65,7 +80,16 @@ def _hs_info_hash(head):
 
 
 class Seeder:
-    def __init__(self, corrupt=None, unrequested=False, never_unchoke=False, delay=0.0):
+    def __init__(self, corrupt=None, unrequested=False, never_unchoke=False, delay=0.0, metadata="honest",
+                 ext_body=None, ext_noise=0, metadata_delay=0.0, sybil_size=BLOCK * 2, ext_delay=0.0):
+        self.metadata_delay = metadata_delay
+        self.sybil_size = sybil_size
+        self.ext_delay = ext_delay
+        self.metadata = metadata
+        self.ext_body = ext_body
+        self.ext_noise = ext_noise
+        self.metadata_requests = 0
+        self.metadata_pieces = collections.Counter()
         self.corrupt = corrupt
         self.unrequested = unrequested
         self.never_unchoke = never_unchoke
@@ -83,7 +107,10 @@ class Seeder:
 
     def add(self, torrent_path, data_root):
         meta = metainfo.load(torrent_path)
-        self.content[meta.info_hash] = _Content(meta, data_root)
+        with open(torrent_path, "rb") as f:
+            raw = f.read()
+        start, end = bencode.decode(raw)[1]
+        self.content[meta.info_hash] = _Content(meta, data_root, raw[start:end])
         return meta
 
     async def start(self, host="127.0.0.1", port=0):
@@ -110,6 +137,29 @@ class Seeder:
         if self._server:
             await self._server.wait_closed()
 
+    def announced_size(self, content):
+        """The metadata_size we claim: the real one, unless the mode lies about it."""
+        if self.metadata == "size0":
+            return 0
+        if self.metadata == "huge":
+            return HUGE
+        if self.metadata == "junk":
+            return JUNK
+        if self.metadata == "sybil":
+            return self.sybil_size
+        return len(content.info)
+
+    def block(self, content, piece, size):
+        """The bytes we answer a request for `piece` with (empty: no such block), per mode."""
+        if self.metadata in ("junk", "sybil"):  # a full-size set of the right block lengths and no meaning
+            return b"j" * max(0, min(BLOCK, size - piece * BLOCK))
+        block = content.info[piece * BLOCK:(piece + 1) * BLOCK]
+        if self.metadata == "corrupt" and block:
+            block = bytes([block[0] ^ 0xFF]) + block[1:]
+        if self.metadata == "short" and block:  # one byte missing: not the length the size implies
+            block = block[:-1]
+        return block
+
     def _corrupt(self, index):
         if self.corrupt is None:
             return False
@@ -126,6 +176,17 @@ class Seeder:
                 return
             meta = content.meta
             writer.write(wire.handshake(meta.info_hash, self.peer_id))
+            ext = wire.supports_extensions(head[20:28])
+            their_ut = None
+            if ext:
+                if self.ext_delay:
+                    await asyncio.sleep(self.ext_delay)
+                ids = {"ut_metadata": 2} if self.metadata != "none" else {}
+                size = self.announced_size(content)
+                writer.write(wire.extended(0, self.ext_body if self.ext_body is not None else bencode.encode(
+                    {"m": ids, "metadata_size": size, "v": "test seeder"})))
+                if self.ext_noise:
+                    writer.write(wire.extended(99, b"\x00" * self.ext_noise))
             n = len(meta.hashes)
             bits = bytearray(-(-n // 8))
             for i in range(n):
@@ -138,7 +199,27 @@ class Seeder:
                 if got is None:
                     continue
                 mid, payload = got
-                if mid == wire.INTERESTED and not unchoked and not self.never_unchoke:
+                if mid == wire.EXTENDED:
+                    if payload[0] == 0:
+                        their_ut = metadata.parse_ext_handshake(payload[1:]).ut_metadata
+                    elif payload[0] == 2 and self.metadata != "none":
+                        kind, piece, _, _ = metadata.parse_metadata_msg(payload[1:])
+                        self.metadata_requests += 1
+                        self.metadata_pieces[piece] += 1
+                        size = self.announced_size(content)
+                        block = self.block(content, piece, size)
+                        if self.metadata_delay:
+                            await asyncio.sleep(self.metadata_delay)
+                        if self.metadata in _ANSWERING and their_ut:
+                            writer.write(metadata.data_msg(their_ut, piece, size, block)
+                                         if block else metadata.reject_msg(their_ut, piece))
+                            if self.metadata == "extra" and block:  # blocks nobody asked for
+                                writer.write(metadata.data_msg(their_ut, piece, size, block))
+                                writer.write(metadata.data_msg(their_ut, 99, size, block))
+                            await writer.drain()
+                        if self.metadata == "sybil":
+                            return  # one block stored, and the peer is gone
+                elif mid == wire.INTERESTED and not unchoked and not self.never_unchoke:
                     unchoked = True
                     writer.write(wire.msg(wire.UNCHOKE))
                     if self.unrequested:  # a block at an offset dm never asks for
@@ -160,6 +241,95 @@ class Seeder:
         finally:
             self.open_connections -= 1
             self.closed += 1
+            self.writers.discard(writer)
+            writer.close()
+
+
+class MetadataProbe:
+    """A peer that asks dm for the torrent's metadata (BEP 9). It accepts the connection dm opens, sends an
+    extension handshake and, on dm's first one (no `metadata_size` yet), asks for block 0: `early` holds the
+    reply kinds. When dm sends one with the size it asks for every block (`mode="all"`), for a block past the
+    end (`"bad_index"`), or for block 0 twice over (`"twice"`); `blocks` holds what arrived (piece -> bytes),
+    `advertised` the last size dm announced, `eof` is set when dm closed the connection."""
+
+    def __init__(self, torrent_path, mode="all"):
+        self.meta = metainfo.load(torrent_path)
+        with open(torrent_path, "rb") as f:
+            raw = f.read()
+        start, end = bencode.decode(raw)[1]
+        self.info = raw[start:end]
+        self.mode = mode
+        self.peer_id = peer_id(b"MP")
+        self.port = None
+        self.connections = 0
+        self.early = []
+        self.blocks = {}
+        self.later = []
+        self.advertised = None
+        self.eof = False
+        self.writers = set()
+        self._server = None
+
+    async def start(self, host="127.0.0.1", port=0):
+        self._server = await asyncio.start_server(self._serve, host, port)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def stop(self):
+        if self._server:
+            self._server.close()
+        for w in list(self.writers):
+            w.close()
+
+    async def _serve(self, reader, writer):
+        self.connections += 1
+        self.writers.add(writer)
+        count = -(-len(self.info) // BLOCK)
+        their_ut, asked = None, False
+        try:
+            head = await asyncio.wait_for(reader.readexactly(68), 10)
+            if _hs_info_hash(head) != self.meta.info_hash:
+                return
+            writer.write(wire.handshake(self.meta.info_hash, self.peer_id))
+            writer.write(wire.extended(0, bencode.encode({"m": {"ut_metadata": 2}, "v": "probe"})))
+            await writer.drain()
+            while True:
+                got = await wire.read_message(reader, None)
+                if got is None or got[0] != wire.EXTENDED:
+                    continue
+                ext_id, body = got[1][0], got[1][1:]
+                if ext_id == 0:
+                    info = metadata.parse_ext_handshake(body)
+                    their_ut = info.ut_metadata
+                    if info.metadata_size is None:
+                        writer.write(metadata.request_msg(their_ut, 0))
+                    else:
+                        self.advertised = info.metadata_size
+                        if asked:
+                            continue
+                        asked = True
+                        if self.mode == "bad_index":
+                            pieces = [count + 5]
+                        elif self.mode == "twice":
+                            pieces = [0, 0]
+                        else:
+                            pieces = range(count)
+                        for piece in pieces:
+                            writer.write(metadata.request_msg(their_ut, piece))
+                    await writer.drain()
+                elif ext_id == 2:
+                    kind, piece, total, data = metadata.parse_metadata_msg(body)
+                    if self.advertised is None:
+                        self.early.append(kind)
+                    else:
+                        self.later.append((kind, piece, total))
+                        if kind == metadata.DATA:
+                            self.blocks[piece] = data
+        except asyncio.IncompleteReadError:
+            self.eof = True
+        except (ConnectionError, asyncio.TimeoutError, ValueError, OSError):
+            pass
+        finally:
             self.writers.discard(writer)
             writer.close()
 

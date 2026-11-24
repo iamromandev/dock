@@ -376,7 +376,7 @@ class E2E(unittest.TestCase):
             "    ih = bytes.fromhex(ih)\n"
             "    r, w = await asyncio.wait_for(asyncio.open_connection(ip, 6881), 10)\n"
             "    w.write(wire.handshake(ih, b'-DM0200-' + b'p' * 12))\n"
-            "    pid = await asyncio.wait_for(wire.read_handshake(r, ih), 10)\n"
+            "    pid, _ = await asyncio.wait_for(wire.read_handshake(r, ih), 10)\n"
             "    print('peer', pid[:8].decode(), flush=True)\n"
             "    w.write(wire.msg(wire.INTERESTED))\n"
             "    seen = []\n"
@@ -398,6 +398,53 @@ class E2E(unittest.TestCase):
         self.assertRegex(r.stdout, r"peer A2-")
         self.assertIn("(5, '80')", r.stdout)  # a bitfield with its one piece
         self.assertIn("(1, '')", r.stdout)  # and an unchoke after our interested
+
+    # magnet spike (plan step 1)
+    def test_aria2_serves_metadata(self):
+        """BEP 10 + BEP 9 against a real client: aria2 seeding serves the info dictionary in 16 KiB blocks."""
+        self.aria2_image()
+        files = [(f"d/f{i:04d}-{'x' * 40}.bin", torrentkit.content(10, f"m{i}")) for i in range(300)]
+        t = self.torrent(files, name="meta", multi=True)
+        ip = self.aria2_seed(t)
+        probe = (
+            "import asyncio, hashlib, sys\n"
+            "from dmcore.torrent import bencode, wire\n"
+            "async def main(ip, ih):\n"
+            "    ih = bytes.fromhex(ih)\n"
+            "    r, w = await asyncio.wait_for(asyncio.open_connection(ip, 6881), 10)\n"
+            "    w.write(wire.handshake(ih, b'-DM0300-' + b'p' * 12))\n"
+            "    pid, reserved = await asyncio.wait_for(wire.read_handshake(r, ih), 10)\n"
+            "    assert wire.supports_extensions(reserved), 'no BEP 10 bit'\n"
+            "    w.write(wire.extended(0, bencode.encode({'m': {'ut_metadata': 3}})))\n"
+            "    their = None\n"
+            "    while their is None:\n"
+            "        m = await asyncio.wait_for(wire.read_message(r, None), 10)\n"
+            "        if m and m[0] == wire.EXTENDED and m[1][0] == 0:\n"
+            "            their, _ = bencode.decode_prefix(m[1][1:])\n"
+            "    uid, size = their[b'm'][b'ut_metadata'], their[b'metadata_size']\n"
+            "    print('ut_metadata', uid, 'size', size, flush=True)\n"
+            "    blocks = -(-size // 16384)\n"
+            "    for i in range(blocks):\n"
+            "        w.write(wire.extended(uid, bencode.encode({'msg_type': 0, 'piece': i})))\n"
+            "    got = {}\n"
+            "    while len(got) < blocks:\n"
+            "        m = await asyncio.wait_for(wire.read_message(r, None), 10)\n"
+            "        if m and m[0] == wire.EXTENDED and m[1][0] == 3:\n"
+            "            head, end = bencode.decode_prefix(m[1][1:])\n"
+            "            assert head[b'msg_type'] == 1, head\n"
+            "            got[head[b'piece']] = m[1][1 + end:]\n"
+            "    blob = b''.join(got[i] for i in range(blocks))\n"
+            "    ok = hashlib.sha1(blob).hexdigest() == ih.hex()\n"
+            "    print('blocks', blocks, 'sha1', ok, len(blob) == size)\n"
+            "asyncio.run(main(sys.argv[1], sys.argv[2]))\n")
+        name = f"dm-probe-{os.getpid()}"
+        self.addCleanup(dockenv.kill_container, name, self.rt)
+        r = subprocess.run([self.rt, "run", "--rm", "--name", name, "--label", "dock-test=dmtorrent",
+                            "-e", "PYTHONPATH=/dm", "-v", f"{DM}:/dm:ro", "python:3.12-slim",
+                            "python3", "-c", probe, ip, t.info_hash.hex()], capture_output=True, text=True,
+                           timeout=120, check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"blocks [2-9] sha1 True True")  # more than one block, hash and size right
 
 
 if __name__ == "__main__":

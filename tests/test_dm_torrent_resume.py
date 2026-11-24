@@ -331,7 +331,8 @@ class Resume(Harness):
         t = self.single(size=4 * PL, tr=tr, piece_length=PL)
         part = self.part_path(t)
         part.write_bytes(t.blob)
-        lock = r.Lock(part.with_name(part.name[:-len(".dm-part")] + ".dm-lock"))
+        meta = metainfo.load(t.write_torrent(self.dir / "k.torrent"))
+        lock = r.Lock(r.torrent_lock(self.cwd, r.torrent_key(meta.info_hash, Target(self.cwd, None))))
         lock.acquire()
         self.addCleanup(lock.release, True)
         with self.assertRaises(DmError) as cm:

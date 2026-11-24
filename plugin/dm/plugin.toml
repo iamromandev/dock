@@ -1,7 +1,7 @@
 id = "dev.dock.dm"
-version = "0.3.0"
+version = "0.4.0"
 api_version = "1"
-description = "Download a URL or a .torrent into the current folder"
+description = "Download a URL, a .torrent or a magnet link into the current folder"
 
 [run]
 container = { cmd = "python3", args = ["/plugin/main.py"] }
@@ -11,8 +11,8 @@ permissions = ["network", "fs:write:cwd"]
 
 [[commands]]
 name = "dm"
-summary = "Download a URL or a .torrent into the current folder: dm <url|file.torrent> [-o name | -d folder] [--no-resume]"
-keywords = ["download", "fetch", "get", "url", "http", "torrent", "bittorrent"]
+summary = "Download a URL, a .torrent or a magnet link into the current folder: dm <url|file.torrent|magnet> [-o name | -d folder] [--no-resume]"
+keywords = ["download", "fetch", "get", "url", "http", "torrent", "bittorrent", "magnet"]
 inputs = [
   { name = "url", type = "string", required = true },
   { name = "output", type = "string", flag = "--output", short = "-o" },

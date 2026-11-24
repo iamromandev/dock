@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / "plugin" / "dm"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import torrentkit  # noqa: E402
-from dmcore.torrent import picker, tracker, wire  # noqa: E402
+from dmcore.torrent import bencode, metainfo, picker, tracker, wire  # noqa: E402
 
 IH = b"\x11" * 20
 PID = b"-DM0200-" + b"x" * 12
@@ -50,9 +50,49 @@ class Wire(unittest.TestCase):
         self.assertEqual(hs[28:48], IH)
         self.assertEqual(hs[48:], PID)
 
-    def test_read_handshake_returns_the_peer_id(self):
+    def test_read_handshake_returns_the_peer_id_and_reserved_bytes(self):
         got = run_with(wire.handshake(IH, PID), lambda r: wire.read_handshake(r, IH))
-        self.assertEqual(got, PID)
+        self.assertEqual(got, (PID, wire.RESERVED))
+
+    def test_handshake_sets_the_extension_bit_and_supports_extensions_reads_it(self):
+        hs = wire.handshake(IH, PID)
+        self.assertEqual(hs[20:28], bytes([0, 0, 0, 0, 0, 0x10, 0, 0]))
+        self.assertTrue(wire.supports_extensions(hs[20:28]))
+        self.assertFalse(wire.supports_extensions(bytes(8)))
+        self.assertFalse(wire.supports_extensions(b""))
+
+    def test_extended_message_framing(self):
+        self.assertEqual(wire.extended(0, b"d1:ai1ee"), framed(wire.EXTENDED, b"\x00d1:ai1ee"))
+        self.assertEqual(read(wire.extended(3, b"xyz")), (wire.EXTENDED, b"\x03xyz"))
+
+    def test_extended_payload_limits(self):
+        biggest = wire.MAX_EXT
+        self.assertEqual(read(framed(wire.EXTENDED, b"\x00" * biggest))[0], wire.EXTENDED)
+        with self.assertRaises(ValueError):
+            read(framed(wire.EXTENDED, b""))
+        with self.assertRaises(ValueError):
+            read(framed(wire.EXTENDED, b"\x00" * (wire.MAX_MSG + 1)))
+
+    def test_an_oversized_extension_message_is_read_and_skipped(self):
+        async def go(reader):
+            return [await wire.read_message(reader, 100) for _ in range(2)]
+        data = framed(wire.EXTENDED, b"\x00" * (wire.MAX_EXT + 1)) + wire.have(7)
+        got = run_with(data, go)
+        self.assertEqual(got, [None, (wire.HAVE, struct.pack(">I", 7))])
+
+    def test_bitfield_limit_while_the_piece_count_is_unknown(self):
+        most = (metainfo.MAX_PIECES + 7) // 8
+        self.assertEqual(read(framed(wire.BITFIELD, b"\x00" * most), None)[0], wire.BITFIELD)
+        self.assertEqual(read(framed(wire.BITFIELD, b"\x00"), None)[0], wire.BITFIELD)
+        for n in (0, most + 1):
+            with self.subTest(n=n):
+                with self.assertRaises(ValueError):
+                    read(framed(wire.BITFIELD, b"\x00" * n), None)
+
+    def test_fixed_messages_keep_their_limits_while_the_piece_count_is_unknown(self):
+        with self.assertRaises(ValueError):
+            read(framed(wire.HAVE, b"abc"), None)
+        self.assertEqual(read(wire.have(5), None), (wire.HAVE, struct.pack(">I", 5)))
 
     def test_read_handshake_rejects_wrong_info_hash_protocol_and_short_data(self):
         bad_proto = bytearray(wire.handshake(IH, PID))
@@ -107,7 +147,7 @@ class Wire(unittest.TestCase):
             read(struct.pack(">I", wire.MAX_MSG + 1), 10, eof=False)
 
     def test_unknown_ids_up_to_the_limit_are_returned(self):
-        self.assertEqual(read(framed(20, b"hello")), (20, b"hello"))
+        self.assertEqual(read(framed(21, b"hello")), (21, b"hello"))
         self.assertEqual(read(framed(99, b"")), (99, b""))
 
     def test_truncated_message_raises(self):
@@ -123,6 +163,27 @@ class Wire(unittest.TestCase):
         self.assertEqual(wire.parse_request(struct.pack(">III", 1, 2, 3)), (1, 2, 3))
         self.assertEqual(wire.parse_piece(struct.pack(">II", 1, 2) + b"zz"), (1, 2, b"zz"))
         self.assertEqual(wire.parse_have(struct.pack(">I", 9)), 9)
+
+
+class DecodePrefix(unittest.TestCase):
+    def test_returns_the_value_and_where_it_ended(self):
+        data = b"d8:msg_typei1e5:piecei0ee" + b"RAW"
+        value, end = bencode.decode_prefix(data)
+        self.assertEqual(value, {b"msg_type": 1, b"piece": 0})
+        self.assertEqual(data[end:], b"RAW")
+
+    def test_without_trailing_data_it_ends_at_the_length(self):
+        self.assertEqual(bencode.decode_prefix(b"i5e"), (5, 3))
+
+    def test_is_strict_like_decode(self):
+        for data in (b"d1:bi1e1:ai2ee", b"i05e", b"d1:ai1e", b"x", b"", b"d1:a" + b"l" * 100 + b"e"):
+            with self.subTest(data=data[:12]):
+                with self.assertRaises(bencode.BencodeError):
+                    bencode.decode_prefix(data)
+
+    def test_node_budget_applies(self):
+        with self.assertRaises(bencode.BencodeError):
+            bencode.decode_prefix(b"l" + b"i1e" * 50 + b"e", max_nodes=10)
 
 
 class Picker(unittest.TestCase):

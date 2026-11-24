@@ -7,10 +7,12 @@ pieces we have verified.
 import asyncio
 import collections
 
-from . import wire
+from . import metadata, wire
 from .picker import BadBlock
 
 MAX_QUEUED = 128  # requests a peer may have waiting; one more and it is dropped
+MAX_META_QUEUED = 8  # metadata blocks a peer may have waiting; one more and it is dropped
+MAX_EARLY_HAVES = 8192  # HAVE messages kept while the piece count is unknown; later ones are ignored
 
 
 class PeerConn:
@@ -35,6 +37,11 @@ class PeerConn:
         self.cancelled = False
         self.served = 0  # blocks sent to them
         self.epoch = 0  # counts our chokes: a read begun under an older one is stale
+        self.ext = False  # both sides speak the extension protocol (BEP 10)
+        self.their_ut = None  # the id they want our ut_metadata messages under
+        self.early_bitfield = None  # raw, until the piece count is known
+        self.early_haves = set()
+        self.meta_queue = collections.deque()  # metadata blocks they asked us for
 
     # sending
 
@@ -43,6 +50,8 @@ class PeerConn:
             self.writer.write(data)
 
     def update_interest(self):
+        if self.s.picker is None:
+            return
         want = self.s.picker.interesting(self.addr)
         if want != self.interested:
             self.interested = want
@@ -59,7 +68,7 @@ class PeerConn:
 
     def refill(self):
         """Keep the request pipeline full while they have us unchoked."""
-        if self.choked or not self.handshaken or self.closed:
+        if self.choked or not self.handshaken or self.closed or self.s.meta is None:
             return
         room = self.s.opts.pipeline - self.s.picker.outstanding(self.addr)
         for req in self.s.picker.next_requests(self.addr, room):
@@ -73,21 +82,24 @@ class PeerConn:
         try:
             wait = opts.connect_timeout
             reader, self.writer = await asyncio.wait_for(asyncio.open_connection(*self.addr), wait)
-            self.writer.write(wire.handshake(s.meta.info_hash, s.peer_id))
-            peer_id = await asyncio.wait_for(wire.read_handshake(reader, s.meta.info_hash), wait)
+            self.writer.write(wire.handshake(s.info_hash, s.peer_id))
+            peer_id, reserved = await asyncio.wait_for(wire.read_handshake(reader, s.info_hash), wait)
             if peer_id == s.peer_id:  # we dialed ourselves
                 return
             self.handshaken = True
             s.log(f"peer {self.addr[0]}:{self.addr[1]} connected")
-            if s.picker.verified_bytes():
+            self.ext = wire.supports_extensions(reserved)
+            if self.ext:
+                self.send(wire.extended(0, metadata.ext_handshake(self.metadata_size())))
+            if s.picker is not None and s.picker.verified_bytes():
                 self.send(wire.bitfield(s.bitfield()))
-            npieces = len(s.meta.hashes)
             loop = asyncio.get_running_loop()
             self.server = asyncio.ensure_future(self.serve())
             while True:
+                npieces = len(s.meta.hashes) if s.meta is not None else None
                 got = await asyncio.wait_for(wire.read_message(reader, npieces), opts.idle_timeout)
                 now = loop.time()
-                if (self.last_block is not None and s.picker.outstanding(self.addr)
+                if (self.last_block is not None and s.picker is not None and s.picker.outstanding(self.addr)
                         and now - self.last_block > opts.idle_timeout):
                     raise asyncio.TimeoutError  # keeps the line open but never sends what we asked for
                 if got is not None:
@@ -111,9 +123,13 @@ class PeerConn:
         loop = asyncio.get_running_loop()
         try:
             while True:
-                while not self.queue:
+                while not self.queue and not self.meta_queue:
                     self.work.clear()
                     await self.work.wait()
+                if self.meta_queue:  # a few kilobytes a block, from memory: ahead of the disk reads
+                    self.send_metadata_block(self.meta_queue.popleft())
+                    await asyncio.wait_for(self.writer.drain(), s.opts.idle_timeout)
+                    continue
                 self.inflight = self.queue.popleft()
                 self.cancelled = False
                 epoch = self.epoch
@@ -137,17 +153,148 @@ class PeerConn:
         if self.served:
             self.s.log(f"peer {self.addr[0]}:{self.addr[1]} served {self.served} blocks")
 
+    def metadata_size(self):
+        """What we advertise as metadata_size: the size once the metadata is verified, else nothing."""
+        return len(self.s.metadata) if self.s.metadata is not None else None
+
+    def send_metadata_block(self, piece):
+        data = self.s.metadata
+        if data is None or self.their_ut is None:
+            return
+        block = data[piece * metadata.BLOCK:(piece + 1) * metadata.BLOCK]
+        self.send(metadata.data_msg(self.their_ut, piece, len(data), block))
+
     def close(self):
         self.closed = True
         self.queue.clear()
+        self.meta_queue.clear()
         if self.server is not None:
             self.server.cancel()
         if self.writer is not None:
             self.writer.close()
 
+    def request_metadata(self, now):
+        """Ask for the next metadata block this peer should supply (metadata mode only)."""
+        s = self.s
+        if s.meta is not None or s.assembler is None or self.their_ut is None or self.closed:
+            return
+        piece = s.assembler.next_request(self.addr, now)
+        if piece is not None:
+            self.send(metadata.request_msg(self.their_ut, piece))
+
+    def on_extended(self, payload, now):
+        s = self.s
+        ext_id, body = payload[0], payload[1:]
+        if ext_id == 0:
+            try:
+                info = metadata.parse_ext_handshake(body)
+            except ValueError:  # an odd handshake only means no usable extension; the peer may be fine
+                self.their_ut = None
+                return
+            self.their_ut = info.ut_metadata
+            if s.meta is None and info.ut_metadata and info.metadata_size is not None:
+                if not s.assembler.offer(self.addr, info.metadata_size):
+                    raise ValueError("bad metadata size")
+                self.request_metadata(now)
+        elif ext_id == metadata.OUR_UT_METADATA:
+            try:
+                parsed = metadata.parse_metadata_msg(body)
+            except ValueError:
+                if s.meta is None:  # we are fetching metadata with it: a bad message is a protocol break
+                    raise
+                return  # a download that no longer needs it: whatever they say about metadata is ignored
+            self.on_metadata_message(*parsed, now)
+        # other extensions are ignored
+
+    def on_metadata_message(self, kind, piece, total, data, now):
+        s = self.s
+        if kind == metadata.REQUEST:
+            if self.their_ut is None:
+                raise ValueError("metadata request before an extension handshake")
+            if s.metadata is None:  # not verified yet: nothing to give
+                self.send(metadata.reject_msg(self.their_ut, piece))
+            elif piece >= -(-len(s.metadata) // metadata.BLOCK):
+                raise ValueError("bad metadata request")
+            elif len(self.meta_queue) >= MAX_META_QUEUED:
+                raise ValueError("too many metadata requests")
+            else:
+                self.meta_queue.append(piece)
+                self.work.set()
+        elif kind == metadata.DATA:
+            if s.meta is not None or s.assembler.metadata is not None:
+                return  # a late copy of what we already have
+            whole = s.assembler.received(self.addr, piece, data, total)
+            s.last_progress = now
+            if self.addr in s.assembler.banned:
+                s.drop_metadata_banned()
+                raise ValueError("metadata did not match its hash")
+            if whole is not None:
+                s.metadata_complete(whole)
+            else:
+                s.drop_metadata_banned()
+                self.request_metadata(now)
+        elif kind == metadata.REJECT and s.assembler is not None:
+            s.assembler.rejected(self.addr, piece)
+
+    def enter_download(self):
+        """The metadata is known: replay what the peer sent before, then behave as in a normal download."""
+        s = self.s
+        if not self.handshaken or self.closed:
+            return
+        try:
+            if self.ext:  # they may have asked before; now they can
+                self.send(wire.extended(0, metadata.ext_handshake(self.metadata_size())))
+            if s.picker.verified_bytes():
+                self.send(wire.bitfield(s.bitfield()))
+            npieces = len(s.meta.hashes)
+            if self.early_bitfield is not None:
+                if len(self.early_bitfield) != -(-npieces // 8):
+                    raise ValueError("bad size for bitfield")
+                s.picker.peer_bitfield(self.addr, wire.parse_bitfield(self.early_bitfield, npieces))
+            for index in sorted(self.early_haves):
+                s.picker.peer_has(self.addr, index)
+        except ValueError as e:  # the peer broke the protocol: never talk to it again
+            s.banned.add(self.addr)
+            s.log(f"peer {self.addr[0]}:{self.addr[1]} dropped: {e}")
+            self.close()
+            if self.task is not None and self.task is not asyncio.current_task():
+                self.task.cancel()
+            return
+        self.early_bitfield, self.early_haves = None, set()
+        if not self.choked:
+            self.last_block = asyncio.get_running_loop().time()
+        if self.peer_interested:
+            s.interest_changed(self)
+        self.update_interest()
+        self.refill()
+
+    def on_early_message(self, mid, payload, now):
+        """A message while the piece count is unknown: keep what is cheap, drop what makes no sense."""
+        if mid == wire.CHOKE:
+            self.choked = True
+        elif mid == wire.UNCHOKE:
+            self.choked = False
+        elif mid == wire.HAVE:
+            if len(self.early_haves) < MAX_EARLY_HAVES:
+                self.early_haves.add(wire.parse_have(payload))
+        elif mid == wire.BITFIELD:
+            self.early_bitfield = payload
+        elif mid == wire.INTERESTED:
+            self.peer_interested = True
+        elif mid == wire.NOT_INTERESTED:
+            self.peer_interested = False
+        elif mid in (wire.REQUEST, wire.PIECE, wire.CANCEL):
+            raise ValueError("block message before the metadata")
+        elif mid == wire.EXTENDED:
+            self.on_extended(payload, now)
+
     def on_message(self, mid, payload, now):
         s = self.s
         picker = s.picker
+        if s.meta is None:
+            return self.on_early_message(mid, payload, now)
+        if mid == wire.EXTENDED:
+            return self.on_extended(payload, now)
         if mid == wire.CHOKE:
             self.choked = True
             picker.release(self.addr)
@@ -161,7 +308,10 @@ class PeerConn:
             self.update_interest()
             self.refill()
         elif mid == wire.BITFIELD:
-            picker.peer_bitfield(self.addr, wire.parse_bitfield(payload, len(s.meta.hashes)))
+            npieces = len(s.meta.hashes)
+            if len(payload) != -(-npieces // 8):  # read just before the switch, while the count was unknown
+                raise ValueError("bad size for bitfield")
+            picker.peer_bitfield(self.addr, wire.parse_bitfield(payload, npieces))
             self.update_interest()
             self.refill()
         elif mid == wire.PIECE:
