@@ -12,11 +12,14 @@ import time
 from dataclasses import dataclass
 
 from . import bencode, wire
+from .dht.krpc import usable
 from .metainfo import MAX_TORRENT_BYTES
 
 BLOCK = 16 * 1024
 MAX_METADATA = MAX_TORRENT_BYTES
 OUR_UT_METADATA = 3  # the id we put in our "m"; peers send our ut_metadata messages under it
+OUR_UT_PEX = 4  # likewise for ut_pex (BEP 11); we only receive it, never send it
+MAX_PEX_ADDED = 50  # addresses taken from one ut_pex message
 MAX_SIZES = 3  # announced sizes tracked at once
 REQUEST_TIMEOUT = 10  # seconds before a block that was not answered goes to another peer
 STALE = 10  # seconds without a stored block before an attempt may be evicted for another one
@@ -29,11 +32,15 @@ class ExtInfo:
     ut_metadata: int | None  # the id they expect our ut_metadata requests under
     metadata_size: int | None
     client: str | None = None  # their `v`: the name and version they call themselves
+    ut_pex: int | None = None  # the id they send their ut_pex messages under (we never send any)
 
 
-def ext_handshake(metadata_size=None):
+def ext_handshake(metadata_size=None, pex=True):
     """The body of our extension handshake (send it with wire.extended(0, body))."""
-    top = {"m": {"ut_metadata": OUR_UT_METADATA}, "v": "dm 0.6.0", "reqq": 250}
+    ids = {"ut_metadata": OUR_UT_METADATA}
+    if pex:
+        ids["ut_pex"] = OUR_UT_PEX
+    top = {"m": ids, "v": "dm 0.7.0", "reqq": 250}
     if metadata_size is not None:
         top["metadata_size"] = metadata_size
     return bencode.encode(top)
@@ -53,9 +60,33 @@ def parse_ext_handshake(body):
     size = top.get(b"metadata_size")
     if size is not None and not isinstance(size, int):
         raise ValueError("bad metadata_size")
+    pid = ids.get(b"ut_pex")
+    pid = pid if isinstance(pid, int) and not isinstance(pid, bool) and 1 <= pid <= 255 else None
     client = top.get(b"v")
     client = client[:64].decode("utf-8", "replace") if isinstance(client, bytes) else None
-    return ExtInfo(uid or None, size, client)
+    return ExtInfo(uid or None, size, client, pid)
+
+
+def parse_pex(body, allow_loopback=False, allow_private=False):
+    """The usable IPv4 addresses in a ut_pex message's "added" (at most MAX_PEX_ADDED); ValueError if malformed.
+
+    "added6", the flags and "dropped" are not read. Entries are 6 bytes: IPv4 and port.
+    """
+    top, _ = bencode.decode_prefix(body, max_depth=4)
+    if not isinstance(top, dict):
+        raise ValueError("bad ut_pex message")
+    added = top.get(b"added", b"")
+    if not isinstance(added, bytes):
+        raise ValueError("bad ut_pex message")
+    out = []
+    for i in range(0, min(len(added), MAX_PEX_ADDED * 6), 6):
+        chunk = added[i:i + 6]
+        if len(chunk) < 6:
+            break
+        addr = (".".join(map(str, chunk[:4])), int.from_bytes(chunk[4:], "big"))
+        if usable(addr, allow_loopback, allow_private):
+            out.append(addr)
+    return out
 
 
 def _message(their_id, head, data=b""):

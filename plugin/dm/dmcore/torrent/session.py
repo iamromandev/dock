@@ -33,6 +33,7 @@ from .storage import LayoutMismatch, PrepareError, Storage
 
 REPORTED_PORT = 6881  # what we tell trackers, though nothing listens
 MAX_PENDING = 1000
+MAX_PEX_PENDING = 200  # likewise for PEX: connected peers must not starve the tracker's
 MAX_DHT_PENDING = 500  # of those, the most the DHT may fill: one hostile node must not starve the rest
 FINDING_PEERS = "finding peers (DHT)"
 DHT_BOOTSTRAP = (("router.bittorrent.com", 6881), ("dht.transmissionbt.com", 6881),
@@ -56,6 +57,7 @@ class Options:
     idle_timeout: float = 120
     tracker_budget: float = tracker.BUDGET  # seconds one announce to one tracker may take
     dht: bool = True
+    pex: bool = True  # accept ut_pex (BEP 11) unless the torrent is private; independent of `dht`
     dht_bootstrap: tuple = DHT_BOOTSTRAP
     dht_cache: Path | None = None
     # tests only: nothing reads these from the command line, the manifest or the environment. They widen the
@@ -93,7 +95,7 @@ class Session:
         self.opts = opts
         self._log = log
         self.on_complete = on_complete  # places the finished download, before the tracker is told
-        self.peer_id = b"-DM0600-" + os.urandom(12)
+        self.peer_id = b"-DM0700-" + os.urandom(12)
         self.picker = None
         self._file_progress = None
         if meta is not None:
@@ -103,6 +105,7 @@ class Session:
         self.pending = collections.deque()
         self.queued = set()
         self.from_dht = set()  # queued peers only the DHT named: dropped if private
+        self.from_pex = set()  # likewise for PEX
         self.private = meta is not None and meta.private
         self.dht_on = opts.dht and not self.private
         self.dht = None  # the DhtClient, while there is one
@@ -336,22 +339,26 @@ class Session:
         for other in list(self.conns.values()):
             other.refill()
 
-    def add_peers(self, peers, from_dht=False):
+    def add_peers(self, peers, from_dht=False, from_pex=False):
         shuffled = list(peers)
         random.shuffle(shuffled)
         for addr in shuffled:
-            if len(self.pending) >= MAX_PENDING or (from_dht and len(self.from_dht) >= MAX_DHT_PENDING):
+            if (len(self.pending) >= MAX_PENDING or (from_dht and len(self.from_dht) >= MAX_DHT_PENDING)
+                    or (from_pex and len(self.from_pex) >= MAX_PEX_PENDING)):
                 break
             if addr in self.banned or addr in self.conns:
                 continue
             if addr in self.queued:
-                if not from_dht:
-                    self.from_dht.discard(addr)  # another source names it too: it stays if the DHT goes
+                if not (from_dht or from_pex):
+                    self.from_dht.discard(addr)  # the tracker names it too: it stays if the DHT or PEX goes
+                    self.from_pex.discard(addr)
                 continue
             self.queued.add(addr)
             self.pending.append(addr)
             if from_dht:
                 self.from_dht.add(addr)
+            if from_pex:
+                self.from_pex.add(addr)
         self.wake.set()
 
     def _dht_peers(self, peers):
@@ -359,8 +366,11 @@ class Session:
             return  # a reply that came in while the DHT was being stopped
         self.add_peers(peers, from_dht=True)
 
+    def pex_on(self):
+        return self.opts.pex and not self.private
+
     def _go_private(self):
-        """The metadata says the torrent is private: no DHT from here, and its pending peers are dropped."""
+        """The metadata says the torrent is private: no DHT or PEX from here, and their pending peers are dropped."""
         self.private = True
         self.dht_on = False
         if self.dht is not None:
@@ -369,10 +379,12 @@ class Session:
             self.dht_task.cancel()  # its own cleanup closes the socket
             self.dht_task = None
         self.dht = None  # nothing of this run is kept: a private torrent leaves no trace in the node cache
-        if self.from_dht:
-            self.pending = collections.deque(a for a in self.pending if a not in self.from_dht)
-            self.queued -= self.from_dht
+        named = self.from_dht | self.from_pex
+        if named:
+            self.pending = collections.deque(a for a in self.pending if a not in named)
+            self.queued -= named
             self.from_dht = set()
+            self.from_pex = set()
 
     async def connector(self):
         loop = asyncio.get_running_loop()
@@ -381,6 +393,7 @@ class Session:
                 addr = self.pending.popleft()
                 self.queued.discard(addr)
                 self.from_dht.discard(addr)
+                self.from_pex.discard(addr)
                 if addr in self.banned or addr in self.conns:
                     continue
                 if loop.time() - self.last_try.get(addr, -RETRY_AFTER) < RETRY_AFTER:

@@ -13,6 +13,7 @@ from .picker import BadBlock
 MAX_QUEUED = 128  # requests a peer may have waiting; one more and it is dropped
 MAX_META_QUEUED = 8  # metadata blocks a peer may have waiting; one more and it is dropped
 MAX_EARLY_HAVES = 8192  # HAVE messages kept while the piece count is unknown; later ones are ignored
+PEX_INTERVAL = 60  # seconds between two ut_pex messages taken from one peer
 
 
 class PeerConn:
@@ -44,6 +45,9 @@ class PeerConn:
         self.epoch = 0  # counts our chokes: a read begun under an older one is stale
         self.ext = False  # both sides speak the extension protocol (BEP 10)
         self.their_ut = None  # the id they want our ut_metadata messages under
+        self.ext_hs = False  # their extension handshake has arrived
+        self.their_pex = None  # the id they send ut_pex under; None: they did not list it
+        self.last_pex = None  # when their last ut_pex message was taken: one per PEX_INTERVAL
         self.early_bitfield = None  # raw, until the piece count is known
         self.early_haves = set()
         self.meta_queue = collections.deque()  # metadata blocks they asked us for
@@ -96,7 +100,7 @@ class PeerConn:
             s.log(f"{self.tag} connected")
             self.ext = wire.supports_extensions(reserved)
             if self.ext:
-                self.send(wire.extended(0, metadata.ext_handshake(self.metadata_size())))
+                self.send(wire.extended(0, metadata.ext_handshake(self.metadata_size(), self.s.pex_on())))
             if s.picker is not None and s.picker.verified_bytes():
                 self.send(wire.bitfield(s.bitfield()))
             loop = asyncio.get_running_loop()
@@ -193,12 +197,14 @@ class PeerConn:
         s = self.s
         ext_id, body = payload[0], payload[1:]
         if ext_id == 0:
+            self.ext_hs = True
             try:
                 info = metadata.parse_ext_handshake(body)
             except ValueError:  # an odd handshake only means no usable extension; the peer may be fine
-                self.their_ut = None
+                self.their_ut = self.their_pex = None
                 return
             self.their_ut = info.ut_metadata
+            self.their_pex = info.ut_pex
             self.client = info.client
             if s.meta is None and info.ut_metadata and info.metadata_size is not None:
                 if not s.assembler.offer(self.addr, info.metadata_size):
@@ -212,7 +218,26 @@ class PeerConn:
                     raise
                 return  # a download that no longer needs it: whatever they say about metadata is ignored
             self.on_metadata_message(*parsed, now)
+        elif ext_id == metadata.OUR_UT_PEX:
+            self.on_pex(body, now)
         # other extensions are ignored
+
+    def on_pex(self, body, now):
+        """A ut_pex message: its added peers join the pending ones. We never send one. Whatever is wrong with
+        it (private torrent, too early, from a peer that never listed ut_pex, too often, malformed) it is ignored
+        and the peer stays. The 60 s slot is used up before parsing, on purpose: a malformed message costs the
+        peer its slot, so a hostile peer cannot make us parse every message."""
+        s = self.s
+        if not s.pex_on() or not self.ext_hs or self.their_pex is None:
+            return
+        if self.last_pex is not None and now - self.last_pex < PEX_INTERVAL:
+            return
+        self.last_pex = now
+        try:
+            peers = metadata.parse_pex(body, s.opts.dht_allow_loopback, s.opts.dht_allow_private)
+        except ValueError:
+            return
+        s.add_peers(peers, from_pex=True)
 
     def on_metadata_message(self, kind, piece, total, data, now):
         s = self.s
@@ -251,7 +276,7 @@ class PeerConn:
             return
         try:
             if self.ext:  # they may have asked before; now they can
-                self.send(wire.extended(0, metadata.ext_handshake(self.metadata_size())))
+                self.send(wire.extended(0, metadata.ext_handshake(self.metadata_size(), self.s.pex_on())))
             if s.picker.verified_bytes():
                 self.send(wire.bitfield(s.bitfield()))
             npieces = len(s.meta.hashes)
