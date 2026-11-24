@@ -152,7 +152,7 @@ class Store:
             raise ManifestError(f"{plugin_root} is a symlink; not updating through it")
         old_dir = child(plugin_root, old_version, "plugin version")
         try:
-            old_manifest = Manifest.load(Path(entry["path"]))
+            old_manifest = Manifest.load(Path(entry["path"]), any_api=True)
         except (ManifestError, OSError, KeyError) as e:
             old_manifest = None
             print(f"dock: old image dock/{plugin_id}:{old_version} was not removed: "
@@ -190,7 +190,7 @@ class Store:
             raise ManifestError(f"{plugin_id} is not installed")
         folder = self.plugin_dir / plugin_id
         try:
-            installed = Manifest.load(Path(idx[plugin_id]["path"]))  # before the folder goes: names the image to drop
+            installed = Manifest.load(Path(idx[plugin_id]["path"]), any_api=True)  # before the folder goes: names the image to drop
         except (ManifestError, OSError, KeyError):
             installed = None  # damaged or old install: there is nothing to name an image by
         _make_writable(folder)
@@ -209,12 +209,12 @@ class Store:
             isolation.forget_image(self, installed)  # a later install of the same version must not reuse it
 
     # lookup ----------------------------------------------------------------
-    def get(self, plugin_id: str) -> Manifest:
+    def get(self, plugin_id: str, any_api: bool = False) -> Manifest:
         entry = self.index().get(plugin_id)
         if entry is None:
             raise ManifestError(f"{plugin_id} is not installed")
         try:
-            return Manifest.load(Path(entry["path"]))
+            return Manifest.load(Path(entry["path"]), any_api=any_api)
         except NotAContainerPlugin as e:  # an install from before dock ran only containers
             raise ManifestError(f"{e}; reinstall a container build of it (dock plugin install <folder>)") from e
 

@@ -243,7 +243,45 @@ class E2E(unittest.TestCase):
         r = self.dm(t)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertNotIn("SECRET", r.stdout + r.stderr)
-        self.assertIsNone(re.search(r"\d+\.\d+\.\d+\.\d+", r.stdout + r.stderr), r.stdout + r.stderr)
+        self.assertIsNone(re.search(r"\d+\.\d+\.\d+\.\d+", r.stdout), r.stdout)
+        # the peers table is the host's own screen and may show them; nothing else may
+        outside = re.sub(r"(?m)^peer +client +down +up\n(?:.+\n?)*", "", r.stderr)
+        self.assertIsNone(re.search(r"\d+\.\d+\.\d+\.\d+", outside), r.stderr)
+
+    def test_verbose_output_and_the_plugin_log_have_no_peer_address_outside_the_peers_table(self):
+        files = [(f"{n}.bin", torrentkit.content(60_000, n)) for n in "ab"]
+        t = self.torrent(files, name="pack", piece_length=PL)
+        self.seed(t, "--delay", "0.01")
+        logs = self.home / "logs"
+        before = {p: p.stat().st_size for p in logs.glob("*.log")} if logs.is_dir() else {}
+        r = self.dm(t, dock_args=("-v",))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        address = r"\d+\.\d+\.\d+\.\d+:\d+"
+        self.assertIsNotNone(re.search(address, r.stderr), "the peers table still shows the peer")
+        outside = re.sub(r"(?m)^peer +client +down +up\n(?:.+\n?)*", "", r.stderr)
+        self.assertIn("peer #1 connected", outside, "-v prints the debug lines, which name peers by number")
+        self.assertIsNone(re.search(address, outside), outside)
+        written = "".join(p.read_bytes()[before.get(p, 0):].decode("utf-8", "replace") for p in logs.glob("*.log"))
+        self.assertIn("start", written)  # something was written to it
+        self.assertIsNone(re.search(address, written), written)
+
+    # AC15 (plain): the areas print once at the end, and a failure still prints one line
+    def test_piped_output_prints_each_area_once_and_the_saved_line_is_unchanged(self):
+        files = [(f"{n}.bin", torrentkit.content(120_000, n)) for n in "abc"]
+        t = self.torrent(files, name="pack", piece_length=PL)
+        self.seed(t, "--delay", "0.01")
+        r = self.dm(t)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout, "saved pack (360.0 kB, 3 files)\n")
+        self.assertNotIn("\x1b", r.stderr)
+        lines = r.stderr.splitlines()
+        self.assertLess(len(lines), 20, r.stderr)
+        for n in "abc":
+            self.assertEqual(sum(1 for line in lines if re.fullmatch(rf"{n}\.bin  \[#{{20}}\]  100\.0%  .*", line)), 1,
+                             r.stderr)
+        self.assertEqual(sum(1 for line in lines if line.startswith("total  [####")), 1, r.stderr)
+        self.assertEqual(sum(1 for line in lines if re.fullmatch(r"peer +client +down +up", line)), 1, r.stderr)
+        self.assertEqual(sum(1 for line in lines if line.startswith("down  ")), 1, r.stderr)
 
     # AC12
     def test_no_peers_found_fails_at_the_stall_time_and_leaves_nothing(self):
@@ -296,7 +334,8 @@ class E2E(unittest.TestCase):
         r = self.dm(t, dock_args=("-v",))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.cwd / "a.bin").read_bytes(), t.blob)
-        served = re.findall(rf"peer {re.escape(aria_ip)}:\d+ served (\d+) blocks", r.stderr)
+        # a log names peers by number, not address; only aria2 asks dm for blocks (the test seeder just serves)
+        served = re.findall(r"peer #\d+ served (\d+) blocks", r.stderr)
         self.assertTrue(served and int(served[0]) > 0, r.stderr[-2000:])
 
     # AC15

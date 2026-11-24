@@ -5,6 +5,7 @@ import asyncio
 import base64
 import hashlib
 import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -195,7 +196,7 @@ class Messages(unittest.TestCase):
 
     def test_parse_ext_handshake(self):
         body = bencode.encode({"m": {"ut_metadata": 7, "ut_pex": 1}, "metadata_size": 999, "v": "x"})
-        self.assertEqual(metadata.parse_ext_handshake(body), metadata.ExtInfo(7, 999))
+        self.assertEqual(metadata.parse_ext_handshake(body), metadata.ExtInfo(7, 999, "x"))
         self.assertEqual(metadata.parse_ext_handshake(bencode.encode({"m": {}})),
                          metadata.ExtInfo(None, None))
         self.assertEqual(metadata.parse_ext_handshake(bencode.encode({"m": {"ut_metadata": 0}})),
@@ -691,7 +692,8 @@ class PeerBitfield(unittest.TestCase):
         picker.verified_bytes.return_value = 0
         hashes = [b"\x00" * 20] * 20  # three bytes of bitfield
         sess = SimpleNamespace(meta=SimpleNamespace(hashes=hashes) if meta else None, picker=picker,
-                               banned=set(), log=lambda m: None, interest_changed=lambda c: None)
+                               banned=set(), log=lambda m: None, interest_changed=lambda c: None,
+                               clock=time.monotonic)
         peer = PeerConn(sess, ("127.0.0.1", 1))
         peer.handshaken = True
         return peer, sess
@@ -796,7 +798,7 @@ class ServeMetadata(unittest.TestCase):
 
     def conn(self, known=True):
         sess = SimpleNamespace(meta=None, metadata=self.info if known else None, picker=None, banned=set(),
-                               log=lambda m: None, assembler=None)
+                               log=lambda m: None, assembler=None, clock=time.monotonic)
         peer = PeerConn(sess, ("127.0.0.1", 1))
         peer.handshaken = True
         peer.their_ut = 7

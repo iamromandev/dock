@@ -27,7 +27,7 @@ from cli.store import Store  # noqa: E402
 BASE = """\
 id = "dev.dock.sample"
 version = "1.2.3"
-api_version = "1"
+api_version = "2"
 description = "sample"
 
 [run]
@@ -604,7 +604,15 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
             def output(self, p):
                 events.append(p.get("text"))
 
-            log = progress = lambda self, p: None
+            log = bar = table = panel = clear = lambda self, p: None
+
+            def begin(self):
+                pass
+
+            end = begin
+
+            def form(self, p):
+                return {"eof": True}
 
             def prompt_user(self, p):
                 return {"eof": True}
@@ -613,11 +621,12 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
                 pass
 
             def handlers(self):
-                return {"output": self.output, "log": self.log, "progress": self.progress,
-                        "prompt_user": self.prompt_user}
+                return {"output": self.output, "log": self.log, "bar": self.bar, "table": self.table,
+                        "panel": self.panel, "clear": self.clear, "prompt_user": self.prompt_user,
+                        "form": self.form}
 
         with mock.patch.object(process, "subprocess", Proxy()), \
-                mock.patch("cli.lifecycle.TerminalUI", side_effect=lambda *a, **k: UI()):
+                mock.patch("cli.lifecycle.make_ui", side_effect=lambda *a, **k: UI()):
             session = Session(self.store)
             try:
                 self.assertEqual(session.invoke(self.store.get("dev.dock.hello"), "hello", ["Ada"]), 0)
@@ -1175,10 +1184,10 @@ class PluginBuild(DockIsolated):
         env = {**self.env, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
         r = self.dock("plugin", "build", "dev.dock.hello", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("built dock/dev.dock.hello:0.1.0", r.stdout)
+        self.assertIn("built dock/dev.dock.hello:0.2.0", r.stdout)
         builds = self.calls("build")
         self.assertEqual(len(builds), 1)
-        self.assertEqual(builds[0][builds[0].index("-t") + 1], "dock/dev.dock.hello:0.1.0")
+        self.assertEqual(builds[0][builds[0].index("-t") + 1], "dock/dev.dock.hello:0.2.0")
         self.assertEqual(builds[0][-1], str(self.store.get("dev.dock.hello").root))
         self.assertEqual(self.run_calls(), [])  # building starts nothing
 
@@ -1189,7 +1198,7 @@ class PluginBuild(DockIsolated):
         r = self.dock("plugin", "build", "dev.dock.hello")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.calls("build")), 1)
-        self.assertEqual(self.calls("image"), [["image", "inspect", "dock/dev.dock.hello:0.1.0"]])  # not asked again
+        self.assertEqual(self.calls("image"), [["image", "inspect", "dock/dev.dock.hello:0.2.0"]])  # not asked again
 
     def test_bad_build_arguments_are_reported(self):
         with self.subTest("an unknown plugin is reported"):
@@ -1230,7 +1239,7 @@ class PluginBuild(DockIsolated):
     def test_works_from_the_shell_and_the_help_lists_it(self):
         self.configure()
         r = self.dock("shell", stdin="plugin build dev.dock.hello\nhelp\n")
-        self.assertIn("built dock/dev.dock.hello:0.1.0", r.stdout)
+        self.assertIn("built dock/dev.dock.hello:0.2.0", r.stdout)
         self.assertEqual(len(self.calls("build")), 1)
         self.assertEqual(r.stdout.count("plugin build <id>"), 1)  # in the shell's help
         self.assertIn("plugin build <id>", self.dock("help").stdout)

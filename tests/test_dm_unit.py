@@ -546,8 +546,41 @@ class Run(ServerCase):
         self.assertEqual(len(debug), 1)
         self.assertRegex(debug[0]["message"], r"^peak_rss_kb=\d+$")
         self.assertEqual(calls[-1][0], "log")
-        progress = [p for m, p in calls if m == "progress"]
-        self.assertEqual(progress[-1]["percent"], 100)
+        bars = [p for m, p in calls if m == "bar"]
+        self.assertEqual(bars[-1]["percent"], 100)
+
+    def test_success_ends_the_bar_as_done_before_the_saved_line(self):
+        _, calls = self.run_dm({"url": self.base + "/file/data.bin"})
+        bars = [(i, p) for i, (m, p) in enumerate(calls) if m == "bar"]
+        self.assertTrue(all(p["id"] == "dm" and p["label"] == "" for _, p in bars))
+        self.assertEqual([p.get("done", False) for _, p in bars].count(True), 1)
+        last_i, last = bars[-1]
+        self.assertTrue(last["done"])
+        saved_i = next(i for i, (m, p) in enumerate(calls) if m == "output")
+        self.assertLess(last_i, saved_i)
+        self.assertNotIn("progress", [m for m, _ in calls])
+
+    def test_a_failed_download_removes_its_bar_and_sends_no_done_bar(self):
+        code, calls = self.run_dm({"url": self.base + "/trunc"})
+        self.assertEqual(code, 1)
+        kinds = [m for m, _ in calls]
+        self.assertIn("bar", kinds)  # it had made progress before the connection broke
+        self.assertFalse([p for m, p in calls if m == "bar" and p.get("done")])
+        self.assertEqual([p for m, p in calls if m == "clear"], [{"id": "dm", "kind": "bar"}])
+        self.assertGreater(kinds.index("clear"), len(kinds) - 1 - kinds[::-1].index("bar"))  # after the last bar
+
+    def test_a_cancelled_download_removes_its_bar(self):
+        cancelled = threading.Event()
+        calls = []
+
+        def notify(method, **params):
+            calls.append((method, params))
+            if method == "bar":
+                cancelled.set()
+
+        with self.assertRaises(dmcore.Cancelled):
+            dmcore.run({"url": self.base + "/slow"}, self.cwd, notify, cancelled)
+        self.assertEqual(calls[-1], ("clear", {"id": "dm", "kind": "bar"}))
 
     def test_dir_and_output(self):
         os.mkdir(os.path.join(self.cwd, "sub"))

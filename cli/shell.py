@@ -7,10 +7,14 @@ import shlex
 import sys
 
 from cli import __version__, isolation
+from cli.editor import LineEditor
 from cli.inputs import UsageError
 from cli.lifecycle import Session
 from cli.manifest import ManifestError
 from cli.store import Store
+from cli.term import Terminal
+from cli.uimsg import sanitize
+from cli.ui import live_mode
 
 PROMPT = "dock> "
 BUILTINS = ["help", "version", "plugin", "search", "status", "exit", "quit"]
@@ -63,7 +67,7 @@ class Shell:
         if not done:
             names = set(BUILTINS)
             for entry in self.store.index().values():
-                names.update(entry["commands"])
+                names.update(sanitize(n) for n in entry["commands"])  # an old index may hold what load refuses now
             return sorted(n for n in names if n.startswith(text))
         if done == ["plugin"]:
             return [s for s in PLUGIN_SUBS if s.startswith(text)]
@@ -180,9 +184,25 @@ def _setup_readline(store: Store):
     return readline
 
 
+def _history(readline) -> list[str]:
+    """The saved history, oldest first, for the inline editor."""
+    if readline is None:
+        return []
+    return [readline.get_history_item(i) for i in range(1, readline.get_current_history_length() + 1)]
+
+
 def start(store: Store, verbose: bool) -> int:
     isolation.sweep(store)
     readline = _setup_readline(store)
+    if live_mode() and sys.stdin.isatty():  # the inline shell: our own editor, live areas above the prompt
+        term = Terminal()
+        term.install()
+        try:
+            shell = Shell(store, Session(store, verbose, term), readline=readline, verbose=verbose)
+            shell.input_fn = LineEditor(term, _history(readline), shell.candidates).readline
+            return shell.loop()
+        finally:
+            term.close()
     shell = Shell(store, Session(store, verbose), readline=readline, verbose=verbose)
     if readline is not None:
         readline.set_completer(shell.complete)

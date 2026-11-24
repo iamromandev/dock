@@ -240,7 +240,7 @@ class ParseForTests(unittest.TestCase):
 MANIFEST = """\
 id = "dev.dock.bad"
 version = "0.1.0"
-api_version = "1"
+api_version = "2"
 [run]
 container = {{ cmd = "python3", args = ["/plugin/main.py"] }}
 [[commands]]

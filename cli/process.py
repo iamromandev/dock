@@ -26,6 +26,16 @@ class PluginError(Exception):
 CANCELLED = -32800
 
 
+LOG_TEXT_MAX = 120
+
+
+def _printable(name) -> str:
+    """A method name or reason from a plugin, fit for one line of the log: escaped when it holds anything that is
+    not printable (line breaks, controls, separators), and cut short."""
+    text = name if isinstance(name, str) and name.isprintable() else repr(name)
+    return text if len(text) <= LOG_TEXT_MAX else text[:LOG_TEXT_MAX] + "…"
+
+
 OUTBOX_CONTROL = 1024  # messages queued for a plugin that reads nothing; past this it is stuck
 OUTBOX_CONTROL_BYTES = 8 * 2**20  # ... or past this many bytes of them
 
@@ -70,7 +80,7 @@ class PluginProcess:
         self.launch = launch  # the `<runtime> run` command to spawn: decided by isolation.prepare, never defaulted here
         self._container_removed = False
         self.log_path = log_path
-        self.handlers = handlers  # plugin -> host methods (output, log, progress, prompt_user)
+        self.handlers = handlers  # plugin -> host methods (output, log, bar, table, panel, clear, prompt_user, form)
         self.hub = hub or Hub()
         self.exited = False
         self.forgotten = False          # the session dropped it: its late messages are ignored
@@ -295,11 +305,24 @@ class PluginProcess:
         method, params, msg_id = msg["method"], msg.get("params") or {}, msg.get("id")
         handler = self.handlers.get(method)
         if msg_id is None:  # notification
-            if handler:
+            if handler is None:
+                self._log.write(f"[unknown notification] {_printable(method)}\n")
+                return
+            if not isinstance(params, dict):
+                self._log.write(f"[invalid {_printable(method)}] params must be an object\n")
+                return
+            try:
                 handler(params)
+            except PluginError as e:  # an invalid UI message: dropped, the run goes on
+                self._log.write(f"[invalid {_printable(method)}] {_printable(str(e))}\n")
+            except Exception as e:  # noqa: BLE001 - nothing a plugin sends may take the host down
+                self._log.write(f"[invalid {_printable(method)}] {type(e).__name__}\n")  # not {e}: a plugin shapes it
             return
         if handler is None:
             self._send({"id": msg_id, "error": {"code": -32601, "message": f"host has no '{method}'"}})
+            return
+        if not isinstance(params, dict):
+            self._send({"id": msg_id, "error": {"code": -32602, "message": "params must be an object"}})
             return
         try:
             self._send({"id": msg_id, "result": handler(params)})

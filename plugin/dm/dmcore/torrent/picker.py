@@ -78,6 +78,7 @@ class Picker:
         self.avail = [0] * npieces
         self.peers = {}  # peer -> set of piece indices it has
         self.missing = set(range(npieces))  # not verified and not started
+        self.on_verified = None  # called with the index of each piece that becomes verified, once
         self.buckets = {0: _Bag()}  # availability -> missing pieces with that many peers
         for i in range(npieces):
             self.buckets[0].add(i)
@@ -267,6 +268,8 @@ class Picker:
         if act is not None and index not in self.finished:
             self.finished.add(index)
             self._done_bytes += act.size
+            if self.on_verified is not None:
+                self.on_verified(index)
             for pid, have in self.peers.items():
                 if index in have:
                     self.want[pid] -= 1
@@ -281,6 +284,8 @@ class Picker:
             self._unmiss(index)
             self.finished.add(index)
             self._done_bytes += self.piece_size(index)
+            if self.on_verified is not None:
+                self.on_verified(index)
             for pid, have in self.peers.items():
                 if index in have:
                     self.want[pid] -= 1

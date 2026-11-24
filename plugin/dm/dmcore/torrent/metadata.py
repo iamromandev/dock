@@ -28,11 +28,12 @@ REQUEST, DATA, REJECT = 0, 1, 2
 class ExtInfo:
     ut_metadata: int | None  # the id they expect our ut_metadata requests under
     metadata_size: int | None
+    client: str | None = None  # their `v`: the name and version they call themselves
 
 
 def ext_handshake(metadata_size=None):
     """The body of our extension handshake (send it with wire.extended(0, body))."""
-    top = {"m": {"ut_metadata": OUR_UT_METADATA}, "v": "dm 0.4.0", "reqq": 250}
+    top = {"m": {"ut_metadata": OUR_UT_METADATA}, "v": "dm 0.5.0", "reqq": 250}
     if metadata_size is not None:
         top["metadata_size"] = metadata_size
     return bencode.encode(top)
@@ -52,7 +53,9 @@ def parse_ext_handshake(body):
     size = top.get(b"metadata_size")
     if size is not None and not isinstance(size, int):
         raise ValueError("bad metadata_size")
-    return ExtInfo(uid or None, size)
+    client = top.get(b"v")
+    client = client[:64].decode("utf-8", "replace") if isinstance(client, bytes) else None
+    return ExtInfo(uid or None, size, client)
 
 
 def _message(their_id, head, data=b""):

@@ -8,16 +8,18 @@ connection closes (no seeding).
 import asyncio
 import collections
 import hashlib
+import itertools
 import os
 import random
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 from .. import Cancelled, resume as resume_mod
 from ..fmt import Throttle, human_size
 from ..target import DmError
-from . import layout, metainfo, tracker, wire
+from . import layout, metainfo, stats, tracker, wire
 from .handle import TorrentHandle
 from .choker import choose
 from .peer import PeerConn
@@ -57,7 +59,8 @@ class Session:
     `(meta, storage, have)` and then carries on as a normal download over the same connections."""
 
     def __init__(self, meta, storage, progress, handle, opts, log=None, on_complete=None, have=(),
-                 *, info_hash=None, extra_peers=(), trackers=None, on_metadata=None, metadata=None):
+                 *, info_hash=None, extra_peers=(), trackers=None, on_metadata=None, metadata=None, on_stats=None,
+                 clock=time.monotonic):
         self.meta = meta
         self.storage = storage
         self._info_hash = info_hash
@@ -72,12 +75,11 @@ class Session:
         self.opts = opts
         self._log = log
         self.on_complete = on_complete  # places the finished download, before the tracker is told
-        self.peer_id = b"-DM0400-" + os.urandom(12)
+        self.peer_id = b"-DM0500-" + os.urandom(12)
         self.picker = None
+        self._file_progress = None
         if meta is not None:
-            self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
-            # a resumed download: these pieces are ours before any peer connects
-            self.picker.mark_verified(have)
+            self._start_picker(meta, have)  # a resumed download: these pieces are ours before any peer connects
         self.conns = {}  # (host, port) -> PeerConn, connecting or connected
         self.banned = set()
         self.pending = collections.deque()
@@ -94,6 +96,23 @@ class Session:
         self.tracker_url = None
         self.last_progress = None
         self.background = set()
+        self.clock = clock
+        self._view_failed = False
+        self._peer_numbers = itertools.count(1)  # a log names a peer by the order it was dialed
+        self.on_stats = on_stats  # called with stats() on each progress tick, if the caller wants a live view
+        self.down = stats.Rate(clock)
+        self.up = stats.Rate(clock)
+        self.downloaded = 0  # block bytes received and sent this run: the ratio
+        self.uploaded = 0
+
+    def _start_picker(self, meta, have):
+        """The picker for meta, with the per-file counting wired in before the pieces already on disk are marked."""
+        self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
+        if len(meta.files) > 1:  # one file: the total bar says it all
+            specs = self.storage.files if self.storage is not None else layout.plan_files(meta)  # planned once
+            self._file_progress = stats.FileProgress(specs, meta.piece_length, meta.total)
+            self.picker.on_verified = self._file_progress.piece_done
+        self.picker.mark_verified(have)
 
     @property
     def info_hash(self):
@@ -177,8 +196,7 @@ class Session:
             return
         self.metadata = info_bytes
         self.storage = storage
-        self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
-        self.picker.mark_verified(have)
+        self._start_picker(meta, have)
         self.meta = meta  # last: from here every connection is in download mode
         self.last_progress = loop.time()
         for conn in list(self.conns.values()):
@@ -199,18 +217,64 @@ class Session:
                 if conn.task is not None and conn.task is not asyncio.current_task():
                     conn.task.cancel()
 
+    # stats
+
+    def got_block(self, conn, n):
+        self.downloaded += n
+        self.down.add(n)
+        conn.down.add(n)
+
+    def sent_block(self, conn, n):
+        self.uploaded += n
+        self.up.add(n)
+        conn.up.add(n)
+
+    def stats(self):
+        """The numbers behind the live view; every peer address in it is for the host's screen only."""
+        live = [c for c in self.conns.values() if c.handshaken and not c.closed]
+        down_rate = self.down.value()
+        done = self.picker.verified_bytes() if self.picker is not None else 0
+        left = self.meta.total - done if self.meta is not None else None
+        peers = sorted(((c.addr, stats.client_name(c.peer_id, c.client), c.down.value(), c.up.value())
+                        for c in live), key=lambda p: p[2], reverse=True)
+        return {
+            "files": self._file_progress.report() if self._file_progress is not None else [],
+            "down_rate": down_rate,
+            "up_rate": self.up.value(),
+            "peers_connected": len(live),
+            "peers_known": max(len(live), len(self.conns) + len(self.pending)),
+            "eta_s": left / down_rate if left and down_rate >= 1 else None,
+            "ratio": self.uploaded / self.downloaded if self.downloaded else None,  # per run; None: nothing yet
+            "peers": peers,
+        }
+
     # progress
 
     def connected(self):
         return sum(1 for c in self.conns.values() if c.handshaken)
 
+    def _emit(self, fn, *args):
+        """Report to the caller's view; a failure there (formatting, the host's pipe) must not stop the download:
+        it would end the piece that is being finished before its refill. Only the class is logged, and once."""
+        try:
+            self.handle.emit(fn, *args)
+        except Exception as e:
+            if not self._view_failed:
+                self._view_failed = True
+                self.log(f"live view failed: {type(e).__name__}")
+
     def progress(self, final=False):
+        self._progress_bar(final)
+        if self.on_stats is not None and self.meta is not None and self.picker is not None:
+            self._emit(self.on_stats, self.stats, final)  # the receiver decides whether an update is due
+
+    def _progress_bar(self, final):
         if self.meta is None:
             n = self.connected()
             text = f"fetching metadata · {n} peer{'s' if n != 1 else ''}"
             if self.sent != (None, text) and self.throttle.ready():
                 self.sent = (None, text)
-                self.handle.emit(self.report, None, text)
+                self._emit(self.report, None, text)
             return
         done, total = self.picker.verified_bytes(), self.meta.total
         pct = 100 if final else min(99, done * 100 // total)
@@ -220,7 +284,7 @@ class Session:
             return
         if self.throttle.ready(final=final):
             self.sent = (pct, text)
-            self.handle.emit(self.report, pct, text)
+            self._emit(self.report, pct, text)
 
     # peers
 
@@ -258,7 +322,7 @@ class Session:
                 if loop.time() - self.last_try.get(addr, -RETRY_AFTER) < RETRY_AFTER:
                     continue
                 self.last_try[addr] = loop.time()
-                conn = PeerConn(self, addr)
+                conn = PeerConn(self, addr, next(self._peer_numbers))
                 self.conns[addr] = conn
                 conn.task = asyncio.ensure_future(conn.run())
             self.wake.clear()
@@ -555,22 +619,24 @@ def _prepare(w, meta, specs, target, key, handle, resume, progress, note):
     return storage, have
 
 
-def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None):
+def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None,
+                on_stats=None):
     """Download the torrent at path into target.folder. Returns (final path, bytes, number of files).
 
     An interrupted download keeps its partial (`.<name>.<key>.dm-part`); the next run of the same torrent
     re-checks every piece on disk and fetches the rest. `resume=False` throws an old partial away.
     """
-    return _run(metainfo.load(path), None, target, progress, handle, opts, log, resume, note)[:3]
+    return _run(metainfo.load(path), None, target, progress, handle, opts, log, resume, note, on_stats)[:3]
 
 
-def run_magnet(magnet, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None):
+def run_magnet(magnet, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None,
+               on_stats=None):
     """Download a magnet link (a magnet.Magnet) into target.folder.
 
     Returns (final path, bytes, number of files, the info dictionary bytes). The metadata is fetched from
     peers; everything else is as for run_torrent, and a partial from `.torrent` of the same info-hash resumes.
     """
-    return _run(None, magnet, target, progress, handle, opts, log, resume, note)
+    return _run(None, magnet, target, progress, handle, opts, log, resume, note, on_stats)
 
 
 def _keep_after(e, meta, w, out):
@@ -606,7 +672,7 @@ def _stored_meta(mpath, magnet, target, key, resume):
     return found, stored
 
 
-def _run(meta, magnet, target, progress, handle, opts, log, resume, note):
+def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_stats=None):
     handle = handle or TorrentHandle()
     opts = opts or Options()
     say = note or (lambda text: None)
@@ -621,7 +687,7 @@ def _run(meta, magnet, target, progress, handle, opts, log, resume, note):
     keep = False
     failure = None
     out = {}
-    kw = {}
+    kw = {"on_stats": on_stats}
     try:
         try:
             have = ()
@@ -651,7 +717,7 @@ def _run(meta, magnet, target, progress, handle, opts, log, resume, note):
                                 log(f"could not store the metadata: {type(e).__name__}")
                         return found, storage, have
 
-                kw = dict(info_hash=info_hash, extra_peers=magnet.peers, trackers=magnet.trackers,
+                kw.update(info_hash=info_hash, extra_peers=magnet.peers, trackers=magnet.trackers,
                           on_metadata=on_metadata)
             done = []
 

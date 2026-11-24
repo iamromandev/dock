@@ -29,7 +29,7 @@ def make_plugin(parent, name, plugin_id, version="0.1.0", commands=(("hello", "G
     """A plugin folder `parent/name`: plugin.toml and a one-line Dockerfile. commands: (name, summary, keywords)."""
     root = Path(parent) / name
     root.mkdir(parents=True, exist_ok=True)
-    text = (f'id = "{plugin_id}"\nversion = "{version}"\napi_version = "1"\ndescription = "A python sample"\n\n'
+    text = (f'id = "{plugin_id}"\nversion = "{version}"\napi_version = "2"\ndescription = "A python sample"\n\n'
             '[run]\ncontainer = { cmd = "python3", args = ["/plugin/main.py"] }\n')
     for cname, summary, kws in commands:
         text += f'\n[[commands]]\nname = "{cname}"\nsummary = "{summary}"\n'
@@ -325,20 +325,20 @@ class SearchCli(CliCase):
         r = self.dock("search", "hello", "greet")
         self.assertEqual(r.returncode, 0, r.stderr)
         lines = r.stdout.splitlines()
-        self.assertEqual(lines, [f"{'hello':<16} Greet someone: hello [name]  dev.dock.hello 0.1.0  "
+        self.assertEqual(lines, [f"{'hello':<16} Greet someone: hello [name]  dev.dock.hello 0.2.0  "
                                  "not installed: dock plugin install dev.dock.hello"])
 
     def test_installed_line_shows_catalog_version(self):  # AC9
         self.store().install(self.hello)
-        newer = make_plugin(self.tmp / "newer", "hello", "dev.dock.hello", "0.2.0",
+        newer = make_plugin(self.tmp / "newer", "hello", "dev.dock.hello", "0.3.0",
                             commands=(("hello", "Greet someone: hello [name]", ["greet"]),))
         shutil.rmtree(self.hello)
         shutil.copytree(newer, self.hello)
         r = self.dock("search", "hello")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.splitlines(),
-                         [f"{'hello':<16} Greet someone: hello [name]  dev.dock.hello 0.1.0  "
-                          "installed (catalog has 0.2.0)"])
+                         [f"{'hello':<16} Greet someone: hello [name]  dev.dock.hello 0.2.0  "
+                          "installed (catalog has 0.3.0)"])
 
     def newer_hello_with_count(self):
         """Installed: dev.dock.hello 0.1.0 with no `count`; the catalog's copy is 0.2.0 and has `count`."""
@@ -362,7 +362,7 @@ class SearchCli(CliCase):
     def test_installed_line_without_catalog_difference(self):
         self.store().install(self.hello)
         r = self.dock("search", "count")
-        self.assertTrue(r.stdout.rstrip().endswith("dev.dock.hello 0.1.0  installed"), r.stdout)
+        self.assertTrue(r.stdout.rstrip().endswith("dev.dock.hello 0.2.0  installed"), r.stdout)
 
     def test_two_plugins_with_the_same_command_give_two_lines_sorted_by_id(self):  # AC10
         make_plugin(self.cat, "other", "dev.aaa.other", commands=(("hello", "Other hello", []),))
@@ -472,7 +472,7 @@ class InstallById(CliCase):
         with self.subTest("by catalog id"):
             r = self.dock("plugin", "install", "dev.dock.hello")
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertTrue(r.stdout.startswith("installed dev.dock.hello 0.1.0"), r.stdout)
+            self.assertTrue(r.stdout.startswith("installed dev.dock.hello 0.2.0"), r.stdout)
             self.assertIn("dev.dock.hello", self.dock("plugin", "list").stdout)
         with self.subTest("by path"):
             shutil.rmtree(self.home)  # a fresh DOCK_HOME, as the original test had
@@ -489,11 +489,11 @@ class InstallById(CliCase):
         self.assertEqual(r.stderr, "dock: no plugin folder or catalog plugin named 'dev.dock.nope'\n")
 
     def test_id_in_two_folders_lists_both_and_installs_nothing(self):  # AC16
-        other = make_plugin(self.cat, "other", "dev.dock.hello", "0.2.0")
+        other = make_plugin(self.cat, "other", "dev.dock.hello", "0.3.0")
         r = self.dock("plugin", "install", "dev.dock.hello")
         self.assertEqual(r.returncode, 1)
         self.assertEqual(r.stderr, f"dock: dev.dock.hello is in several catalog folders; install one by path: "
-                                   f"{self.hello} (0.1.0), {other} (0.2.0)\n")
+                                   f"{self.hello} (0.2.0), {other} (0.3.0)\n")
         self.assertEqual(self.index(), {})
 
     def test_escaping_symlink_is_listed_by_search_and_refused_by_install(self):  # AC24
@@ -514,7 +514,7 @@ class ShellInstallReadsTheCatalogOnce(CliCase):
         self.catalog_config(gone, self.cat)
         r = self.dock("shell", stdin="plugin install dev.dock.hello\nexit\n")
         self.assertEqual(r.stderr, f"dock: catalog folder {gone} not found, skipped\n")
-        self.assertIn("installed dev.dock.hello 0.1.0", r.stdout)
+        self.assertIn("installed dev.dock.hello 0.2.0", r.stdout)
         self.assertIn("dev.dock.hello", self.index())
 
     def test_failed_install_is_reported_once_and_the_shell_keeps_running(self):
@@ -553,7 +553,7 @@ class InfoById(CliCase):
         self.store().install(self.hello)
         r = self.dock("plugin", "info", str(ROOT / "plugin" / "hello"))
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines()[-1], f"installed:   yes, 0.1.0 ({self.index()['dev.dock.hello']['path']})")
+        self.assertEqual(r.stdout.splitlines()[-1], f"installed:   yes, 0.2.0 ({self.index()['dev.dock.hello']['path']})")
         self.assertIn(f"location:    {ROOT / 'plugin' / 'hello'}", r.stdout)
 
     def test_info_of_an_installed_id_has_a_keywords_line_and_no_installed_line(self):  # AC17
