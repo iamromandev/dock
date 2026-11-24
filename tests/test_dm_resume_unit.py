@@ -64,6 +64,8 @@ class Keys(Base):
             self.assertTrue(path.name.endswith(suffix))
             self.assertLessEqual(len((path.name + ".0123456789abcdef.tmp").encode()), 255)
         self.assertRegex(p.part.name, r"^\.a{100}\.a{24}\.dm-part$")
+        lock = resume.torrent_lock(self.dir, KEY)  # key only: a magnet does not know its name yet
+        self.assertEqual(lock, self.dir / f".dm.{KEY}.dm-lock")
         self.assertNotRegex(resume.paths(self.dir, "x.bin", KEY).part.name, r"\.[0-9a-f]{16}\.dm-part$")
 
 

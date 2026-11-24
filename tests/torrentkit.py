@@ -75,6 +75,16 @@ def make_torrent(files, piece_length: int = 16384, announce: str | None = None, 
     return Torrent(data, hashlib.sha1(bencode.encode(info)).digest(), name, files, piece_length, multi)
 
 
+def magnet_for(t: Torrent, trackers=(), peers=(), name: str | None = None) -> str:
+    """A magnet link for t: its info-hash, `dn`, the tracker URLs (tr) and the (host, port) peers (x.pe)."""
+    from urllib.parse import quote
+
+    parts = [f"xt=urn:btih:{t.info_hash.hex()}", f"dn={quote(name if name is not None else t.name)}"]
+    parts += [f"tr={quote(u, safe='')}" for u in trackers]
+    parts += [f"x.pe={quote(f'{h}:{p}' if ':' not in h else f'[{h}]:{p}', safe='')}" for h, p in peers]
+    return "magnet:?" + "&".join(parts)
+
+
 def make_big_torrent(root, name: str, size: int, piece_length: int, announce: str | None = None):
     """A single-file torrent of `size` random bytes, written to root/<name> in a stream (not held in memory).
 

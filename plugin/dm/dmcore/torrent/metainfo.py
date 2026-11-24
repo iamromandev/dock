@@ -1,12 +1,12 @@
 """Reading and validating a .torrent file (BitTorrent v1 metainfo)."""
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from ..target import DmError
-from .bencode import BencodeError, decode
+from .bencode import BencodeError, decode, encode
 
 MAX_TORRENT_BYTES = 10 * 1024 * 1024
 MAX_PIECES = 2 ** 20
@@ -145,6 +145,27 @@ def parse(data):
         multi=multi,
         trackers=_trackers(top),
     )
+
+
+def from_info(info_bytes, trackers=()):
+    """The Meta for a bare info dictionary (as fetched from peers); `trackers` become one tier.
+
+    TorrentError for the same reasons as a .torrent file, or when anything follows the dictionary.
+    """
+    wrapped = b"d4:info" + bytes(info_bytes) + b"e"
+    meta = parse(wrapped)
+    if meta.info_hash != hashlib.sha1(info_bytes).digest():  # the dictionary ended before the bytes did
+        raise _invalid("trailing data")
+    tier = _urls([t.encode() for t in trackers])
+    return replace(meta, trackers=(tier,) if tier else ())
+
+
+def torrent_bytes(info_bytes, trackers):
+    """A .torrent holding these exact info bytes: announce is the first tracker, announce-list all of them."""
+    out = b"d"
+    if trackers:
+        out += encode("announce") + encode(trackers[0]) + encode("announce-list") + encode([list(trackers)])
+    return out + encode("info") + bytes(info_bytes) + b"e"
 
 
 def load(path):

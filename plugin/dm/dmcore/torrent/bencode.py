@@ -26,6 +26,16 @@ def decode(data, max_depth=64, max_nodes=2_000_000):
     return value, span
 
 
+def decode_prefix(data, max_depth=64, max_nodes=2_000_000):
+    """(value, end): the bencoded value at the start of data and the offset where it ended.
+
+    For messages that carry raw bytes after a dictionary (BEP 9). Otherwise as strict as decode().
+    """
+    data = bytes(data)
+    pos, value, _ = _value(data, 0, 0, max_depth, [max_nodes])
+    return value, pos
+
+
 def _int_end(data, pos):
     end = data.find(b"e", pos)
     if end < 0:

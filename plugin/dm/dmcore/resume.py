@@ -26,6 +26,7 @@ KEY_HEX = 24
 RECORD_MAX = 4096
 HEADER_MAX = 256
 SUFFIX_PART, SUFFIX_RECORD, SUFFIX_LOCK = ".dm-part", ".dm-resume", ".dm-lock"
+SUFFIX_META = ".dm-meta"
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _NO_LOCKING = {errno.ENOLCK, errno.EOPNOTSUPP, errno.EINVAL}
@@ -62,6 +63,16 @@ class Paths:
 def paths(folder, display, key):
     stem = f".{_cut(display, 100)}.{key}"
     return Paths(folder / (stem + SUFFIX_PART), folder / (stem + SUFFIX_RECORD), folder / (stem + SUFFIX_LOCK))
+
+
+def torrent_lock(folder, key):
+    """A torrent's lock is named by the key alone: a magnet link does not know the item's name yet."""
+    return folder / f".dm.{key}{SUFFIX_LOCK}"
+
+
+def meta_path(folder, key):
+    """The stored metadata of a magnet download, named by the key alone like the lock."""
+    return folder / f".dm.{key}{SUFFIX_META}"
 
 
 def is_quota_error(exc):
@@ -141,6 +152,60 @@ def write_record(path, key, rec):
     try:
         try:
             os.write(fd, text.encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+# ---- stored metadata ---------------------------------------------------------------------------------------
+
+
+def read_meta(path, info_hash):
+    """The info dictionary stored at path when it is a regular file of at most MAX_TORRENT_BYTES whose SHA-1
+    is info_hash; else None, and a file that is there but wrong is deleted. Never follows a link."""
+    from .torrent.metainfo import MAX_TORRENT_BYTES
+
+    try:
+        fd = os.open(path, os.O_RDONLY | _NOFOLLOW | _NONBLOCK)
+    except OSError as e:
+        if e.errno == errno.ELOOP:  # a link in the way: remove the link itself
+            discard(path)
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        raw = b""
+        while len(raw) <= MAX_TORRENT_BYTES:
+            chunk = os.read(fd, MAX_TORRENT_BYTES + 1 - len(raw))
+            if not chunk:
+                break
+            raw += chunk
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(raw) <= MAX_TORRENT_BYTES and hashlib.sha1(raw).digest() == info_hash:
+        return raw
+    discard(path)
+    return None
+
+
+def write_meta(path, info_bytes):
+    """Store the metadata atomically: a temp file next to it, then a replace."""
+    tmp = f"{path}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o666)
+    try:
+        try:
+            done = 0
+            while done < len(info_bytes):
+                done += os.write(fd, info_bytes[done:])
             os.fsync(fd)
         finally:
             os.close(fd)

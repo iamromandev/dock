@@ -10,6 +10,7 @@ import collections
 import hashlib
 import os
 import random
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ from . import layout, metainfo, tracker, wire
 from .handle import TorrentHandle
 from .choker import choose
 from .peer import PeerConn
+from .metadata import MetadataAssembler
 from .picker import Picker
 from .place import place_dir, place_file
 from .recheck import recheck
@@ -50,17 +52,32 @@ def _span(seconds):
 
 
 class Session:
-    def __init__(self, meta, storage, progress, handle, opts, log=None, on_complete=None, have=()):
+    """One download. With `meta=None` it starts in metadata mode (a magnet link): it finds peers by the
+    info-hash, fetches the info dictionary from them, calls `on_metadata(info_bytes)` in an executor to get
+    `(meta, storage, have)` and then carries on as a normal download over the same connections."""
+
+    def __init__(self, meta, storage, progress, handle, opts, log=None, on_complete=None, have=(),
+                 *, info_hash=None, extra_peers=(), trackers=None, on_metadata=None, metadata=None):
         self.meta = meta
         self.storage = storage
+        self._info_hash = info_hash
+        self._tiers = ((tuple(trackers),) if trackers else ())
+        self.extra_peers = tuple(extra_peers)
+        self.on_metadata = on_metadata
+        self.metadata = metadata  # the verified info dictionary: set once known
+        self.assembler = MetadataAssembler(self.info_hash) if meta is None else None
+        self.setup = None  # the task that turns fetched metadata into a download
         self.report = progress
         self.handle = handle
         self.opts = opts
         self._log = log
         self.on_complete = on_complete  # places the finished download, before the tracker is told
-        self.peer_id = b"-DM0300-" + os.urandom(12)
-        self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
-        self.picker.mark_verified(have)  # a resumed download: these pieces are ours before any peer connects
+        self.peer_id = b"-DM0400-" + os.urandom(12)
+        self.picker = None
+        if meta is not None:
+            self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
+            # a resumed download: these pieces are ours before any peer connects
+            self.picker.mark_verified(have)
         self.conns = {}  # (host, port) -> PeerConn, connecting or connected
         self.banned = set()
         self.pending = collections.deque()
@@ -77,6 +94,10 @@ class Session:
         self.tracker_url = None
         self.last_progress = None
         self.background = set()
+
+    @property
+    def info_hash(self):
+        return self.meta.info_hash if self.meta is not None else self._info_hash
 
     def log(self, message):
         if self._log is not None:
@@ -136,12 +157,61 @@ class Session:
         for conn in list(self.conns.values()):
             conn.refill()
 
+    # metadata
+
+    def metadata_complete(self, info_bytes):
+        """The assembled metadata hashed right: build the download in an executor, then switch to it."""
+        if self.setup is None:
+            self.setup = asyncio.ensure_future(self._setup(info_bytes))
+            self.background.add(self.setup)
+            self.setup.add_done_callback(self.background.discard)
+
+    async def _setup(self, info_bytes):
+        loop = asyncio.get_running_loop()
+        try:
+            meta, storage, have = await loop.run_in_executor(None, self.on_metadata, info_bytes)
+        except asyncio.CancelledError:
+            raise
+        except BaseException as e:  # a bad torrent or a write error: the whole download fails
+            self.fail(e)
+            return
+        self.metadata = info_bytes
+        self.storage = storage
+        self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
+        self.picker.mark_verified(have)
+        self.meta = meta  # last: from here every connection is in download mode
+        self.last_progress = loop.time()
+        for conn in list(self.conns.values()):
+            conn.enter_download()
+        if self.picker.done():
+            self.finished.set()
+        self.progress()
+        for conn in list(self.conns.values()):
+            conn.refill()
+
+    def drop_metadata_banned(self):
+        """Close every connection whose blocks were part of a set that failed the hash."""
+        for addr in self.assembler.banned:
+            self.banned.add(addr)
+            conn = self.conns.get(addr)
+            if conn is not None and not conn.closed:
+                conn.close()
+                if conn.task is not None and conn.task is not asyncio.current_task():
+                    conn.task.cancel()
+
     # progress
 
     def connected(self):
         return sum(1 for c in self.conns.values() if c.handshaken)
 
     def progress(self, final=False):
+        if self.meta is None:
+            n = self.connected()
+            text = f"fetching metadata · {n} peer{'s' if n != 1 else ''}"
+            if self.sent != (None, text) and self.throttle.ready():
+                self.sent = (None, text)
+                self.handle.emit(self.report, None, text)
+            return
         done, total = self.picker.verified_bytes(), self.meta.total
         pct = 100 if final else min(99, done * 100 // total)
         n = self.connected()
@@ -157,7 +227,10 @@ class Session:
     def peer_closed(self, conn):
         if self.conns.get(conn.addr) is conn:
             del self.conns[conn.addr]
-        self.picker.peer_gone(conn.addr)
+        if self.assembler is not None:
+            self.assembler.peer_gone(conn.addr)
+        if self.picker is not None:
+            self.picker.peer_gone(conn.addr)
         self.wake.set()
         for other in list(self.conns.values()):
             other.refill()
@@ -198,12 +271,16 @@ class Session:
 
     def interest_changed(self, conn):
         """A peer became interested: give it a slot at once if one is free; the next rechoke settles it."""
+        if self.meta is None:
+            return  # nothing to serve before the metadata is known
         held = sum(1 for c in self.conns.values() if c.handshaken and not c.am_choking)  # interested or not
         if conn.peer_interested and conn.am_choking and held < self.opts.unchoke_slots + 1:
             conn.set_choke(False)
 
     def rechoke(self, rng=random):
         """Unchoke the best uploaders to us and one optimistic peer; choke everyone else."""
+        if self.meta is None:
+            return
         live = {c.addr: c for c in self.conns.values() if c.handshaken and not c.closed}
         rates = {}
         for addr, c in live.items():
@@ -223,8 +300,10 @@ class Session:
     # trackers
 
     def announce_request(self, event):
+        if self.meta is None:  # a leecher with something left, as far as the tracker can tell
+            return tracker.Announce(self.info_hash, self.peer_id, REPORTED_PORT, 0, 0, 1, event)
         done = self.picker.verified_bytes()
-        return tracker.Announce(self.meta.info_hash, self.peer_id, REPORTED_PORT, 0, done,
+        return tracker.Announce(self.info_hash, self.peer_id, REPORTED_PORT, 0, done,
                                 self.meta.total - done, event)
 
     async def announce_tier(self, tier, event):
@@ -255,7 +334,8 @@ class Session:
             await asyncio.gather(*tasks.values(), return_exceptions=True)
 
     async def tracker_loop(self):
-        tiers = [random.sample(list(t), len(t)) for t in self.meta.trackers]
+        source = self.meta.trackers if self.meta is not None else self._tiers
+        tiers = [random.sample(list(t), len(t)) for t in source]
         if not tiers:
             return
         event, first = "started", True
@@ -276,7 +356,8 @@ class Session:
                 wait = max(60, result.interval)
                 event = ""
             else:
-                if first:  # every tracker failed on the first try: nothing else will find peers
+                if first and not self.extra_peers:
+                    # every tracker failed on the first try: nothing else finds peers
                     self.fail(DmError(f"tracker error: {reason}", keep=True))
                     return
                 wait = 60
@@ -299,7 +380,14 @@ class Session:
         tick = min(0.25, self.opts.stall_s / 4)
         while True:
             await asyncio.sleep(tick)
-            idle = loop.time() - self.last_progress
+            if self.setup is not None and not self.setup.done():
+                # the metadata is being turned into a download: the check of the partial reports itself
+                continue
+            now = loop.time()
+            if self.meta is None:
+                for conn in list(self.conns.values()):
+                    conn.request_metadata(now)
+            idle = now - self.last_progress
             if self.connected():
                 if idle >= 2.5 * self.opts.stall_s:
                     self.fail(DmError(f"stalled: no progress for {_span(2.5 * self.opts.stall_s)}", keep=True))
@@ -320,8 +408,9 @@ class Session:
             worker.add_done_callback(self._worker_done)
         completed = False
         try:
-            if self.picker.done():  # everything was already on disk
+            if self.picker is not None and self.picker.done():  # everything was already on disk
                 self.finished.set()
+            self.add_peers(self.extra_peers)
             self.progress()
             await self.finished.wait()
             if self.fatal is not None:
@@ -364,18 +453,20 @@ class Session:
             self.reader_pool.shutdown(wait=False, cancel_futures=True)
 
 
-async def run_session(meta, storage, progress, handle, opts, log=None, on_complete=None, have=(), out=None):
+async def run_session(meta, storage, progress, handle, opts, log=None, on_complete=None, have=(), out=None,
+                      **kw):
     """Run one session; `out["session"]` is set at the start so the caller can ask what was verified."""
-    s = Session(meta, storage, progress, handle, opts, log, on_complete, have)
+    s = Session(meta, storage, progress, handle, opts, log, on_complete, have, **kw)
     if out is not None:
         out["session"] = s
     await s.run()
 
 
-def _drive(meta, storage, progress, handle, opts, log, on_complete, have=(), out=None):
+def _drive(meta, storage, progress, handle, opts, log, on_complete, have=(), out=None, **kw):
     loop = asyncio.new_event_loop()
     try:
-        task = loop.create_task(run_session(meta, storage, progress, handle, opts, log, on_complete, have, out))
+        task = loop.create_task(run_session(meta, storage, progress, handle, opts, log, on_complete, have,
+                                            out, **kw))
         handle.attach(loop, task)
         try:
             loop.run_until_complete(task)
@@ -426,50 +517,152 @@ def _open_storage(meta, specs, tmp, target, handle, resume, note):
     return storage, False
 
 
+class _Work:
+    """What a run has put on disk, shared with the thread that sets up a magnet's download."""
+
+    def __init__(self):
+        self.lock = threading.Lock()  # held while that thread works
+        self.closed = False  # the run is over: a late setup must not create anything
+        self.meta = None
+        self.base = None
+        self.tmp = None
+        self.storage = None
+        self.opened = False  # the setup got as far as touching the partial
+        self.resumed = False  # ... and found one from an earlier run
+
+
+def _prepare(w, meta, specs, target, key, handle, resume, progress, note):
+    """Open or create the partial for meta and re-check it. Returns (storage, pieces already on disk)."""
+    specs = specs or layout.plan_files(meta)
+    w.meta = meta
+    w.base = target.fixed_name or layout.item_name(meta)
+    w.tmp = resume_mod.paths(target.folder, w.base, key).part
+    w.opened = True
+    storage, resumed = _open_storage(meta, specs, w.tmp, target, handle, resume, note)
+    w.storage = storage
+    w.resumed = resumed
+    have = ()
+    if resumed:
+        try:
+            have = recheck(storage, meta, progress, handle)
+        except OSError as e:
+            if handle.aborted:
+                raise Cancelled() from None
+            raise _cannot_read(e) from None
+        done_bytes = sum(storage.piece_size(i) for i in have)
+        if done_bytes:
+            note(f"resuming from {human_size(done_bytes)} of {human_size(meta.total)}")
+    return storage, have
+
+
 def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None):
     """Download the torrent at path into target.folder. Returns (final path, bytes, number of files).
 
     An interrupted download keeps its partial (`.<name>.<key>.dm-part`); the next run of the same torrent
     re-checks every piece on disk and fetches the rest. `resume=False` throws an old partial away.
     """
+    return _run(metainfo.load(path), None, target, progress, handle, opts, log, resume, note)[:3]
+
+
+def run_magnet(magnet, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None):
+    """Download a magnet link (a magnet.Magnet) into target.folder.
+
+    Returns (final path, bytes, number of files, the info dictionary bytes). The metadata is fetched from
+    peers; everything else is as for run_torrent, and a partial from `.torrent` of the same info-hash resumes.
+    """
+    return _run(None, magnet, target, progress, handle, opts, log, resume, note)
+
+
+def _keep_after(e, meta, w, out):
+    """Whether a retryable failure leaves the partial: only when it holds something, a verified piece (this
+    run or before) or, for a magnet, a partial that was there before the run. A magnet run that never opened
+    a partial (no metadata arrived) returns True whatever e.keep says: it created nothing, so there is
+    nothing to delete, and what is in the folder is from an earlier run."""
+    s = out.get("session")
+    if meta is None and not w.opened:
+        return True  # nothing created by this run, whatever e.keep says: leave an earlier run's files alone
+    started = s is None or s.picker is None  # nothing was downloaded into it
+    if meta is None and started and not w.resumed:
+        return False  # this run's setup made it just now: it is empty
+    return e.keep and (started or s.picker.verified_bytes() > 0 or s.picker.done())
+
+
+def _stored_meta(mpath, magnet, target, key, resume):
+    """(Meta, info bytes) from the metadata an earlier run of this magnet stored, else None. Without resume
+    the stored metadata and the partial it belongs to are removed here, before anything else happens."""
+    stored = resume_mod.read_meta(mpath, magnet.info_hash)
+    if stored is None:
+        resume_mod.discard(mpath)
+        return None
+    try:
+        found = metainfo.from_info(stored, magnet.trackers)
+        base = target.fixed_name or layout.item_name(found)
+    except DmError:  # hashes right but is no torrent we accept: fetching it again would give the same
+        resume_mod.discard(mpath)
+        return None
+    if not resume:
+        resume_mod.discard(resume_mod.paths(target.folder, base, key).part, mpath)
+        return None
+    return found, stored
+
+
+def _run(meta, magnet, target, progress, handle, opts, log, resume, note):
     handle = handle or TorrentHandle()
     opts = opts or Options()
     say = note or (lambda text: None)
     note = lambda text: handle.emit(say, text)  # noqa: E731 - silent once aborted, like progress
-    meta = metainfo.load(path)
-    specs = layout.plan_files(meta)
-    base = target.fixed_name or layout.item_name(meta)
-    p = resume_mod.paths(target.folder, base, resume_mod.torrent_key(meta.info_hash, target))
-    tmp = p.part
-    lock = resume_mod.Lock(p.lock)
+    info_hash = meta.info_hash if meta is not None else magnet.info_hash
+    key = resume_mod.torrent_key(info_hash, target)
+    lock = resume_mod.Lock(resume_mod.torrent_lock(target.folder, key))
     lock.acquire()
-    storage = None
+    mpath = resume_mod.meta_path(target.folder, key)  # a .torrent run never reads it, only cleans it up
+    resume_mod.clean_temps(mpath)  # what a killed write of it left
+    w = _Work()
     keep = False
+    failure = None
     out = {}
+    kw = {}
     try:
         try:
-            storage, resumed = _open_storage(meta, specs, tmp, target, handle, resume, note)
             have = ()
-            if resumed:
-                try:
-                    have = recheck(storage, meta, progress, handle)
-                except OSError as e:
-                    if handle.aborted:
-                        raise Cancelled() from None
-                    raise _cannot_read(e) from None
-                done_bytes = sum(storage.piece_size(i) for i in have)
-                if done_bytes:
-                    note(f"resuming from {human_size(done_bytes)} of {human_size(meta.total)}")
+            specs = None
+            if magnet is None and not resume:
+                resume_mod.discard(mpath)  # with the partial: the same key may hold a magnet run's
+            if magnet is not None:
+                known = _stored_meta(mpath, magnet, target, key, resume)
+                if known is not None:  # no second fetch: this is a plain torrent download from here on
+                    meta, kw["metadata"] = known
+            if meta is not None:
+                specs = layout.plan_files(meta)
+                _, have = _prepare(w, meta, specs, target, key, handle, resume, progress, note)
+                if magnet is not None:
+                    kw["extra_peers"] = magnet.peers
+            else:
+                def on_metadata(info_bytes):  # in an executor: the event loop keeps serving peers meanwhile
+                    with w.lock:
+                        if w.closed or handle.aborted:
+                            raise Cancelled()
+                        found = metainfo.from_info(info_bytes, magnet.trackers)
+                        storage, have = _prepare(w, found, None, target, key, handle, resume, progress, note)
+                        try:  # a rerun reads it instead of asking peers again; losing it only costs that
+                            resume_mod.write_meta(mpath, info_bytes)
+                        except OSError as e:
+                            if log is not None:
+                                log(f"could not store the metadata: {type(e).__name__}")
+                        return found, storage, have
+
+                kw = dict(info_hash=info_hash, extra_peers=magnet.peers, trackers=magnet.trackers,
+                          on_metadata=on_metadata)
             done = []
 
             def place():
-                storage.close()
+                w.storage.close()
                 with handle.lock:
                     if handle.aborted:
                         raise Cancelled()
-                    move = place_dir if meta.multi else place_file
+                    move = place_dir if w.meta.multi else place_file
                     try:
-                        done.append(move(tmp, target.folder, base))
+                        done.append(move(w.tmp, target.folder, w.base))
                     except DmError as e:  # every piece is on disk: a rerun can place it
                         raise DmError(str(e), keep=True) from None
                     except OSError as e:
@@ -477,7 +670,7 @@ def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, res
                                       keep=True) from None
                     handle.placed = True
 
-            _drive(meta, storage, progress, handle, opts, log, place, have, out)
+            _drive(meta, w.storage, progress, handle, opts, log, place, have, out, **kw)
             final = done[0]
         except OSError as e:  # never show the raw error: it carries paths chosen by the torrent
             if handle.aborted:
@@ -492,16 +685,22 @@ def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, res
         keep = True
         raise
     except DmError as e:
-        # a retryable failure keeps the partial only when it holds something: a verified piece, this run or before
-        s = out.get("session")
-        keep = e.keep and (s is None or s.picker.verified_bytes() > 0 or s.picker.done())
+        failure = e
+        keep = _keep_after(e, meta, w, out)
         raise
     finally:
-        if storage is not None:
-            storage.close()
+        with w.lock:  # a magnet's setup thread may still be running; after this it creates nothing
+            w.closed = True
+            if failure is not None and meta is None:
+                keep = _keep_after(failure, meta, w, out)  # the setup may have opened a partial meanwhile
+        if w.storage is not None:
+            w.storage.close()
         try:
-            if not handle.placed and not keep:
-                resume_mod.discard(tmp)
+            if not handle.placed and not keep and w.tmp is not None:
+                resume_mod.discard(w.tmp)
+            if handle.placed or not keep:  # it goes with the partial, never outlives it
+                resume_mod.discard(mpath)
         finally:
             lock.release(remove=True)
-    return final, meta.total, len(meta.files)
+    session = out.get("session")
+    return final, w.meta.total, len(w.meta.files), (session.metadata if session is not None else None)

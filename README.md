@@ -45,7 +45,7 @@ cli/ (Python host)
  └─ ui.py         the host owns the terminal: output, logs, progress, prompts
         │  stdio (through `<runtime> run -i`)
    ├─ hello (Python)   2 commands, prompts, progress
-   └─ dm (Python)      download a URL or a .torrent into the current folder
+   └─ dm (Python)      download a URL, a .torrent or a magnet link into the current folder
 ```
 
 ## Try it
@@ -200,7 +200,7 @@ a TTY, which includes a piped `dock shell`) dock never reads stdin: without `--y
 
 ### dm
 
-`dm` is a bundled plugin (`dev.dock.dm`) that downloads one http(s) URL, or the content of a `.torrent` file, into the current folder:
+`dm` is a bundled plugin (`dev.dock.dm`) that downloads one http(s) URL, the content of a `.torrent` file, or a magnet link into the current folder:
 
 ```sh
 python3 -m cli plugin install plugin/dm        # by path, or `python3 -m cli plugin install dev.dock.dm` from the catalog
@@ -209,6 +209,7 @@ python3 -m cli dm https://example.com/file.tar.gz -o name.tar.gz     # a file na
 python3 -m cli dm https://example.com/file.tar.gz -d downloads       # an existing subfolder; the name comes from the URL
 python3 -m cli dm ubuntu.torrent                                     # a .torrent file in the current folder
 python3 -m cli dm dataset.torrent -d downloads --stall-seconds 60    # same -o and -d rules; give up sooner
+python3 -m cli dm "magnet:?xt=urn:btih:<hash>&tr=<tracker>"          # a magnet link (quote it: the shell sees `&`)
 python3 -m cli dm https://example.com/file.tar.gz --no-resume        # throw an old partial away, start from zero
 ```
 
@@ -238,8 +239,8 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
 ```
 
 - **Supported:** v1 torrents with one file or many, from HTTP(S) and UDP trackers (`announce` and `announce-list`).
-  Not supported yet: magnet links, DHT, peer exchange, v2-only torrents, choosing files, and `.torrent` files
-  given as a URL.
+  Magnet links are covered [below](#magnet-links). Not supported yet: DHT, peer exchange, v2-only torrents,
+  choosing files, and `.torrent` files given as a URL.
 - **One file or a folder:** a single-file torrent saves one file; a multi-file torrent saves a folder with the
   torrent's name and its files in it, empty files included. The `(1)`, `(2)` naming of an existing name applies to
   both, and `-o` names the file or the folder. Paths in the torrent that would leave the folder (`..`, absolute
@@ -265,6 +266,47 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
 - **Limits:** a torrent file over 10 MB, more than 100,000 files or about a million pieces, or very deep paths are refused; memory
   stays bounded (a 512 MiB download peaks well under 200 MB).
 
+#### Magnet links
+
+An argument that starts with `magnet:?` (any case) is a magnet link. `dm` fetches the torrent's metadata (its
+info dictionary) from peers, checks it against the info-hash in the link, and then downloads exactly as for a
+`.torrent` file: same naming (the torrent's own name, or `-o`), `-d`, piece checks, resume, serving while it runs and
+stall rules. Quote the link: it contains `&`.
+
+```
+$ python3 -m cli dm "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&dn=Linux+ISO&tr=udp%3A%2F%2Ftracker.example%3A6969"
+saved Linux ISO (2.0 GB, 1 file)
+saved Linux ISO.torrent
+```
+
+- **Supported parameters:** `xt=urn:btih:` with a 40-character hex or 32-character base32 info-hash (any case);
+  `tr` trackers (`http`, `https` and `udp`; other schemes are ignored) and `x.pe=host:port` peers (an IPv4 address,
+  `[IPv6]` or a host name; invalid ones are ignored). `dn` is read but never used as a file name or printed. Other
+  parameters are ignored. A link with no usable `xt`, with several different info-hashes, or whose only topic is a v2
+  hash (`urn:btmh:`) fails with `invalid magnet link` or `v2-only magnet links are not supported`.
+- **No DHT.** `dm` finds peers only through the link's trackers and `x.pe` peers. A link with neither fails at once,
+  before any network use: `dm: magnet c9e15763…: magnet link has no trackers or peers (DHT is not supported)`.
+  Many public magnets list no tracker and rely on the DHT, so they cannot be downloaded with `dm` yet.
+- **Metadata fetch.** While it asks peers for the metadata the progress line reads `fetching metadata · N peers` with
+  no percentage. The metadata is accepted only when its SHA-1 equals the info-hash, and the same limits as for a
+  `.torrent` apply (at most 10 MiB, safe paths, file and piece limits). A peer that sends a wrong size, a wrong
+  block or data nobody asked for is dropped. The stall rules apply (`no peers found`, `stalled: ...`).
+- **Output and privacy.** A magnet is named in messages only as `magnet <first 8 hex digits>…`, never by the link,
+  its name, tracker URLs or peer addresses.
+- **The saved `.torrent`.** After a successful download `dm` also writes `<name>.torrent` next to it (with `-o x`,
+  `x.torrent`), never over an existing file (`name (1).torrent`, and so on), and prints `saved <name>.torrent`.
+  It holds the fetched metadata and the link's tracker URLs exactly as given, all in one tier. **A tracker URL
+  can contain a passkey or another secret; it is written to that file as is.** If the file cannot be written `dm`
+  warns `could not save <name>.torrent: <reason>` and still exits 0 with the download in place.
+- **Resume.** The partial and its resume key are the same as for the `.torrent` of that info-hash, so a magnet
+  continues a partial that `dm file.torrent` started and the other way round. Once the metadata is verified and the
+  partial exists, `dm` stores the metadata in a hidden `.dm.<key>.dm-meta` file beside it; the next run reads it
+  (only if its SHA-1 still equals the info-hash, otherwise it is deleted and fetched again) and asks no peer for
+  metadata. `--no-resume` deletes the partial and that file. It is deleted on success, and when the partial is
+  (a failure before any piece was verified); Ctrl-C keeps both.
+- **Serving the metadata.** Once it has verified the metadata `dm` also hands it to peers that ask for it on its
+  connections (up to 8 queued requests per peer); before that it answers such requests with a rejection.
+
 #### Resume
 
 An interrupted `dm` keeps what it has, and running the same command again in the same folder continues from there.
@@ -288,13 +330,15 @@ An interrupted `dm` keeps what it has, and running the same command again in the
 - **Torrents.** On resume `dm` re-checks every piece already on disk against the torrent's hashes
   (`checking existing data`; about 1-2 seconds per GB), counts only the pieces that pass, and asks peers for the
   rest. A partial whose files do not match the torrent (missing, extra or wrong-sized files, a symlink) is deleted
-  and the download starts over.
+  and the download starts over. A magnet link resumes the same way and also reuses its stored metadata (see
+  [Magnet links](#magnet-links)).
 - **What is left in the folder.** Hidden items next to the download, named `.<name>.<key>.dm-part` (the file or
   folder), `.<name>.<key>.dm-resume` (HTTP only, a few bytes: the length and the validator, never the URL or any
-  credentials) and `.<name>.<key>.dm-lock` (only while `dm` runs, or after it was killed). Partials made by `dm`
-  0.2.0 have a random name and are not resumed. To delete leftovers, including after a force-kill:
-  `find . -maxdepth 1 \( -name '.*.dm-part' -o -name '.*.dm-resume' -o -name '.*.dm-lock' \) -exec rm -r {} +`
-  (works in bash and zsh; it removes every `dm` partial, record and lock in the current folder, so run it only
+  credentials) and `.<name>.<key>.dm-lock` (`.dm.<key>.dm-lock` for a torrent; only while `dm` runs, or after
+  it was killed), and for a magnet `.dm.<key>.dm-meta` (the torrent's metadata, up to 10 MiB, never the link).
+  Partials made by `dm` 0.2.0 have a random name and are not resumed. To delete leftovers, including after a force-kill:
+  `find . -maxdepth 1 \( -name '.*.dm-part' -o -name '.*.dm-resume' -o -name '.*.dm-lock' -o -name '.*.dm-meta' -o -name '.*.dm-meta.*.tmp' \) -exec rm -r {} +`
+  (works in bash and zsh; it removes every `dm` partial, record, lock and stored metadata in the current folder, so run it only
   when nothing is downloading there).
 - **Sizes.** A torrent partial shows its full size at once (the files are sparse), so `ls` and `du` differ until
   it is filled.
