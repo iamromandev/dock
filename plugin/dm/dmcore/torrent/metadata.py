@@ -33,7 +33,7 @@ class ExtInfo:
 
 def ext_handshake(metadata_size=None):
     """The body of our extension handshake (send it with wire.extended(0, body))."""
-    top = {"m": {"ut_metadata": OUR_UT_METADATA}, "v": "dm 0.5.0", "reqq": 250}
+    top = {"m": {"ut_metadata": OUR_UT_METADATA}, "v": "dm 0.6.0", "reqq": 250}
     if metadata_size is not None:
         top["metadata_size"] = metadata_size
     return bencode.encode(top)

@@ -93,8 +93,8 @@ def _name(text):
 
 
 def parse(arg):
-    """The Magnet for a link; MagnetError (a TorrentError) when it names no v1 torrent or no way to find
-    peers."""
+    """The Magnet for a link; MagnetError (a TorrentError) when it names no v1 torrent. It may name no
+    trackers and no peers: `require_sources` says whether that can work."""
     if len(arg) > MAX_LINK or not is_magnet(arg):
         raise _invalid()
     hashes, v2 = set(), False
@@ -128,7 +128,10 @@ def parse(arg):
         raise _invalid()
     if not hashes:
         raise MagnetError("v2-only magnet links are not supported" if v2 else "invalid magnet link")
-    info_hash = hashes.pop()
-    if not trackers and not peers:
-        raise MagnetError("magnet link has no trackers or peers (DHT is not supported)", info_hash)
-    return Magnet(info_hash, name, tuple(trackers), tuple(peers))
+    return Magnet(hashes.pop(), name, tuple(trackers), tuple(peers))
+
+
+def require_sources(link, dht):
+    """MagnetError unless something can find peers for link: a tracker, a peer, or the DHT."""
+    if not dht and not link.trackers and not link.peers:
+        raise MagnetError("magnet link has no trackers or peers (and the DHT is off)", link.info_hash)

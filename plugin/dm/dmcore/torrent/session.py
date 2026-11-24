@@ -15,6 +15,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 from .. import Cancelled, resume as resume_mod
 from ..fmt import Throttle, human_size
@@ -22,6 +23,7 @@ from ..target import DmError
 from . import layout, metainfo, stats, tracker, wire
 from .handle import TorrentHandle
 from .choker import choose
+from .dht.client import DhtClient
 from .peer import PeerConn
 from .metadata import MetadataAssembler
 from .picker import Picker
@@ -31,7 +33,16 @@ from .storage import LayoutMismatch, PrepareError, Storage
 
 REPORTED_PORT = 6881  # what we tell trackers, though nothing listens
 MAX_PENDING = 1000
+MAX_DHT_PENDING = 500  # of those, the most the DHT may fill: one hostile node must not starve the rest
+FINDING_PEERS = "finding peers (DHT)"
+DHT_BOOTSTRAP = (("router.bittorrent.com", 6881), ("dht.transmissionbt.com", 6881),
+                 ("router.utorrent.com", 6881))
 RETRY_AFTER = 30  # seconds before dialing the same peer again
+DHT_TICK = 5  # seconds between the checks of when the next DHT lookup is due
+DHT_EVERY = 300  # seconds between DHT lookups of a download that has enough peers
+DHT_RETRY = 60  # ... and the least between two when it has fewer than DHT_FEW connections
+DHT_FEW = 5
+DHT_CLOSE = 1  # seconds the DHT socket may take to close on the way out: a cancel must stay quick
 
 
 @dataclass(frozen=True)
@@ -44,6 +55,13 @@ class Options:
     connect_timeout: float = 10
     idle_timeout: float = 120
     tracker_budget: float = tracker.BUDGET  # seconds one announce to one tracker may take
+    dht: bool = True
+    dht_bootstrap: tuple = DHT_BOOTSTRAP
+    dht_cache: Path | None = None
+    # tests only: nothing reads these from the command line, the manifest or the environment. They widen the
+    # addresses the DHT will talk to, so production must never set them.
+    dht_allow_private: bool = False
+    dht_allow_loopback: bool = False
 
 
 def _span(seconds):
@@ -59,8 +77,8 @@ class Session:
     `(meta, storage, have)` and then carries on as a normal download over the same connections."""
 
     def __init__(self, meta, storage, progress, handle, opts, log=None, on_complete=None, have=(),
-                 *, info_hash=None, extra_peers=(), trackers=None, on_metadata=None, metadata=None, on_stats=None,
-                 clock=time.monotonic):
+                 *, info_hash=None, extra_peers=(), trackers=None, on_metadata=None, metadata=None,
+                 on_stats=None, clock=time.monotonic):
         self.meta = meta
         self.storage = storage
         self._info_hash = info_hash
@@ -75,15 +93,21 @@ class Session:
         self.opts = opts
         self._log = log
         self.on_complete = on_complete  # places the finished download, before the tracker is told
-        self.peer_id = b"-DM0500-" + os.urandom(12)
+        self.peer_id = b"-DM0600-" + os.urandom(12)
         self.picker = None
         self._file_progress = None
         if meta is not None:
-            self._start_picker(meta, have)  # a resumed download: these pieces are ours before any peer connects
+            self._start_picker(meta, have)  # resumed: these pieces are ours before any peer connects
         self.conns = {}  # (host, port) -> PeerConn, connecting or connected
         self.banned = set()
         self.pending = collections.deque()
         self.queued = set()
+        self.from_dht = set()  # queued peers only the DHT named: dropped if private
+        self.private = meta is not None and meta.private
+        self.dht_on = opts.dht and not self.private
+        self.dht = None  # the DhtClient, while there is one
+        self.dht_task = None
+        self.dht_lookups = 0
         self.last_try = {}
         self.wake = asyncio.Event()
         self.finished = asyncio.Event()
@@ -106,10 +130,10 @@ class Session:
         self.uploaded = 0
 
     def _start_picker(self, meta, have):
-        """The picker for meta, with the per-file counting wired in before the pieces already on disk are marked."""
+        """The picker for meta, with the per-file counting wired in before the pieces on disk are marked."""
         self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
         if len(meta.files) > 1:  # one file: the total bar says it all
-            specs = self.storage.files if self.storage is not None else layout.plan_files(meta)  # planned once
+            specs = self.storage.files if self.storage is not None else layout.plan_files(meta)  # once
             self._file_progress = stats.FileProgress(specs, meta.piece_length, meta.total)
             self.picker.on_verified = self._file_progress.piece_done
         self.picker.mark_verified(have)
@@ -198,6 +222,8 @@ class Session:
         self.storage = storage
         self._start_picker(meta, have)
         self.meta = meta  # last: from here every connection is in download mode
+        if meta.private:
+            self._go_private()
         self.last_progress = loop.time()
         for conn in list(self.conns.values()):
             conn.enter_download()
@@ -244,7 +270,7 @@ class Session:
             "peers_connected": len(live),
             "peers_known": max(len(live), len(self.conns) + len(self.pending)),
             "eta_s": left / down_rate if left and down_rate >= 1 else None,
-            "ratio": self.uploaded / self.downloaded if self.downloaded else None,  # per run; None: nothing yet
+            "ratio": self.uploaded / self.downloaded if self.downloaded else None,  # per run
             "peers": peers,
         }
 
@@ -254,8 +280,9 @@ class Session:
         return sum(1 for c in self.conns.values() if c.handshaken)
 
     def _emit(self, fn, *args):
-        """Report to the caller's view; a failure there (formatting, the host's pipe) must not stop the download:
-        it would end the piece that is being finished before its refill. Only the class is logged, and once."""
+        """Report to the caller's view; a failure there (formatting, the host's pipe) must not stop the
+        download: it would end the piece that is being finished before its refill. Only the class is
+        logged, and once."""
         try:
             self.handle.emit(fn, *args)
         except Exception as e:
@@ -268,10 +295,18 @@ class Session:
         if self.on_stats is not None and self.meta is not None and self.picker is not None:
             self._emit(self.on_stats, self.stats, final)  # the receiver decides whether an update is due
 
+    def _finding_peers(self):
+        """No peer yet, no tracker has answered, and the DHT is looking: say so."""
+        if self.picker is not None and self.picker.done():
+            return False
+        return self.dht_on and self.tracker_url is None and not self.connected()
+
     def _progress_bar(self, final):
         if self.meta is None:
             n = self.connected()
             text = f"fetching metadata · {n} peer{'s' if n != 1 else ''}"
+            if self._finding_peers():
+                text = FINDING_PEERS
             if self.sent != (None, text) and self.throttle.ready():
                 self.sent = (None, text)
                 self._emit(self.report, None, text)
@@ -280,6 +315,8 @@ class Session:
         pct = 100 if final else min(99, done * 100 // total)
         n = self.connected()
         text = f"{human_size(done)} of {human_size(total)} · {n} peer{'s' if n != 1 else ''}"
+        if self._finding_peers() and not final:
+            text = FINDING_PEERS
         if self.sent == (pct, text):
             return
         if self.throttle.ready(final=final):
@@ -299,17 +336,43 @@ class Session:
         for other in list(self.conns.values()):
             other.refill()
 
-    def add_peers(self, peers):
+    def add_peers(self, peers, from_dht=False):
         shuffled = list(peers)
         random.shuffle(shuffled)
         for addr in shuffled:
-            if len(self.pending) >= MAX_PENDING:
+            if len(self.pending) >= MAX_PENDING or (from_dht and len(self.from_dht) >= MAX_DHT_PENDING):
                 break
-            if addr in self.banned or addr in self.conns or addr in self.queued:
+            if addr in self.banned or addr in self.conns:
+                continue
+            if addr in self.queued:
+                if not from_dht:
+                    self.from_dht.discard(addr)  # another source names it too: it stays if the DHT goes
                 continue
             self.queued.add(addr)
             self.pending.append(addr)
+            if from_dht:
+                self.from_dht.add(addr)
         self.wake.set()
+
+    def _dht_peers(self, peers):
+        if not self.dht_on:
+            return  # a reply that came in while the DHT was being stopped
+        self.add_peers(peers, from_dht=True)
+
+    def _go_private(self):
+        """The metadata says the torrent is private: no DHT from here, and its pending peers are dropped."""
+        self.private = True
+        self.dht_on = False
+        if self.dht is not None:
+            self.dht.on_peers = None  # at once: no late reply may add a peer while the task unwinds
+        if self.dht_task is not None:
+            self.dht_task.cancel()  # its own cleanup closes the socket
+            self.dht_task = None
+        self.dht = None  # nothing of this run is kept: a private torrent leaves no trace in the node cache
+        if self.from_dht:
+            self.pending = collections.deque(a for a in self.pending if a not in self.from_dht)
+            self.queued -= self.from_dht
+            self.from_dht = set()
 
     async def connector(self):
         loop = asyncio.get_running_loop()
@@ -317,6 +380,7 @@ class Session:
             while len(self.conns) < self.opts.max_peers and self.pending:
                 addr = self.pending.popleft()
                 self.queued.discard(addr)
+                self.from_dht.discard(addr)
                 if addr in self.banned or addr in self.conns:
                     continue
                 if loop.time() - self.last_try.get(addr, -RETRY_AFTER) < RETRY_AFTER:
@@ -420,13 +484,42 @@ class Session:
                 wait = max(60, result.interval)
                 event = ""
             else:
-                if first and not self.extra_peers:
+                if first and not self.extra_peers and not self.dht_on:
                     # every tracker failed on the first try: nothing else finds peers
                     self.fail(DmError(f"tracker error: {reason}", keep=True))
                     return
+                self.log(f"tracker: {reason}")  # the same reason an error would show: no address in it
                 wait = 60
             first = False
             await asyncio.sleep(wait)
+
+    async def dht_loop(self):
+        """Look for peers in the DHT now, then again every DHT_EVERY seconds, or DHT_RETRY when there are
+        few connections, until the download ends. Nothing here may fail the download."""
+        opts = self.opts
+        client = self.dht = DhtClient(self.info_hash, opts.dht_bootstrap, opts.dht_cache, self.log,
+                                      allow_loopback=opts.dht_allow_loopback,
+                                      allow_private=opts.dht_allow_private)
+        client.on_peers = self._dht_peers
+        try:
+            while True:
+                if not (self.picker is not None and self.picker.done()):
+                    found = []
+                    try:
+                        found = await client.lookup()
+                    except Exception as e:
+                        self.log(f"dht: lookup failed: {type(e).__name__}")
+                    self.dht_lookups += 1
+                    self.log(f"dht: lookup {self.dht_lookups}, {client.stats['nodes']} nodes, "
+                             f"{len(found)} peers")
+                last = self.clock()
+                while True:
+                    await asyncio.sleep(DHT_TICK)
+                    wait = DHT_RETRY if self.connected() < DHT_FEW else DHT_EVERY
+                    if self.clock() - last >= wait:
+                        break
+        finally:
+            await client.close()
 
     async def farewell(self, completed):
         if self.tracker_url is None:
@@ -454,7 +547,8 @@ class Session:
             idle = now - self.last_progress
             if self.connected():
                 if idle >= 2.5 * self.opts.stall_s:
-                    self.fail(DmError(f"stalled: no progress for {_span(2.5 * self.opts.stall_s)}", keep=True))
+                    span = _span(2.5 * self.opts.stall_s)
+                    self.fail(DmError(f"stalled: no progress for {span}", keep=True))
                     return
             elif idle >= self.opts.stall_s:
                 self.fail(DmError("no peers found", keep=True))
@@ -466,8 +560,11 @@ class Session:
     async def run(self):
         loop = asyncio.get_running_loop()
         self.last_progress = loop.time()
-        loops = (self.tracker_loop(), self.connector(), self.monitor(), self.choker())
-        workers = [asyncio.ensure_future(c) for c in loops]
+        loops = [self.tracker_loop(), self.connector(), self.monitor(), self.choker()]
+        dht_task = None
+        if self.dht_on and not (self.picker is not None and self.picker.done()):
+            dht_task = self.dht_task = asyncio.ensure_future(self.dht_loop())
+        workers = [asyncio.ensure_future(c) for c in loops] + ([dht_task] if dht_task else [])
         for worker in workers:
             worker.add_done_callback(self._worker_done)
         completed = False
@@ -491,6 +588,22 @@ class Session:
         self.log(f"internal error: {type(task.exception()).__name__}")
         self.fail(DmError("internal error while downloading"))
 
+    async def _close_dht(self):
+        """Keep the nodes the DHT found for the next run, and free the socket, without ever failing or
+        waiting long: the cache is written only when the DHT found peers."""
+        client = self.dht
+        if client is None:
+            return
+        try:
+            if client.stats["peers"]:
+                client.save_cache()
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(client.close(), DHT_CLOSE)
+        except Exception:
+            pass
+
     async def shutdown(self, workers, completed):
         """Stop every task and connection, then tell the tracker (briefly: the user is waiting)."""
         everything = workers + list(self.background) + [c.task for c in self.conns.values() if c.task]
@@ -500,6 +613,7 @@ class Session:
         for conn in list(self.conns.values()):
             conn.close()
         await asyncio.gather(*everything, return_exceptions=True)
+        await self._close_dht()
         try:
             placed = False
             if completed and self.on_complete is not None:

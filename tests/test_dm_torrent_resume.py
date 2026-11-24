@@ -356,7 +356,7 @@ class Resume(Harness):
                          if make_err else mock.MagicMock())
                 with patch:
                     with self.assertRaises(DmError) as cm:
-                        self.go(t, opts=session.Options(stall_s=1))
+                        self.go(t, opts=session.Options(dht=False, stall_s=1))
                 self.assertEqual(cm.exception.keep, label != "eacces")
                 self.assertEqual(self.listing(), [])
                 shutil.rmtree(self.cwd)
@@ -386,7 +386,7 @@ class Resume(Harness):
         t = self.single(size=4 * PL, tr=tr, piece_length=PL)
         self.part_path(t).write_bytes(t.blob[:2 * PL] + bytes(2 * PL))
         with self.assertRaises(DmError) as cm:
-            self.go(t, opts=session.Options(stall_s=1))
+            self.go(t, opts=session.Options(dht=False, stall_s=1))
         self.assertEqual(str(cm.exception), "no peers found")
         self.assertEqual(self.listing(), [self.part_path(t).name])
 
@@ -397,7 +397,7 @@ class Resume(Harness):
 
         def work():
             try:
-                self.go(t, handle=handle, opts=session.Options(stall_s=60))
+                self.go(t, handle=handle, opts=session.Options(dht=False, stall_s=60))
             except BaseException as e:
                 result["err"] = e
 
@@ -435,7 +435,7 @@ class Resume(Harness):
         t = self.single(size=4 * PL, tr=tr, piece_length=PL)
         with mock.patch.object(session.resume_mod.os, "unlink", side_effect=OSError(13, "Permission denied")):
             with self.assertRaises(DmError) as cm:
-                self.go(t, opts=session.Options(stall_s=1))
+                self.go(t, opts=session.Options(dht=False, stall_s=1))
         self.assertEqual(str(cm.exception), "no peers found")
 
     def test_a_full_download_that_cannot_be_placed_keeps_the_partial_for_a_rerun(self):
@@ -482,7 +482,7 @@ class Resume(Harness):
         t = self.single(size=4 * PL, tr=tr, piece_length=PL)
         self.swarm(tr, self.seeder(t, never_unchoke=True))
         with self.assertRaises(DmError) as cm:
-            self.go(t, opts=session.Options(stall_s=1, idle_timeout=30))
+            self.go(t, opts=session.Options(dht=False, stall_s=1, idle_timeout=30))
         self.assertTrue(cm.exception.keep)
         self.assertTrue(str(cm.exception).startswith("stalled"))
         shutil.rmtree(self.cwd)
@@ -490,7 +490,7 @@ class Resume(Harness):
         dead = self.single(size=4 * PL, piece_length=PL, tr=tr)
         with mock.patch.object(session.tracker, "announce", side_effect=session.tracker.TrackerError("boom")):
             with self.assertRaises(DmError) as cm:
-                self.go(dead, opts=session.Options(stall_s=1))
+                self.go(dead, opts=session.Options(dht=False, stall_s=1))
         self.assertTrue(cm.exception.keep)
         self.assertTrue(str(cm.exception).startswith("tracker error"))
 

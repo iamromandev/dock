@@ -29,7 +29,7 @@ from dmcore.torrent import layout, metainfo, session, tracker as tracker_mod  # 
 from dmcore.torrent.handle import TorrentHandle  # noqa: E402
 
 PL = 16384
-FAST = session.Options(stall_s=3, connect_timeout=2, idle_timeout=10)
+FAST = session.Options(dht=False, stall_s=3, connect_timeout=2, idle_timeout=10)
 
 
 class Env(unittest.TestCase):
@@ -234,7 +234,7 @@ class Download(Harness):
         t = self.single(size=100000, tr=tr, scheme="udp")
         self.swarm(tr, self.seeder(t))
         with mock.patch.object(tracker_mod, "UDP_TIMEOUT", 0.15):
-            final, _, _ = self.run_torrent(t, opts=session.Options(stall_s=10, connect_timeout=2))
+            final, _, _ = self.run_torrent(t, opts=session.Options(dht=False, stall_s=10, connect_timeout=2))
         self.assertEqual(final.read_bytes(), t.blob)
 
     def test_a_dead_udp_tracker_does_not_hold_up_a_live_one_in_its_tier(self):
@@ -244,7 +244,7 @@ class Download(Harness):
             [f"udp://127.0.0.1:{dead.udp_port}/announce", f"http://127.0.0.1:{good.http_port}/announce"]])
         self.swarm(good, self.seeder(t))
         start = time.monotonic()
-        final, _, _ = self.run_torrent(t, opts=session.Options(stall_s=30, connect_timeout=2))
+        final, _, _ = self.run_torrent(t, opts=session.Options(dht=False, stall_s=30, connect_timeout=2))
         self.assertEqual(final.read_bytes(), t.blob)
         self.assertLess(time.monotonic() - start, 10)
 
@@ -253,7 +253,7 @@ class Download(Harness):
         t = self.single(size=50000, tr=dead, scheme="udp")
         start = time.monotonic()
         with self.assertRaises(DmError) as cm:
-            self.run_torrent(t, opts=session.Options(stall_s=30, tracker_budget=0.5))
+            self.run_torrent(t, opts=session.Options(dht=False, stall_s=30, tracker_budget=0.5))
         self.assertEqual(str(cm.exception), "tracker error: timed out")
         self.assertLess(time.monotonic() - start, 10)
 
@@ -268,7 +268,7 @@ class Download(Harness):
         start = time.monotonic()
         with mock.patch.object(session.Session, "connector", boom):
             with self.assertRaises(DmError) as cm:
-                self.run_torrent(t, opts=session.Options(stall_s=60))
+                self.run_torrent(t, opts=session.Options(dht=False, stall_s=60))
         self.assertNotIn("secret", str(cm.exception))
         self.assertLess(time.monotonic() - start, 10)
         self.assertEqual(self.listing(), [])
@@ -356,7 +356,7 @@ class Download(Harness):
         t = self.single(size=50000, tr=tr)
         start = time.monotonic()
         with self.assertRaises(DmError) as cm:
-            self.run_torrent(t, opts=session.Options(stall_s=1))
+            self.run_torrent(t, opts=session.Options(dht=False, stall_s=1))
         self.assertEqual(str(cm.exception), "no peers found")
         self.assertLess(time.monotonic() - start, 4)
         self.assertEqual(self.listing(), [])
@@ -364,7 +364,7 @@ class Download(Harness):
     def test_a_torrent_without_usable_trackers_has_no_peers(self):
         t = self.single(size=50000)
         with self.assertRaises(DmError) as cm:
-            self.run_torrent(t, opts=session.Options(stall_s=1))
+            self.run_torrent(t, opts=session.Options(dht=False, stall_s=1))
         self.assertEqual(str(cm.exception), "no peers found")
 
     def test_peers_that_never_unchoke_stall_the_download(self):
@@ -373,7 +373,7 @@ class Download(Harness):
         self.swarm(tr, self.seeder(t, never_unchoke=True))
         start = time.monotonic()
         with self.assertRaises(DmError) as cm:
-            self.run_torrent(t, opts=session.Options(stall_s=1, idle_timeout=30))
+            self.run_torrent(t, opts=session.Options(dht=False, stall_s=1, idle_timeout=30))
         self.assertEqual(str(cm.exception), "stalled: no progress for 2.5 seconds")
         self.assertLess(time.monotonic() - start, 6)
         self.assertEqual(self.listing(), [])
@@ -504,7 +504,7 @@ class EventLoopDelay(Harness):
         tr = self.serve_tracker()
         t = self.single(size=32 * 1024 * 1024, piece_length=1024 * 1024, tr=tr)
         self.swarm(tr, self.seeder(t))
-        lag = self.lag_while(lambda: self.run_torrent(t, opts=session.Options(stall_s=20, idle_timeout=20)))
+        lag = self.lag_while(lambda: self.run_torrent(t, opts=session.Options(dht=False, stall_s=20, idle_timeout=20)))
         print(f"\n[perf] worst event-loop delay: {lag * 1000:.1f} ms", file=sys.stderr)
         self.assertLess(lag, 0.1)
 
@@ -528,7 +528,7 @@ class Run(Harness):
 
     def dm(self, arg, cancelled=None, **inputs):
         events = []
-        code = dmcore.run({"url": arg, **inputs}, str(self.cwd),
+        code = dmcore.run({"url": arg, "no_dht": True, **inputs}, str(self.cwd),
                           lambda method, **p: events.append((method, p)), cancelled or threading.Event())
         self.events = events
         return code
@@ -560,7 +560,7 @@ class Run(Harness):
         """dmcore.run with the time of every event: (exit code, [(seconds, method, params)])."""
         events = []
         start = time.monotonic()
-        code = dmcore.run({"url": arg, **inputs}, str(self.cwd),
+        code = dmcore.run({"url": arg, "no_dht": True, **inputs}, str(self.cwd),
                           lambda method, **p: events.append((time.monotonic() - start, method, p)), threading.Event())
         self.events = [(m, p) for _, m, p in events]
         return code, events

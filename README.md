@@ -278,8 +278,8 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
 ```
 
 - **Supported:** v1 torrents with one file or many, from HTTP(S) and UDP trackers (`announce` and `announce-list`).
-  Magnet links are covered [below](#magnet-links). Not supported yet: DHT, peer exchange, v2-only torrents,
-  choosing files, and `.torrent` files given as a URL.
+  Magnet links are covered [below](#magnet-links), and the DHT [here](#the-dht). Not supported yet: peer exchange,
+  v2-only torrents, choosing files, and `.torrent` files given as a URL.
 - **One file or a folder:** a single-file torrent saves one file; a multi-file torrent saves a folder with the
   torrent's name and its files in it, empty files included. The `(1)`, `(2)` naming of an existing name applies to
   both, and `-o` names the file or the folder. Paths in the torrent that would leave the folder (`..`, absolute
@@ -306,8 +306,9 @@ saved downloads/dataset (1) (310.5 MB, 42 files)      # downloads/dataset alread
 - **Privacy:** tracker URLs are never printed, and peer addresses appear only in that peers table (on your screen, or
   in the piped stderr), never in logs or errors (except with `-v`). A login in a
   tracker URL (`user:pass@host`) is stripped and not sent, so trackers that require one will not work.
-- **Private and loopback addresses:** trackers and peers on private, link-local or loopback addresses are contacted
-  like any other BitTorrent client does; a torrent can therefore make `dm` open connections to hosts on your network.
+- **Private and loopback addresses:** trackers and peers from a tracker or a magnet on private, link-local or loopback
+  addresses are contacted like any other BitTorrent client does (the DHT is stricter, see [below](#the-dht)); a
+  torrent can therefore make `dm` open connections to hosts on your network.
 - **Limits:** a torrent file over 10 MB, more than 100,000 files or about a million pieces, or very deep paths are refused; memory
   stays bounded (a 512 MiB download peaks well under 200 MB).
 
@@ -329,11 +330,11 @@ saved Linux ISO.torrent
   `[IPv6]` or a host name; invalid ones are ignored). `dn` is read but never used as a file name or printed. Other
   parameters are ignored. A link with no usable `xt`, with several different info-hashes, or whose only topic is a v2
   hash (`urn:btmh:`) fails with `invalid magnet link` or `v2-only magnet links are not supported`.
-- **No DHT.** `dm` finds peers only through the link's trackers and `x.pe` peers. A link with neither fails at once,
-  before any network use: `dm: magnet c9e15763…: magnet link has no trackers or peers (DHT is not supported)`.
-  Many public magnets list no tracker and rely on the DHT, so they cannot be downloaded with `dm` yet.
-- **Metadata fetch.** While it asks peers for the metadata the progress line reads `fetching metadata · N peers` with
-  no percentage. The metadata is accepted only when its SHA-1 equals the info-hash, and the same limits as for a
+- **A link with only an info-hash works.** `dm` looks for peers in the [DHT](#the-dht) as well as through the link's
+  trackers and `x.pe` peers. With `--no-dht`, a link with neither a tracker nor a peer fails at once, before any
+  network use: `dm: magnet c9e15763…: magnet link has no trackers or peers (and the DHT is off)`.
+- **Metadata fetch.** While it looks for peers the progress line reads `finding peers (DHT)` (when nothing else has
+  found one yet), then `fetching metadata · N peers` with no percentage. The metadata is accepted only when its SHA-1 equals the info-hash, and the same limits as for a
   `.torrent` apply (at most 10 MiB, safe paths, file and piece limits). A peer that sends a wrong size, a wrong
   block or data nobody asked for is dropped. The stall rules apply (`no peers found`, `stalled: ...`).
 - **Output and privacy.** A magnet is named in messages only as `magnet <first 8 hex digits>…`, never by the link,
@@ -351,6 +352,41 @@ saved Linux ISO.torrent
   (a failure before any piece was verified); Ctrl-C keeps both.
 - **Serving the metadata.** Once it has verified the metadata `dm` also hands it to peers that ask for it on its
   connections (up to 8 queued requests per peer); before that it answers such requests with a rejection.
+
+#### The DHT
+
+For every torrent and magnet that is not private, `dm` also looks for peers in the BitTorrent DHT (BEP 5), next to
+the trackers and `x.pe` peers. This is what lets a magnet that has only an info-hash download, and it finds extra
+peers for a torrent whose trackers are dead. While no peer is connected and no tracker has answered, the progress
+reads `finding peers (DHT)`. It looks again every 5 minutes, or after 60 seconds when fewer than 5 peers are
+connected, and stops when the download ends or is cancelled. With the DHT on, a torrent whose trackers all fail
+no longer fails at once: it waits for the stall time (`--stall-seconds`) and then ends with `no peers found`.
+
+```
+$ python3 -m cli dm "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056"      # no tracker: the DHT finds peers
+$ python3 -m cli dm --no-dht file.torrent                                                # trackers and x.pe peers only
+```
+
+- **`--no-dht`** turns it off for that run: no DHT traffic and the node cache is neither read nor written. A magnet
+  with no tracker and no peer then fails at once with `(and the DHT is off)`.
+- **Private torrents** (`private` set in the torrent, BEP 27) never use the DHT, even without `--no-dht`. For a
+  magnet this is known only once the metadata has arrived: the DHT lookups stop then, and the peers only they had
+  found, which are not yet connected, are dropped.
+- **Read-only, no port.** `dm` is a read-only DHT node (BEP 43): it only asks, with the `get_peers` query, never
+  answers a node, never announces and never opens a listening port. It sends from one UDP port the system picks and
+  accepts only the replies to its own queries. Work is bounded: at most 8 queries in flight, 300 per lookup and 50
+  datagrams a second; replies are size-checked, parsed strictly and capped; and nodes or peers on private,
+  link-local, loopback or reserved addresses are never used from the DHT.
+- **Bootstrap hosts.** A lookup starts from the nodes in the cache (below) and from `router.bittorrent.com:6881`,
+  `dht.transmissionbt.com:6881` and `router.utorrent.com:6881`. Their names are resolved by your system's resolver.
+- **The node cache.** After a download that found peers through the DHT, `dm` keeps up to 200 DHT node addresses (and
+  ids) that answered, in `~/.dock/data/dev.dock.dm/dht-nodes.dat` (6 KiB at most; `DOCK_HOME` replaces `~/.dock`).
+  It holds no info-hash and no peer, and leaves out nodes close to the info-hash you looked up. A missing,
+  oversized, malformed or symlinked file is ignored and replaced; a folder `dm` cannot write to is skipped silently.
+  Delete the file at any time to start fresh.
+- **Privacy.** The bootstrap hosts and the DHT nodes `dm` asks learn your IP address and the info-hash you are looking
+  for; peers found there learn your IP address, as with any BitTorrent client. Use `--no-dht` to avoid that. Node and
+  peer addresses are never written to a log, an output line or an error; peers appear only in the peers table.
 
 #### Resume
 

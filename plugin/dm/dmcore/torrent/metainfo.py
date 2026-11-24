@@ -36,6 +36,7 @@ class Meta:
     files: tuple
     multi: bool
     trackers: tuple
+    private: bool = False  # BEP 27: info.private is 1
 
 
 def _invalid(reason):
@@ -144,6 +145,7 @@ def parse(data):
         files=files,
         multi=multi,
         trackers=_trackers(top),
+        private=type(info.get(b"private")) is int and info[b"private"] == 1,
     )
 
 

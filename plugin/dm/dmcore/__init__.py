@@ -3,6 +3,7 @@
 import os
 import sys
 import threading
+from pathlib import Path
 
 
 class Cancelled(Exception):
@@ -61,8 +62,10 @@ def save_torrent(final, target, info, trackers):
         raise
 
 
-def run(inputs, cwd, notify, cancelled):
-    """Run one dm invocation. Returns the exit code; raises Cancelled on cancel."""
+def run(inputs, cwd, notify, cancelled, data_dir=None):
+    """Run one dm invocation. Returns the exit code; raises Cancelled on cancel.
+
+    data_dir is the plugin's own folder: dm keeps one file there, the DHT node cache."""
     from . import fetch
     from .fmt import human_size
     from .names import _fit
@@ -85,7 +88,7 @@ def run(inputs, cwd, notify, cancelled):
         notify("bar", id="dm", label="", percent=percent, message=message)
 
     def drop_bar():
-        """A download that did not finish leaves no bar behind: the error line (or the cancel) is all there is to show."""
+        """A download that did not finish leaves no bar behind: only the error line (or the cancel) shows."""
         if view is not None:
             view.drop()
         elif last:
@@ -145,15 +148,18 @@ def run(inputs, cwd, notify, cancelled):
     try:
         target = resolve(cwd, inputs.get("output"), inputs.get("dir"))
         link = None
+        dht = not inputs.get("no_dht")
         if magnet.is_magnet(arg):
             try:
                 link = magnet.parse(arg)
+                magnet.require_sources(link, dht)
             except magnet.MagnetError as e:  # the label shows the hash only, never the link
                 text = f"{magnet.label(e.info_hash)}: {e}" if e.info_hash else str(e)
                 raise DmError(text, e.code) from None
         torrent = torrent_path(cwd, arg) if link is None else None
         if link is not None or torrent is not None:
             from .torrent.handle import TorrentHandle
+            from .torrent.dht.cache import CACHE_NAME
             from .torrent.session import Options
             from .view import TorrentView
 
@@ -161,7 +167,10 @@ def run(inputs, cwd, notify, cancelled):
             stall = inputs.get("stall")
             if stall is not None and (isinstance(stall, bool) or not isinstance(stall, int) or stall < 1):
                 raise DmError("--stall-seconds must be at least 1", 2)
-            opts = Options() if stall is None else Options(stall_s=stall)
+            kw = {} if stall is None else {"stall_s": stall}
+            if dht and data_dir:
+                kw["dht_cache"] = Path(data_dir) / CACHE_NAME
+            opts = Options(dht=dht, **kw)
             handle = TorrentHandle()
             if link is not None:
                 threading.Thread(target=work_magnet, args=(link, target, opts), daemon=True).start()

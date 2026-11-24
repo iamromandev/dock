@@ -266,7 +266,7 @@ class DmTorrentLive(LiveAsserts, unittest.TestCase):
         t = self.torrent(files, name="pack", piece_length=self.PL)
         self.seed(t, "--delay", "0.05")
         t.write_torrent(work / "data.torrent")
-        p = ptykit.Pty([sys.executable, "-m", "cli", "dm", "data.torrent"], cols=100, rows=40,
+        p = ptykit.Pty([sys.executable, "-m", "cli", "dm", "--no-dht", "data.torrent"], cols=100, rows=40,
                        env=host_env(self.home), cwd=work)
         self.addCleanup(p.close)
 
