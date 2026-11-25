@@ -1017,7 +1017,7 @@ class Sweep(DockIsolated):
         for short, label in owners.items():
             name = f"{self.PREFIX}{tag}-{short}"
             r = dockenv.run_runtime("create", "--name", name, "--label", f"dev.dock.owner={label}",
-                                    "python:3.12-slim", "true")
+                                    "python:3.15.2-slim", "true")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.addCleanup(dockenv.run_runtime, "rm", "-f", name)
             names[short] = name
@@ -1213,7 +1213,7 @@ class PluginBuild(DockIsolated):
             self.configure()
 
             def break_build(path):
-                (path / "Dockerfile").write_text("FROM python:3.12-slim\nRUN false\n")
+                (path / "Dockerfile").write_text("FROM python:3.15.2-slim\nRUN false\n")
 
             self.store.install(self.plugin_copy(ROOT / "plugin" / "hello", "dev.dock.hellofail", break_build))
             r = self.dock("plugin", "build", "dev.dock.hellofail")

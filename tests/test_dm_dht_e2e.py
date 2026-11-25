@@ -84,7 +84,7 @@ class DhtE2E(unittest.TestCase):
         (root / "data").mkdir(parents=True)
         t.write_torrent(root / "x.torrent")
         torrentkit.write_files(root / "data", t)
-        cid, ip = start_container(self.rt, "python:3.12-slim",
+        cid, ip = start_container(self.rt, "python:3.15.2-slim",
                                   ["python3", "-u", "/fx/peer.py", "seeder", "--torrent", "/seed/x.torrent",
                                    "--data", "/seed/data", *flags], [*PY_MOUNTS, (root, "/seed", "ro")], env=PY_ENV)
         self.addCleanup(dockenv.kill_container, cid, self.rt)
@@ -96,7 +96,7 @@ class DhtE2E(unittest.TestCase):
         args = ["python3", "-u", "/fx/dht.py", "--nodes", "50", "--port-base", "7000", "--advertise", "auto"]
         if t is not None and peers:
             args += ["--peers", ",".join(f"{h}:{p}" for h, p in peers), "--info-hash", t.info_hash.hex()]
-        cid, _ = start_container(self.rt, "python:3.12-slim", args, PY_MOUNTS, env=PY_ENV, ready="dht nodes:")
+        cid, _ = start_container(self.rt, "python:3.15.2-slim", args, PY_MOUNTS, env=PY_ENV, ready="dht nodes:")
         self.addCleanup(dockenv.kill_container, cid, self.rt)
         logs = subprocess.run([self.rt, "logs", cid], capture_output=True, text=True, timeout=60, check=False)
         line = next(x for x in (logs.stdout + logs.stderr).splitlines() if x.startswith("dht nodes:"))

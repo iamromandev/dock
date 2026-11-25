@@ -52,7 +52,7 @@ cli/ (Python host)
 
 ## Try it
 
-Needs Python 3.11+ and Docker or Podman (running).
+Needs Python 3.15.2+ and Docker or Podman (running).
 
 ```sh
 make install      # install the example plugin into ~/.dock (the image is built on first use)
@@ -496,7 +496,7 @@ Things to know:
 
 - Image builds run with the runtime's default network access and without any
   of the restrictions above, and run the Dockerfile's instructions as written;
-  only install plugins whose Dockerfile you trust. Base images (such as `python:3.12-slim`)
+  only install plugins whose Dockerfile you trust. Base images (such as `python:3.15.2-slim`)
   are not pinned to a digest.
 - The build context is the whole installed plugin folder, so anything in it is sent to
   the runtime; give your plugin a `.dockerignore` for what the image does not need.
@@ -534,7 +534,7 @@ Things to know:
    ```
 
    ```dockerfile
-   FROM python:3.12-slim
+   FROM python:3.15.2-slim
    COPY . /plugin
    ```
 

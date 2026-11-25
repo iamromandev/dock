@@ -20,7 +20,7 @@ PID = b"-DM0200-" + b"x" * 12
 
 
 def feed(data, eof=True):
-    """A StreamReader holding data; build it inside a running loop (3.12 needs one)."""
+    """A StreamReader holding data; build it inside a running loop."""
     reader = asyncio.StreamReader()
     reader.feed_data(data)
     if eof:

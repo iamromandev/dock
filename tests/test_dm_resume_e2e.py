@@ -43,7 +43,7 @@ class DmResumeE2E(unittest.TestCase):
         cls.base = Path(tempfile.mkdtemp(prefix="dock-dmr-work-")).resolve()
         cls.addClassCleanup(shutil.rmtree, cls.base, ignore_errors=True)
         r = subprocess.run([cls.rt, "run", "-d", "--rm", "-v", f"{SERVER_DIR}:/srv:ro", "--label", "dock-test=dmserver",
-                            "python:3.12-slim", "python3", "-u", "/srv/server.py", "--max-seconds", "900"],
+                            "python:3.15.2-slim", "python3", "-u", "/srv/server.py", "--max-seconds", "900"],
                            capture_output=True, text=True, timeout=600, check=False)
         if r.returncode != 0:
             raise AssertionError(f"cannot start the test server container: {r.stderr}")
