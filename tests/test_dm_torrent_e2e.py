@@ -1,7 +1,7 @@
 """dm torrent end to end: dock, the real container runtime, the dm image, and tracker and seeder containers.
 
 The fixtures are the ones the in-process tests use (tests/fixtures/torrent), mounted read-only into
-python:3.12-slim containers together with dmcore. They are reached by container IP on the runtime's default
+python:3.15.2-slim containers together with dmcore. They are reached by container IP on the runtime's default
 network, like the dmserver of test_dm_e2e.
 """
 
@@ -77,7 +77,7 @@ class E2E(unittest.TestCase):
         cls.addClassCleanup(shutil.rmtree, cls.home, ignore_errors=True)
         cls.base = Path(tempfile.mkdtemp(prefix="dock-dmt-work-")).resolve()
         cls.addClassCleanup(shutil.rmtree, cls.base, ignore_errors=True)
-        cid, cls.tracker_ip = start_container(cls.rt, "python:3.12-slim", ["python3", "-u", "/fx/tracker.py"],
+        cid, cls.tracker_ip = start_container(cls.rt, "python:3.15.2-slim", ["python3", "-u", "/fx/tracker.py"],
                                               PY_MOUNTS, env=PY_ENV)
         cls.addClassCleanup(dockenv.kill_container, cid, cls.rt)
         cls.announce = f"http://{cls.tracker_ip}:8000/announce"
@@ -111,7 +111,7 @@ class E2E(unittest.TestCase):
         (root / "data").mkdir(parents=True)
         t.write_torrent(root / "x.torrent")
         torrentkit.write_files(root / "data", t)
-        cid, _ = start_container(self.rt, "python:3.12-slim",
+        cid, _ = start_container(self.rt, "python:3.15.2-slim",
                                  ["python3", "-u", "/fx/peer.py", "seeder", "--torrent", "/seed/x.torrent",
                                   "--data", "/seed/data", *flags],
                                  [*PY_MOUNTS, (root, "/seed", "ro")], env=PY_ENV)
@@ -364,7 +364,7 @@ class E2E(unittest.TestCase):
         (root / "data").mkdir(parents=True)
         t, payload = torrentkit.make_big_torrent(root / "data", "big.bin", size, piece_length, self.announce)
         t.write_torrent(root / "x.torrent")
-        cid, _ = start_container(self.rt, "python:3.12-slim",
+        cid, _ = start_container(self.rt, "python:3.15.2-slim",
                                  ["python3", "-u", "/fx/peer.py", "seeder", "--torrent", "/seed/x.torrent",
                                   "--data", "/seed/data"],
                                  [*PY_MOUNTS, (root, "/seed", "ro")], env=PY_ENV)
@@ -435,7 +435,7 @@ class E2E(unittest.TestCase):
         name = f"dm-probe-{os.getpid()}"
         self.addCleanup(dockenv.kill_container, name, self.rt)
         r = subprocess.run([self.rt, "run", "--rm", "--name", name, "--label", "dock-test=dmtorrent",
-                            "-e", "PYTHONPATH=/dm", "-v", f"{DM}:/dm:ro", "python:3.12-slim",
+                            "-e", "PYTHONPATH=/dm", "-v", f"{DM}:/dm:ro", "python:3.15.2-slim",
                             "python3", "-c", probe, ip, t.info_hash.hex()], capture_output=True, text=True,
                            timeout=120, check=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -484,7 +484,7 @@ class E2E(unittest.TestCase):
         name = f"dm-probe-{os.getpid()}"
         self.addCleanup(dockenv.kill_container, name, self.rt)
         r = subprocess.run([self.rt, "run", "--rm", "--name", name, "--label", "dock-test=dmtorrent",
-                            "-e", "PYTHONPATH=/dm", "-v", f"{DM}:/dm:ro", "python:3.12-slim",
+                            "-e", "PYTHONPATH=/dm", "-v", f"{DM}:/dm:ro", "python:3.15.2-slim",
                             "python3", "-c", probe, ip, t.info_hash.hex()], capture_output=True, text=True,
                            timeout=120, check=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

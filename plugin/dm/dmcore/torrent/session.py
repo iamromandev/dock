@@ -20,7 +20,7 @@ from pathlib import Path
 from .. import Cancelled, resume as resume_mod
 from ..fmt import Throttle, human_size
 from ..target import DmError
-from . import layout, metainfo, stats, tracker, wire
+from . import layout, metainfo, select, stats, tracker, wire
 from .handle import TorrentHandle
 from .choker import choose
 from .dht.client import DhtClient
@@ -95,9 +95,11 @@ class Session:
         self.opts = opts
         self._log = log
         self.on_complete = on_complete  # places the finished download, before the tracker is told
-        self.peer_id = b"-DM0700-" + os.urandom(12)
+        self.peer_id = b"-DM0800-" + os.urandom(12)
         self.picker = None
         self._file_progress = None
+        self.selected_total = meta.total if meta is not None else None  # bytes of the picked files
+        self._show_files = True
         if meta is not None:
             self._start_picker(meta, have)  # resumed: these pieces are ours before any peer connects
         self.conns = {}  # (host, port) -> PeerConn, connecting or connected
@@ -134,11 +136,22 @@ class Session:
 
     def _start_picker(self, meta, have):
         """The picker for meta, with the per-file counting wired in before the pieces on disk are marked."""
-        self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total)
+        chosen = self.storage.wanted if self.storage is not None else None  # None: every file
+        specs = None
+        wanted = None
+        if chosen is not None:
+            specs = self.storage.files
+            wanted = select.wanted_pieces(specs, chosen, meta.piece_length)
+            self.selected_total = sum(specs[i].length for i in chosen)
+        else:
+            self.selected_total = meta.total
+        self.picker = Picker(len(meta.hashes), meta.piece_length, meta.total, wanted=wanted)
         if len(meta.files) > 1:  # one file: the total bar says it all
-            specs = self.storage.files if self.storage is not None else layout.plan_files(meta)  # once
-            self._file_progress = stats.FileProgress(specs, meta.piece_length, meta.total)
+            # the plan, once
+            specs = specs or (self.storage.files if self.storage is not None else layout.plan_files(meta))
+            self._file_progress = stats.FileProgress(specs, meta.piece_length, meta.total, chosen)
             self.picker.on_verified = self._file_progress.piece_done
+            self._show_files = chosen is None or len(chosen) > 1
         self.picker.mark_verified(have)
 
     @property
@@ -262,12 +275,13 @@ class Session:
         """The numbers behind the live view; every peer address in it is for the host's screen only."""
         live = [c for c in self.conns.values() if c.handshaken and not c.closed]
         down_rate = self.down.value()
-        done = self.picker.verified_bytes() if self.picker is not None else 0
-        left = self.meta.total - done if self.meta is not None else None
+        done = self.selected_done() if self.picker is not None else 0
+        left = self.selected_total - done if self.meta is not None else None
         peers = sorted(((c.addr, stats.client_name(c.peer_id, c.client), c.down.value(), c.up.value())
                         for c in live), key=lambda p: p[2], reverse=True)
         return {
-            "files": self._file_progress.report() if self._file_progress is not None else [],
+            "files": (self._file_progress.report()
+                      if self._file_progress is not None and self._show_files else []),
             "down_rate": down_rate,
             "up_rate": self.up.value(),
             "peers_connected": len(live),
@@ -278,6 +292,13 @@ class Session:
         }
 
     # progress
+
+    def selected_done(self):
+        """Verified bytes of the picked files: a piece shared with an unpicked file counts only its picked
+        part."""
+        if self._file_progress is not None:
+            return self._file_progress.done()
+        return self.picker.verified_bytes()
 
     def connected(self):
         return sum(1 for c in self.conns.values() if c.handshaken)
@@ -314,8 +335,8 @@ class Session:
                 self.sent = (None, text)
                 self._emit(self.report, None, text)
             return
-        done, total = self.picker.verified_bytes(), self.meta.total
-        pct = 100 if final else min(99, done * 100 // total)
+        done, total = self.selected_done(), self.selected_total
+        pct = 100 if final else min(99, done * 100 // total) if total else 0
         n = self.connected()
         text = f"{human_size(done)} of {human_size(total)} · {n} peer{'s' if n != 1 else ''}"
         if self._finding_peers() and not final:
@@ -444,8 +465,8 @@ class Session:
         if self.meta is None:  # a leecher with something left, as far as the tracker can tell
             return tracker.Announce(self.info_hash, self.peer_id, REPORTED_PORT, 0, 0, 1, event)
         done = self.picker.verified_bytes()
-        return tracker.Announce(self.info_hash, self.peer_id, REPORTED_PORT, 0, done,
-                                self.meta.total - done, event)
+        left = self.selected_total - self.selected_done()  # only the picked bytes are left
+        return tracker.Announce(self.info_hash, self.peer_id, REPORTED_PORT, 0, done, left, event)
 
     async def announce_tier(self, tier, event):
         """Ask every tracker of the tier at once. (url, result) from the first to answer, with the
@@ -677,21 +698,25 @@ def _cannot_read(exc):
     return DmError(f"cannot read the partial download: {exc.strerror or type(exc).__name__}", keep=True)
 
 
-def _open_storage(meta, specs, tmp, target, handle, resume, note):
+def _open_storage(meta, specs, tmp, target, handle, resume, note, chosen=None):
     """(storage, resumed): the partial left by an earlier run when it is exactly right, else a new one."""
     def new():
-        return Storage(tmp, specs, meta.piece_length, meta.total, single=not meta.multi)
+        return Storage(tmp, specs, meta.piece_length, meta.total, single=not meta.multi, wanted=chosen)
 
     if not resume:
         resume_mod.discard(tmp)
     elif resume_mod.exists(tmp):
+        # whatever the earlier run had picked, its files move to where this selection wants them
         storage = new()
         try:
             storage.open_existing()
+            storage.reconcile()
         except LayoutMismatch:
+            storage.close()
             resume_mod.discard(tmp)
             note("cannot resume: starting over")
         except OSError as e:  # not a mismatch: the data may be fine, so it stays
+            storage.close()
             raise _cannot_read(e) from None
         else:
             return storage, True
@@ -722,14 +747,19 @@ class _Work:
         self.resumed = False  # ... and found one from an earlier run
 
 
-def _prepare(w, meta, specs, target, key, handle, resume, progress, note):
+def _prepare(w, meta, specs, target, key, handle, resume, progress, note, chosen=None):
     """Open or create the partial for meta and re-check it. Returns (storage, pieces already on disk)."""
     specs = specs or layout.plan_files(meta)
     w.meta = meta
     w.base = target.fixed_name or layout.item_name(meta)
     w.tmp = resume_mod.paths(target.folder, w.base, key).part
     w.opened = True
-    storage, resumed = _open_storage(meta, specs, w.tmp, target, handle, resume, note)
+    try:
+        storage, resumed = _open_storage(meta, specs, w.tmp, target, handle, resume, note, chosen)
+    except DmError as e:
+        if e.keep:
+            w.resumed = True  # refused or unreadable: the partial was there before this run, it stays
+        raise
     w.storage = storage
     w.resumed = resumed
     have = ()
@@ -747,23 +777,67 @@ def _prepare(w, meta, specs, target, key, handle, resume, progress, note):
 
 
 def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None,
-                on_stats=None):
+                on_stats=None, selection=None):
     """Download the torrent at path into target.folder. Returns (final path, bytes, number of files).
+
+    `selection` (select.Picks) limits it to the picked files; the bytes and the count are then theirs.
 
     An interrupted download keeps its partial (`.<name>.<key>.dm-part`); the next run of the same torrent
     re-checks every piece on disk and fetches the rest. `resume=False` throws an old partial away.
     """
-    return _run(metainfo.load(path), None, target, progress, handle, opts, log, resume, note, on_stats)[:3]
+    return _run(metainfo.load(path), None, target, progress, handle, opts, log, resume, note, on_stats,
+                selection)[:3]
 
 
 def run_magnet(magnet, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None,
-               on_stats=None):
+               on_stats=None, selection=None):
     """Download a magnet link (a magnet.Magnet) into target.folder.
 
     Returns (final path, bytes, number of files, the info dictionary bytes). The metadata is fetched from
     peers; everything else is as for run_torrent, and a partial from `.torrent` of the same info-hash resumes.
     """
-    return _run(None, magnet, target, progress, handle, opts, log, resume, note, on_stats)
+    return _run(None, magnet, target, progress, handle, opts, log, resume, note, on_stats, selection)
+
+
+class _Listed(Exception):
+    """Raised by the metadata hook of list_magnet to end the session once the metadata is known."""
+
+    def __init__(self, meta):
+        super().__init__()
+        self.meta = meta
+
+
+def list_magnet(magnet, target, handle=None, opts=None, log=None, progress=None):
+    """The Meta of a magnet link, for --list: nothing is downloaded, written or locked.
+
+    A valid `.dm-meta` of an earlier run is used without contacting anyone; otherwise the session runs only
+    until the metadata is verified (trackers, DHT and PEX as usual) and then stops. Nothing is stored, and a
+    stored file that is not valid is left alone (never deleted). `progress(None, text)` reports the search."""
+    handle = handle or TorrentHandle()
+    opts = opts or Options()
+    key = resume_mod.torrent_key(magnet.info_hash, target)
+    mpath = resume_mod.meta_path(target.folder, key)
+    stored = resume_mod.read_meta(mpath, magnet.info_hash, discard_bad=False)
+    if stored is not None:
+        try:
+            return metainfo.from_info(stored, magnet.trackers)
+        except DmError:  # hashes right but is no torrent we accept: ask the peers
+            pass
+
+    def on_metadata(info_bytes):  # in an executor
+        raise _Listed(metainfo.from_info(info_bytes, magnet.trackers))
+
+    try:
+        _drive(None, None, progress or (lambda pct, text: None), handle, opts, log, None, (), None,
+               info_hash=magnet.info_hash, extra_peers=magnet.peers, trackers=magnet.trackers,
+               on_metadata=on_metadata)
+    except _Listed as e:
+        return e.meta
+    except DmError:
+        if handle.aborted:
+            raise Cancelled() from None
+        raise
+    raise DmError("no metadata")  # unreachable: the session only ends through _Listed or an error
 
 
 def _keep_after(e, meta, w, out):
@@ -799,12 +873,22 @@ def _stored_meta(mpath, magnet, target, key, resume):
     return found, stored
 
 
-def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_stats=None):
+def _choose(meta, specs, selection):
+    """The indexes of the picked files, as a set that is None when every file is picked."""
+    chosen = select.resolve(specs, selection)
+    return None if len(chosen) == len(specs) else chosen
+
+
+def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_stats=None, selection=None):
     handle = handle or TorrentHandle()
     opts = opts or Options()
     say = note or (lambda text: None)
     note = lambda text: handle.emit(say, text)  # noqa: E731 - silent once aborted, like progress
     info_hash = meta.info_hash if meta is not None else magnet.info_hash
+    specs = chosen = None
+    if meta is not None:  # a bad pick fails here, before the folder or the network is touched
+        specs = layout.plan_files(meta)
+        chosen = _choose(meta, specs, selection)
     key = resume_mod.torrent_key(info_hash, target)
     lock = resume_mod.Lock(resume_mod.torrent_lock(target.folder, key))
     lock.acquire()
@@ -818,16 +902,19 @@ def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_sta
     try:
         try:
             have = ()
-            specs = None
             if magnet is None and not resume:
                 resume_mod.discard(mpath)  # with the partial: the same key may hold a magnet run's
             if magnet is not None:
                 known = _stored_meta(mpath, magnet, target, key, resume)
                 if known is not None:  # no second fetch: this is a plain torrent download from here on
                     meta, kw["metadata"] = known
+                    specs = layout.plan_files(meta)
+                    try:
+                        chosen = _choose(meta, specs, selection)
+                    except DmError as e:  # the stored metadata and the partial stay for the next try
+                        raise DmError(str(e), keep=True) from None
             if meta is not None:
-                specs = layout.plan_files(meta)
-                _, have = _prepare(w, meta, specs, target, key, handle, resume, progress, note)
+                _, have = _prepare(w, meta, specs, target, key, handle, resume, progress, note, chosen)
                 if magnet is not None:
                     kw["extra_peers"] = magnet.peers
             else:
@@ -836,12 +923,22 @@ def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_sta
                         if w.closed or handle.aborted:
                             raise Cancelled()
                         found = metainfo.from_info(info_bytes, magnet.trackers)
-                        storage, have = _prepare(w, found, None, target, key, handle, resume, progress, note)
-                        try:  # a rerun reads it instead of asking peers again; losing it only costs that
-                            resume_mod.write_meta(mpath, info_bytes)
-                        except OSError as e:
-                            if log is not None:
-                                log(f"could not store the metadata: {type(e).__name__}")
+                        found_specs = layout.plan_files(found)
+                        def store():  # a rerun reads it instead of asking peers; losing it costs only that
+                            try:
+                                resume_mod.write_meta(mpath, info_bytes)
+                            except OSError as e:
+                                if log is not None:
+                                    log(f"could not store the metadata: {type(e).__name__}")
+
+                        try:  # before anything is created
+                            picked = _choose(found, found_specs, selection)
+                        except DmError as e:
+                            store()  # the metadata stays for the next try; no partial exists
+                            raise DmError(str(e), keep=True) from None
+                        storage, have = _prepare(w, found, found_specs, target, key, handle, resume, progress,
+                                                 note, picked)
+                        store()
                         return found, storage, have
 
                 kw.update(info_hash=info_hash, extra_peers=magnet.peers, trackers=magnet.trackers,
@@ -849,10 +946,21 @@ def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_sta
             done = []
 
             def place():
+                with handle.lock:
+                    if handle.aborted:  # before finish_layout: a kept partial must keep its side data
+                        raise Cancelled()
+                    try:  # under the lock: a cancel cannot land between the check and the change
+                        w.storage.finish_layout()  # no side area, no folder without a picked file
+                    except OSError as e:
+                        raise DmError(f"cannot write to {target.folder}: {e.strerror or type(e).__name__}",
+                                      keep=True) from None
                 w.storage.close()
                 with handle.lock:
                     if handle.aborted:
                         raise Cancelled()
+                    # a cancel landing after finish_layout, while the storage closes (or a failing
+                    # move), keeps a partial with no side data any more: a resume must tolerate that, a
+                    # recheck already skips absent spans
                     move = place_dir if w.meta.multi else place_file
                     try:
                         done.append(move(w.tmp, target.folder, w.base))
@@ -896,4 +1004,9 @@ def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_sta
         finally:
             lock.release(remove=True)
     session = out.get("session")
-    return final, w.meta.total, len(w.meta.files), (session.metadata if session is not None else None)
+    if session is not None and session.storage is not None and session.storage.wanted is not None:
+        wanted = session.storage.wanted
+        picked_bytes, picked_files = session.selected_total, len(wanted)
+    else:
+        picked_bytes, picked_files = w.meta.total, len(w.meta.files)
+    return final, picked_bytes, picked_files, (session.metadata if session is not None else None)

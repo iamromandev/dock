@@ -114,7 +114,7 @@ class RealDocker(unittest.TestCase):
             self.assertTrue(inside.startswith("set:"), inside)
             self.assertNotIn("dock-test-host-only", inside)
             self.assertNotEqual(inside, f"set:{host_path}")
-            self.assertIn("/usr/local/bin", inside.removeprefix("set:").split(":"))  # python:3.12-slim's PATH
+            self.assertIn("/usr/local/bin", inside.removeprefix("set:").split(":"))  # python:3.15.2-slim's PATH
         with self.subTest("hello works when the host path lacks /usr/local/bin"):
             bindir = self.tmp / "only-docker"
             bindir.mkdir(exist_ok=True)

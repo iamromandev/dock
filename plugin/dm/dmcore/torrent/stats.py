@@ -55,13 +55,18 @@ class FileProgress:
 
     SHOWN = 8
 
-    def __init__(self, specs, piece_length, total):
+    def __init__(self, specs, piece_length, total, chosen=None):
+        """`chosen`: the indexes of the picked files (None: all). Only those are listed and counted in
+        done()."""
         self._specs = specs
         self._piece_length = piece_length
         self._total = total
         self._offsets = [f.offset for f in specs]
         self._done = [0] * len(specs)
-        self._heap = [(-f.length, i) for i, f in enumerate(specs) if f.length > 0]
+        self._chosen = chosen
+        self._picked_done = 0
+        self._heap = [(-f.length, i) for i, f in enumerate(specs)
+                      if f.length > 0 and (chosen is None or i in chosen)]
         heapq.heapify(self._heap)
         self._seen = set()  # files that were reported unfinished: the view may have a bar for them
         self._finished = []  # of those, the ones that finished since the last report
@@ -69,9 +74,16 @@ class FileProgress:
     def piece_done(self, index):
         for i, n in layout.piece_files(self._specs, self._piece_length, self._total, index, self._offsets):
             self._done[i] += n
+            if self._chosen is not None and i not in self._chosen:
+                continue
+            self._picked_done += n
             if self._done[i] >= self._specs[i].length and i in self._seen:
                 self._seen.discard(i)
                 self._finished.append(i)
+
+    def done(self):
+        """Verified bytes of the picked files."""
+        return self._picked_done
 
     def _row(self, i):
         f = self._specs[i]

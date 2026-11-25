@@ -70,7 +70,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
     from .fmt import human_size
     from .names import _fit
     from .target import DmError, resolve
-    from .torrent import magnet
+    from .torrent import magnet, select
 
     arg = inputs["url"]
     handle = fetch.Handle()
@@ -104,7 +104,31 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
         finally:
             done.set()
 
-    def work_torrent(path, target, opts):
+    def show(meta, picks):
+        """Print the files of meta (those picked, when there are picks) and their total."""
+        from .torrent import layout
+
+        specs = layout.plan_files(meta)
+        chosen = select.resolve(specs, picks) if picks is not None else None
+        for line in select.list_lines(specs, chosen):
+            notify("output", text=line + "\n")
+
+    def work_list(link, target, opts, picks):
+        from .torrent.session import list_magnet
+
+        label = magnet.label(link.info_hash)
+        try:
+            show(list_magnet(link, target, handle, opts, lambda m: notify("log", level="debug", message=m),
+                             progress), picks)
+            result["listed"] = True
+        except DmError as e:
+            result["err"] = DmError(f"{label}: {e}", e.code, e.keep)
+        except BaseException as e:
+            result["err"] = e
+        finally:
+            done.set()
+
+    def work_torrent(path, target, opts, picks):
         from .torrent.session import run_torrent
 
         try:
@@ -112,7 +136,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
                                        lambda m: notify("log", level="debug", message=m),
                                        resume=not inputs.get("no_resume"),
                                        note=lambda text: notify("output", text=text + "\n"),
-                                       on_stats=view.stats)
+                                       on_stats=view.stats, selection=picks)
         except DmError as e:  # which torrent failed is the part worth showing
             result["err"] = DmError(f"{arg}: {e}", e.code, e.keep)
         except BaseException as e:
@@ -120,7 +144,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
         finally:
             done.set()
 
-    def work_magnet(link, target, opts):
+    def work_magnet(link, target, opts, picks):
         from .torrent.session import run_magnet
 
         label = magnet.label(link.info_hash)
@@ -129,7 +153,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
                                                    lambda m: notify("log", level="debug", message=m),
                                                    resume=not inputs.get("no_resume"),
                                                    note=lambda text: notify("output", text=text + "\n"),
-                                                   on_stats=view.stats)
+                                                   on_stats=view.stats, selection=picks)
             result["ok"] = (final, size, nfiles)
             try:  # the download is in place: failing to write the .torrent only warns
                 saved, name = save_torrent(final, target, info, link.trackers)
@@ -157,7 +181,21 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
                 text = f"{magnet.label(e.info_hash)}: {e}" if e.info_hash else str(e)
                 raise DmError(text, e.code) from None
         torrent = torrent_path(cwd, arg) if link is None else None
+        only, skip, listing = inputs.get("only"), inputs.get("skip"), bool(inputs.get("list"))
+        if link is None and torrent is None and (only is not None or skip is not None or listing) \
+                and arg.lower().startswith(("http://", "https://")):  # anything else keeps its usual error
+            raise DmError("--only, --skip and --list are for torrents and magnets")
         if link is not None or torrent is not None:
+            label = magnet.label(link.info_hash) if link is not None else arg
+            try:  # a bad pick fails before the network or the folder is touched
+                picks = select.parse(only, skip)
+                if listing and link is None:
+                    from .torrent import metainfo
+
+                    show(metainfo.load(torrent), picks)
+                    return 0
+            except DmError as e:
+                raise DmError(f"{label}: {e}", e.code, e.keep) from None
             from .torrent.handle import TorrentHandle
             from .torrent.dht.cache import CACHE_NAME
             from .torrent.session import Options
@@ -172,10 +210,13 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
                 kw["dht_cache"] = Path(data_dir) / CACHE_NAME
             opts = Options(dht=dht, **kw)
             handle = TorrentHandle()
-            if link is not None:
-                threading.Thread(target=work_magnet, args=(link, target, opts), daemon=True).start()
+            if link is not None and listing:
+                threading.Thread(target=work_list, args=(link, target, opts, picks), daemon=True).start()
+            elif link is not None:
+                threading.Thread(target=work_magnet, args=(link, target, opts, picks), daemon=True).start()
             else:
-                threading.Thread(target=work_torrent, args=(torrent, target, opts), daemon=True).start()
+                threading.Thread(target=work_torrent, args=(torrent, target, opts, picks),
+                                 daemon=True).start()
         else:
             fetch.check_url(arg)
             threading.Thread(target=work, args=(target,), daemon=True).start()
@@ -188,6 +229,9 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
         err = result.get("err")
         if err is not None:
             raise err
+        if result.get("listed"):
+            drop_bar()
+            return 0
         path, size, *files = result["ok"]
         rel = os.path.relpath(path, os.path.realpath(cwd))
         count = f", {files[0]} file{'s' if files[0] != 1 else ''}" if files else ""

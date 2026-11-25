@@ -167,15 +167,16 @@ def write_record(path, key, rec):
 # ---- stored metadata ---------------------------------------------------------------------------------------
 
 
-def read_meta(path, info_hash):
+def read_meta(path, info_hash, discard_bad=True):
     """The info dictionary stored at path when it is a regular file of at most MAX_TORRENT_BYTES whose SHA-1
-    is info_hash; else None, and a file that is there but wrong is deleted. Never follows a link."""
+    is info_hash; else None, and a file that is there but wrong is deleted unless `discard_bad` is False (a
+    read-only caller). Never follows a link."""
     from .torrent.metainfo import MAX_TORRENT_BYTES
 
     try:
         fd = os.open(path, os.O_RDONLY | _NOFOLLOW | _NONBLOCK)
     except OSError as e:
-        if e.errno == errno.ELOOP:  # a link in the way: remove the link itself
+        if e.errno == errno.ELOOP and discard_bad:  # a link in the way: remove the link itself
             discard(path)
         return None
     try:
@@ -193,7 +194,8 @@ def read_meta(path, info_hash):
         os.close(fd)
     if len(raw) <= MAX_TORRENT_BYTES and hashlib.sha1(raw).digest() == info_hash:
         return raw
-    discard(path)
+    if discard_bad:
+        discard(path)
     return None
 
 

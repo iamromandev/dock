@@ -69,7 +69,7 @@ class _Active:
 
 
 class Picker:
-    def __init__(self, npieces, piece_length, total, max_active=None, rng=None):
+    def __init__(self, npieces, piece_length, total, max_active=None, rng=None, wanted=None):
         self.npieces = npieces
         self.piece_length = piece_length
         self.total = total
@@ -77,10 +77,12 @@ class Picker:
         self.rng = rng or random.Random()
         self.avail = [0] * npieces
         self.peers = {}  # peer -> set of piece indices it has
-        self.missing = set(range(npieces))  # not verified and not started
+        self._wanted = None if wanted is None else frozenset(wanted)  # None: every piece
+        self.missing = set(range(npieces) if wanted is None else self._wanted)  # not verified and not started
+        self._left = len(self.missing)  # wanted pieces not finished yet
         self.on_verified = None  # called with the index of each piece that becomes verified, once
         self.buckets = {0: _Bag()}  # availability -> missing pieces with that many peers
-        for i in range(npieces):
+        for i in self.missing:
             self.buckets[0].add(i)
         self.want = {}  # peer -> how many pieces it has that we have not verified
         self.active = {}  # piece -> _Active (includes a complete piece waiting for its hash)
@@ -92,6 +94,9 @@ class Picker:
 
     def piece_size(self, index):
         return min(self.piece_length, self.total - index * self.piece_length)
+
+    def _wants(self, index):
+        return self._wanted is None or index in self._wanted
 
     # peers
 
@@ -117,7 +122,7 @@ class Picker:
         if index not in have:
             have.add(index)
             self._move(index, 1)
-            if index not in self.finished:
+            if index not in self.finished and self._wants(index):
                 self.want[pid] = self.want.get(pid, 0) + 1
 
     def peer_bitfield(self, pid, indices):
@@ -263,16 +268,21 @@ class Picker:
 
     # verified or failed pieces
 
-    def piece_done(self, index):
-        act = self.active.pop(index, None)
-        if act is not None and index not in self.finished:
-            self.finished.add(index)
-            self._done_bytes += act.size
-            if self.on_verified is not None:
-                self.on_verified(index)
+    def _finish(self, index, size):
+        self.finished.add(index)
+        self._done_bytes += size
+        if self.on_verified is not None:
+            self.on_verified(index)
+        if self._wants(index):
+            self._left -= 1
             for pid, have in self.peers.items():
                 if index in have:
                     self.want[pid] -= 1
+
+    def piece_done(self, index):
+        act = self.active.pop(index, None)
+        if act is not None and index not in self.finished:
+            self._finish(index, act.size)
 
     def mark_verified(self, indexes):
         """Count pieces as verified before any peer is asked for anything (a resumed download)."""
@@ -282,13 +292,7 @@ class Picker:
                 continue
             self.active.pop(index, None)
             self._unmiss(index)
-            self.finished.add(index)
-            self._done_bytes += self.piece_size(index)
-            if self.on_verified is not None:
-                self.on_verified(index)
-            for pid, have in self.peers.items():
-                if index in have:
-                    self.want[pid] -= 1
+            self._finish(index, self.piece_size(index))
 
     def piece_failed(self, index):
         """Throw the piece away so it is fetched again; the peers that sent any block of it."""
@@ -297,7 +301,7 @@ class Picker:
         return set(act.from_peers) if act is not None else set()
 
     def done(self):
-        return len(self.finished) == self.npieces
+        return self._left == 0
 
     def verified_bytes(self):
         return self._done_bytes

@@ -52,7 +52,7 @@ cli/ (Python host)
 
 ## Try it
 
-Needs Python 3.11+ and Docker or Podman (running).
+Needs Python 3.15.2+ and Docker or Podman (running).
 
 ```sh
 make install      # install the example plugin into ~/.dock (the image is built on first use)
@@ -250,6 +250,7 @@ python3 -m cli dm ubuntu.torrent                                     # a .torren
 python3 -m cli dm dataset.torrent -d downloads --stall-seconds 60    # same -o and -d rules; give up sooner
 python3 -m cli dm "magnet:?xt=urn:btih:<hash>&tr=<tracker>"          # a magnet link (quote it: the shell sees `&`)
 python3 -m cli dm https://example.com/file.tar.gz --no-resume        # throw an old partial away, start from zero
+python3 -m cli dm pack.torrent --list                                # list a torrent's files (see Choosing files)
 ```
 
 (After `pip install -e .`, `dock dm ...` works the same.) The install prompt shows `network, fs:write:cwd`: `network` to fetch the URL, `fs:write:cwd` to save the file in
@@ -430,6 +431,35 @@ An interrupted `dm` keeps what it has, and running the same command again in the
   `already being downloaded in this folder`. In `dock shell` this message can appear for a moment right after
   Ctrl-C, while the cancelled download is still letting go of its partial; run it again.
 
+#### Choosing files
+
+A torrent or magnet link can be listed and downloaded in part:
+
+```sh
+python3 -m cli dm pack.torrent --list                       # numbered files with sizes and a total; downloads nothing
+python3 -m cli dm pack.torrent --only 1,3-4                 # file numbers and ranges (1-based, torrent order)
+python3 -m cli dm pack.torrent --only 'sub/*.mkv,poster.png'  # globs on the path inside the item
+python3 -m cli dm pack.torrent --only 'sub/*' --skip '*.txt'  # --skip applies after --only
+python3 -m cli dm "magnet:?xt=urn:btih:<hash>&tr=<tracker>" --list --skip '*.nfo'   # fetches the metadata, then lists
+```
+
+- **`--list`** prints `#  size  path` for each file and `N files, <size>`. With `--only` or `--skip` it lists the
+  picked files, keeping their numbers in the whole torrent. A `.torrent` is listed without any network, lock or
+  partial. A magnet fetches only its metadata (or reuses the stored one) and writes nothing.
+- **Picks** are comma-separated: a number (`3`), a range (`2-5`) or a glob. The path is the one inside the item, such
+  as `S01E01.mkv` or `extras/poster.png`, matched in full and case-sensitively; `*` and `?` match any characters
+  (also `/`), and `[,]` matches a comma. A pick that matches nothing, a number out of range, a bad range or an empty
+  selection is an error before anything is created or requested.
+- **What is downloaded.** Only the pieces that touch a picked file. Bytes of unpicked files inside those pieces
+  are kept in a hidden `.dm-side` folder inside the partial, and are removed before the download is moved into place:
+  unpicked files and folders never appear in the result. The `saved` line counts the picked files.
+- **Resume.** The flags of each run decide the selection. An interrupted selected download resumes with the same
+  selection, a different one or none: files already on disk move between their place and the hidden side folder, and
+  verified data from an earlier, wider selection is reused. `dm` 0.7.0 partials resume with a selection too. A layout
+  that is not what `dm` left (extra entries, links, wrong sizes) is replaced, as before (`cannot resume: starting over`).
+- A finished download is never changed: running `dm` again with other picks makes a new numbered sibling.
+- `--only`, `--skip` and `--list` are for torrents and magnets; with an http(s) URL they are an error.
+
 ### How plugins run
 
 Every plugin runs in a container, started as `<runtime> run -i --rm`, so the stdio protocol and warm plugins in
@@ -496,7 +526,7 @@ Things to know:
 
 - Image builds run with the runtime's default network access and without any
   of the restrictions above, and run the Dockerfile's instructions as written;
-  only install plugins whose Dockerfile you trust. Base images (such as `python:3.12-slim`)
+  only install plugins whose Dockerfile you trust. Base images (such as `python:3.15.2-slim`)
   are not pinned to a digest.
 - The build context is the whole installed plugin folder, so anything in it is sent to
   the runtime; give your plugin a `.dockerignore` for what the image does not need.
@@ -534,7 +564,7 @@ Things to know:
    ```
 
    ```dockerfile
-   FROM python:3.12-slim
+   FROM python:3.15.2-slim
    COPY . /plugin
    ```
 
