@@ -33,6 +33,7 @@ Run from the repository root. Each one calls the same target in `cli/makefile`.
 | `make cli-test`      | Run the tests (needs Docker or podman)                             |
 | `make cli-run`       | Run dock, e.g. `make cli-run ARGS="plugin list"`                   |
 | `make cli-plugin-install` | Install the example plugin into `$DOCK_HOME` (default `~/.dock`) |
+| `make install-hooks` | Install pre-commit and its git hook (runs `cli-check` on staged `cli/**/*.py`); once per clone |
 | `make check`         | Same as `cli-check`                                                |
 | `make clean`         | Remove Python caches                                               |
 | `make help`          | List the targets                                                   |

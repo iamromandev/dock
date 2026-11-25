@@ -1,0 +1,17 @@
+# The hook runs the CLI's make check, so the checks and tool versions (cli/uv.lock) live in one place.
+# Install once from the repository root:
+#     make install-hooks
+
+default_install_hook_types: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: local
+    hooks:
+      # ruff check --fix, then ty. A fix fails the commit so the fixed files can be staged.
+      - id: cli-check
+        name: cli check (ruff --fix, ty)
+        entry: make -C cli check
+        language: system
+        pass_filenames: false
+        files: ^cli/.*\.py$

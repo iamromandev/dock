@@ -1,16 +1,23 @@
 ## core
 # variables
 # This file owns no logic. Each target hands off to the stack that does:
-# cli/makefile for the Python host. cross-* targets will be added here when cross/ lands.
+# cli/makefile for the Python host. The exception is repo setup (install-hooks),
+# which is no stack's task. cross-* targets will be added here when cross/ lands.
 #
 # Variables typed on the command line reach the sub-make on their own: GNU make
 # forwards command-line overrides through MAKEFLAGS. Run `make -C cli help` for
 # the CLI's own targets.
 CLI := cli
+UV := uv
 
 # phony targets
-.PHONY: check clean help \
+.PHONY: install-hooks check clean help \
 	cli-install cli-check cli-check-ci cli-test cli-run cli-plugin-install
+
+## repo setup
+install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
+	$(UV) tool install pre-commit
+	$(UV) tool run pre-commit install
 
 ## all stacks
 check: cli-check # Lint + typecheck every stack
