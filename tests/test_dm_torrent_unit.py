@@ -483,15 +483,20 @@ class OpenExisting(unittest.TestCase):
     def test_missing_root(self):
         self.assertMismatch()
 
-    def test_missing_file(self):
+    def test_a_missing_file_is_not_written_yet_and_comes_back_empty(self):
+        # an earlier run may have picked fewer files: what is absent is made again and re-checked
         self.make()
         os.unlink(self.root / "c")
-        self.assertMismatch()
+        st = self.reopen()
+        st.reconcile()
+        self.assertEqual((self.root / "c").stat().st_size, 2)
 
-    def test_missing_folder(self):
+    def test_a_missing_folder_is_not_written_yet_and_comes_back_empty(self):
         self.make()
         shutil.rmtree(self.root / "sub")
-        self.assertMismatch()
+        st = self.reopen()
+        st.reconcile()
+        self.assertTrue((self.root / "sub").is_dir())
 
     def test_only_missing_or_wrong_kind_errors_mean_a_mismatch(self):
         import errno

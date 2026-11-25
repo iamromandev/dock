@@ -24,19 +24,19 @@ COPY_ID = "dev.dock.dmpex"
 class Manifest07(unittest.TestCase):
     def test_version_inputs_and_permissions_have_nothing_new_for_pex(self):
         m = Manifest.load(DM)
-        self.assertEqual(m.version, "0.7.0")
+        self.assertEqual(m.version, "0.8.0")
         (command,) = m.commands
         self.assertEqual([i.name for i in command.inputs],
-                         ["url", "output", "dir", "stall", "no_resume", "no_dht"])
+                         ["url", "output", "dir", "stall", "no_resume", "no_dht", "list", "only", "skip"])
         self.assertEqual(m.permissions, ["network", "fs:write:cwd"])
 
-    def test_the_peer_id_and_the_extension_handshake_name_0_7_0(self):
+    def test_the_peer_id_and_the_extension_handshake_name_0_8_0(self):
         s = session.Session(None, None, lambda *a: None, None, session.Options(dht=False),
                             info_hash=b"\x00" * 20)
         self.addCleanup(s.pool.shutdown, wait=False)
         self.addCleanup(s.reader_pool.shutdown, wait=False)
-        self.assertTrue(s.peer_id.startswith(b"-DM0700-"))
-        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.7.0")
+        self.assertTrue(s.peer_id.startswith(b"-DM0800-"))
+        self.assertEqual(bencode.decode(metadata.ext_handshake())[0][b"v"], b"dm 0.8.0")
 
 
 class Update(unittest.TestCase):
@@ -54,13 +54,13 @@ class Update(unittest.TestCase):
         home.mkdir()
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(home, f'[catalog]\npaths = ["{catalog}"]\n')
-        for version in ("0.6.0", "0.7.0"):
+        for version in ("0.6.0", "0.8.0"):
             self.addCleanup(dockenv.remove_image, f"dock/{COPY_ID}:{version}")
         r = cli("plugin", "install", str(old), "--yes", home=home)
         self.assertEqual(r.returncode, 0, r.stderr)
         r = cli("plugin", "update", COPY_ID, home=home)  # no --yes, no terminal: a prompt would refuse
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.6.0 → 0.7.0")
+        self.assertEqual(r.stdout.strip(), f"updated {COPY_ID} 0.6.0 → 0.8.0")
         self.assertNotIn("adds", r.stderr)
 
 

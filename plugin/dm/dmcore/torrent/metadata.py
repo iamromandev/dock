@@ -40,7 +40,7 @@ def ext_handshake(metadata_size=None, pex=True):
     ids = {"ut_metadata": OUR_UT_METADATA}
     if pex:
         ids["ut_pex"] = OUR_UT_PEX
-    top = {"m": ids, "v": "dm 0.7.0", "reqq": 250}
+    top = {"m": ids, "v": "dm 0.8.0", "reqq": 250}
     if metadata_size is not None:
         top["metadata_size"] = metadata_size
     return bencode.encode(top)

@@ -32,7 +32,7 @@ from dmcore.torrent.dht import cache  # noqa: E402
 from dmcore.torrent.dht.krpc import Node  # noqa: E402
 
 COPY_ID = "dev.dock.dmdhte2e"
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 SWITCH = "    dht_allow_private: bool = False\n"
 PY_ENV, PY_MOUNTS = base.PY_ENV, base.PY_MOUNTS
 start_container, ARIA2_IMAGE = base.start_container, base.ARIA2_IMAGE
