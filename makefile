@@ -1,27 +1,41 @@
 ## core
 # variables
-PYTHON := python3
+# This file owns no logic. Each target hands off to the stack that does:
+# cli/makefile for the Python host. cross-* targets will be added here when cross/ lands.
+#
+# Variables typed on the command line reach the sub-make on their own: GNU make
+# forwards command-line overrides through MAKEFLAGS. Run `make -C cli help` for
+# the CLI's own targets.
+CLI := cli
 
 # phony targets
-.PHONY: build install test clean help
+.PHONY: check clean help \
+	cli-install cli-check cli-check-ci cli-test cli-run cli-plugin-install
 
-## operation
-# build
-build: # Nothing to build: plugins are built into images on first use
-	@echo "nothing to build"
+## all stacks
+check: cli-check # Lint + typecheck every stack
 
-# plugins
-install: build # Install the example plugin into $$DOCK_HOME (default ~/.dock)
-	$(PYTHON) -m cli plugin install plugin/hello
-
-# checks
-test: build # Run the test suite (needs Docker or podman; stops at once without one)
-	@$(PYTHON) -c "import sys; sys.excepthook = lambda t, e, tb: print('make: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()"
-	$(PYTHON) -m unittest discover -s tests -v
-
-# cleanup
 clean: # Remove Python caches
-	find . -name __pycache__ -type d -prune -exec rm -r {} +
+	$(MAKE) -C $(CLI) clean
+
+## cli: delegates to cli/makefile
+cli-install: # Install CLI dependencies
+	$(MAKE) -C $(CLI) install
+
+cli-check: # Lint + typecheck the CLI (fixes what ruff can)
+	$(MAKE) -C $(CLI) check
+
+cli-check-ci: # Lint + typecheck the CLI without fixing anything. For CI.
+	$(MAKE) -C $(CLI) check-ci
+
+cli-test: # Run the CLI tests (needs Docker or podman)
+	$(MAKE) -C $(CLI) test
+
+cli-run: # Run dock, e.g. make cli-run ARGS="plugin list"
+	$(MAKE) -C $(CLI) run
+
+cli-plugin-install: # Install the example plugin into $DOCK_HOME (default ~/.dock)
+	$(MAKE) -C $(CLI) plugin-install
 
 # help
 help:
