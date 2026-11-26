@@ -104,6 +104,17 @@ class Planner(unittest.TestCase):
         self.assertIn("get x", text)
         self.assertIn("dev.dock.dm", text)
 
+    def test_the_model_is_told_results_go_to_the_current_folder_and_work_is_scratch(self):
+        # {work} is deleted after a successful run: a download put there is lost, and a step the request did not ask
+        # for runs unseen with --yes
+        m = self.model(body=chat(json.dumps(FLOW)))
+        self.invoke(m.url)
+        system = next(x["content"] for x in m.requests[0]["body"]["messages"] if x["role"] == "system")
+        self.assertIn("deleted", system)
+        self.assertIn("current folder", system)
+        self.assertNotIn("must go into {work}", system)
+        self.assertIn("Do not add steps", system)
+
     def test_unreachable_model_says_where_and_gives_no_flow(self):
         dead = Model()
         url = dead.url
