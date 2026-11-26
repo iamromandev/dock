@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from src import isolation
+from src import isolation, term
 from src.manifest import Manifest
 
 
@@ -126,10 +126,8 @@ class PluginProcess:
         except BaseException:
             self._log.close()  # no process, so no stop() will ever close it
             raise
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._reader.start()
-        self._writer = threading.Thread(target=self._write_loop, daemon=True)
-        self._writer.start()
+        self._reader = term.thread(self._read_loop)
+        self._writer = term.thread(self._write_loop)
 
     def alive(self) -> bool:
         return not self.exited and self.proc is not None and self.proc.poll() is None

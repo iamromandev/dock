@@ -16,7 +16,7 @@ import threading
 import time
 from collections.abc import Callable
 
-from src import keys, uimsg
+from src import keys, term, uimsg
 from src.areas import BAR_CELLS, Area, Areas, plain_lines
 from src.editor import LineBuffer
 from src.textwidth import cut, width
@@ -292,8 +292,7 @@ class LiveUI:
         self._quiet = self.term.quiet()
         self._quiet.__enter__()
         self.term.erase_region, self.term.on_resume = self._halt, self._resumed
-        self._thread = threading.Thread(target=self._run, name="dock-render", daemon=True)
-        self._thread.start()
+        self._thread = term.thread(self._run, name="dock-render")
 
     def end(self) -> None:
         """Stop drawing, take the region away, and write what it showed once, as plain lines."""

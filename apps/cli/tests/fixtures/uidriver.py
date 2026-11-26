@@ -17,7 +17,6 @@ import json
 import os
 import random
 import sys
-import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -25,6 +24,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from src import live
 from src.live import LiveUI
 from src.term import Terminal
+from src.term import thread as term_thread
 
 script = sys.argv[1]
 term = Terminal()
@@ -68,7 +68,7 @@ def hold():
                 latencies.append(value)
             time.sleep(0.002)
 
-    threading.Thread(target=watch, daemon=True).start()
+    term_thread(watch)  # a plain thread could take the Ctrl-Z meant for the main one
     wait_for_q()
     result(resize_latency=ui.resize_latency, resize_latencies=latencies)
 

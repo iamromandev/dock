@@ -294,6 +294,7 @@ class LivePty(unittest.TestCase):
     def test_ctrl_z_and_fg_draw_the_region_again(self):
         p = self.run_driver("hold")
         p.wait_text("┌ stats")
+        p.quiet_for(0.3)  # on macOS a ^Z written just after the mode change can be dropped by the pty
         p.send("\x1a")  # quiet mode keeps ISIG: the pty turns it into SIGTSTP
         p.wait_stopped()
         self.assert_restored(p)
