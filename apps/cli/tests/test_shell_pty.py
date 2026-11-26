@@ -143,6 +143,7 @@ class InlineShell(unittest.TestCase):
         p.wait_text("Install it? [y/N]")
         p.send("y\r")
         p.wait_text("installed dev.dock.dm")
+        p.wait_for(lambda: self.prompts(p) >= 3, what="the prompt after the install")  # a ^D sent earlier is lost
         p.send("\x04")
         self.assertEqual(p.wait_exit(), 0)
 
