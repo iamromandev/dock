@@ -64,8 +64,12 @@ moon run cli:test             # tests in throwaway DOCK_HOMEs; they need Docker 
 ```
 
 `uv run dock` runs the `dock` command from the project environment. Run it from `apps/cli/`: the plugins live at the
-repository root, so their paths are `../../plugins/dm` from there. dock is meant to run from this checkout with uv,
-not to be published or installed as a wheel. Set `DOCK_HOME` to use another plugin folder.
+repository root, so their paths are `../../plugins/dm` from there. dock is not published as a wheel. To run `dock`
+from any folder, `make cli-install` (from the repository root) installs this checkout as the editable uv tool
+`dock-cli`, so `git pull` upgrades it; rerun it after dependency changes or after moving the checkout. If `dock` is
+not found, run `uv tool update-shell` and open a new shell. `make cli-uninstall` removes it. Plugin paths are
+relative to where you run it (`dock plugin install ~/projects/github/dock/plugins/dm`); installed plugins are in
+`~/.dock` either way. Set `DOCK_HOME` to use another plugin folder.
 
 With no container runtime, a command that starts a plugin fails with `dock: no container runtime found (install
 docker or podman, or set [container] runtime in <config>)` (exit 1). `help`, `version`, `plugin list` and

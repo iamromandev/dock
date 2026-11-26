@@ -8,7 +8,7 @@ UV := uv
 
 # phony targets
 .PHONY: install-hooks install check check-ci test clean help \
-	cli-install cli-check cli-check-ci cli-test cli-run cli-clean \
+	cli-sync cli-install cli-uninstall cli-check cli-check-ci cli-test cli-run cli-clean \
 	dm-install dm-check dm-check-ci dm-test dm-clean \
 	planner-install planner-check planner-check-ci planner-test planner-clean
 
@@ -19,7 +19,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run :install
+	$(MOON) run cli:sync dm:install planner:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -34,8 +34,14 @@ clean: # Remove Python caches
 	$(MOON) run :clean
 
 ## cli - delegates to apps/cli/moon.yml
-cli-install: # Install CLI dependencies
+cli-sync: # Install the CLI dependencies into apps/cli/.venv (uv sync)
+	$(MOON) run cli:sync
+
+cli-install: # Install the dock command on your PATH (editable, from this checkout)
 	$(MOON) run cli:install
+
+cli-uninstall: # Remove the installed dock command
+	$(MOON) run cli:uninstall
 
 cli-check: # Lint + typecheck the CLI (fixes what ruff can)
 	$(MOON) run cli:check
