@@ -219,7 +219,7 @@ class Store:
             raise ManifestError(f"{e}; reinstall a container build of it (dock plugin install <folder>)") from e
 
     def resolve(self, name: str) -> tuple[Manifest, str]:
-        """'hello' -> the plugin that owns it. 'dev.dock.hello:hello' picks explicitly."""
+        """'dm' -> the plugin that owns it. 'dev.dock.dm:dm' picks explicitly."""
         if ":" in name:
             plugin_id, command = name.split(":", 1)
             return self.get(plugin_id), command

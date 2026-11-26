@@ -211,7 +211,7 @@ def prebuild_plugins(*plugin_dirs: Path) -> None:
 def plugin_copy(src: Path, dest_parent: Path, plugin_id: str) -> Path:
     """A copy of a plugin folder under another id, for tests that reinstall or remove (and so drop the image of) a plugin.
 
-    The shared fixture and hello images are never deleted by a test: only the images of such copies are.
+    The shared fixture images are never deleted by a test: only the images of such copies are.
     """
     import re
     import shutil

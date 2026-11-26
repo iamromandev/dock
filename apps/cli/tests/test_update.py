@@ -293,7 +293,7 @@ class UpdateCli(tc.CliCase):
             self.log.unlink()
 
     def bump(self, version, folder=None):
-        """The catalog copy of hello at another version."""
+        """The catalog copy of the greeter at another version."""
         path = Path(folder or self.hello) / "plugin.toml"
         path.write_text(re.sub(r'(?m)^version = ".*"$', f'version = "{version}"', path.read_text(), count=1))
 
@@ -301,9 +301,9 @@ class UpdateCli(tc.CliCase):
         self.bump("0.3.0")
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(r.stdout.splitlines(), ["updated dev.dock.hello 0.2.0 → 0.3.0"])
-        self.assertEqual(self.index()["dev.dock.hello"]["version"], "0.3.0")
-        self.assertFalse((self.home / "plugin" / "dev.dock.hello" / "0.2.0").exists())
+        self.assertEqual(r.stdout.splitlines(), ["updated dev.dock.greeter 0.2.0 → 0.3.0"])
+        self.assertEqual(self.index()["dev.dock.greeter"]["version"], "0.3.0")
+        self.assertFalse((self.home / "plugin" / "dev.dock.greeter" / "0.2.0").exists())
         self.assertIn("image rm", self.runtime_calls())
 
     def test_nothing_newer(self):
@@ -312,17 +312,17 @@ class UpdateCli(tc.CliCase):
         self.assertEqual(self.runtime_calls(), "")
 
     def test_named_and_current(self):
-        r = self.dock("plugin", "update", "dev.dock.hello")
-        self.assertEqual((r.returncode, r.stdout), (0, "dev.dock.hello 0.2.0 is up to date\n"))
+        r = self.dock("plugin", "update", "dev.dock.greeter")
+        self.assertEqual((r.returncode, r.stdout), (0, "dev.dock.greeter 0.2.0 is up to date\n"))
 
     def test_dry_run_changes_nothing(self):
         self.bump("0.3.0")
-        for args in (("--dry-run",), ("--dry-run", "dev.dock.hello"), ("dev.dock.hello", "--dry-run")):
+        for args in (("--dry-run",), ("--dry-run", "dev.dock.greeter"), ("dev.dock.greeter", "--dry-run")):
             with self.subTest(args=args):
                 before = tree(self.home)
                 r = self.dock("plugin", "update", *args)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertEqual(r.stdout, "would update dev.dock.hello 0.2.0 → 0.3.0\n")
+                self.assertEqual(r.stdout, "would update dev.dock.greeter 0.2.0 → 0.3.0\n")
                 self.assertEqual(tree(self.home), before)
                 self.assertEqual(self.runtime_calls(), "")
 
@@ -339,7 +339,7 @@ class UpdateCli(tc.CliCase):
         (newer / "link").symlink_to(self.tmp / "runtime-calls")  # escapes the plugin folder
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 1)
-        self.assertIn("updated dev.dock.hello 0.2.0 → 0.3.0", r.stdout)
+        self.assertIn("updated dev.dock.greeter 0.2.0 → 0.3.0", r.stdout)
         self.assertIn(f"dock: {PID}: ", r.stderr)
         self.assertEqual(self.index()[PID]["version"], "0.1.0")
 
@@ -357,7 +357,7 @@ class UpdateCli(tc.CliCase):
         self.addCleanup(locked.chmod, 0o600)
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertIn("updated dev.dock.hello 0.2.0 → 0.3.0", r.stdout)
+        self.assertIn("updated dev.dock.greeter 0.2.0 → 0.3.0", r.stdout)
         self.assertIn("dock: dev.aaa.first: ", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
         self.assertFalse((self.home / "plugin" / "dev.aaa.first" / "0.2.0").exists())
@@ -376,7 +376,7 @@ class UpdateCli(tc.CliCase):
         self.assertIn("dock: no catalog folders configured ([catalog] paths in ", r.stderr)
 
     def test_no_plugins_installed(self):
-        self.dock("plugin", "remove", "dev.dock.hello")
+        self.dock("plugin", "remove", "dev.dock.greeter")
         r = self.dock("plugin", "update")
         self.assertEqual((r.returncode, r.stdout), (0, "no plugins installed\n"))
 
@@ -389,7 +389,7 @@ class UpdateCli(tc.CliCase):
         self.catalog_config(self.cat)
         r = self.dock("plugin", "update")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("updated dev.dock.hello 0.2.0 → 0.3.0", r.stdout)
+        self.assertIn("updated dev.dock.greeter 0.2.0 → 0.3.0", r.stdout)
         self.assertIn("may be stale", r.stderr)
 
 

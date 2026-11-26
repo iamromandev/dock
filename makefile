@@ -8,7 +8,7 @@ UV := uv
 
 # phony targets
 .PHONY: install-hooks install check check-ci test clean help \
-	cli-install cli-check cli-check-ci cli-test cli-run cli-plugin-install cli-clean \
+	cli-install cli-check cli-check-ci cli-test cli-run cli-clean \
 	dm-install dm-check dm-check-ci dm-test dm-clean \
 	planner-install planner-check planner-check-ci planner-test planner-clean
 
@@ -37,10 +37,10 @@ clean: # Remove Python caches
 cli-install: # Install CLI dependencies
 	$(MOON) run cli:install
 
-cli-check: # Lint + typecheck the CLI and hello (fixes what ruff can)
+cli-check: # Lint + typecheck the CLI (fixes what ruff can)
 	$(MOON) run cli:check
 
-cli-check-ci: # Lint + typecheck the CLI and hello without fixing anything. For CI.
+cli-check-ci: # Lint + typecheck the CLI without fixing anything. For CI.
 	$(MOON) run cli:check-ci
 
 cli-test: # Run the CLI tests (needs Docker or podman; stops at once without one)
@@ -49,10 +49,7 @@ cli-test: # Run the CLI tests (needs Docker or podman; stops at once without one
 cli-run: # Run dock, e.g. make cli-run ARGS="plugin list"
 	$(MOON) run cli:run -- $(ARGS)
 
-cli-plugin-install: # Install the example plugin into $DOCK_HOME (default ~/.dock)
-	$(MOON) run cli:plugin-install
-
-cli-clean: # Remove the CLI's and hello's Python caches
+cli-clean: # Remove the CLI's Python caches
 	$(MOON) run cli:clean
 
 ## dm - delegates to plugins/dm/moon.yml

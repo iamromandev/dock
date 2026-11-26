@@ -17,7 +17,7 @@ with `<runtime> run -i --rm` in a container, and nothing else. Removed:
 - provision and unprovision, with their crash recovery (`[lifecycle].provision`, the `state/` markers);
 - `ended_by_cancel` and the progress transfer fields (`done`, `total`, `speed`, `name`, `phase`, `uploaded`, `peers`);
   progress is `{percent, message}`;
-- the bundled `chat`, `llm`, `download` and `image` plugins. Only `hello` is left.
+- the bundled `chat`, `llm`, `download` and `image` plugins. Only `dm` (and the `planner` that `dock do` uses) is left.
 
 A plugin whose `[run]` is not exactly `container = { ... }`, or that uses a removed key, fails at install with a
 message that names the problem. A `config.toml` with an `[isolation]`, `[wasm]`, `[http]` or `[providers]` table fails
@@ -46,7 +46,6 @@ src/ (Python host)
  ├─ live.py       the live renderer: layout, in-place redraw, forms (term.py owns the terminal)
  └─ ui.py         the host owns the terminal: output, logs, bars, tables, panels, prompts, forms (plain text)
         │  stdio (through `<runtime> run -i`)
-   ├─ hello (Python)   2 commands, prompts, a progress bar
    └─ dm (Python)      download a URL, a .torrent or a magnet link into the current folder
 ```
 
@@ -58,11 +57,9 @@ targets, such as `make cli-test`, do the same).
 
 ```sh
 uv sync
-moon run cli:plugin-install   # install the example plugin into ~/.dock (the image is built on first use)
+uv run dock plugin install ../../plugins/dm   # install a plugin into ~/.dock (the image is built on first use)
 uv run dock help
-uv run dock hello Roman
-uv run dock hello "Ada Lovelace"                   # quote a name of several words
-uv run dock count 30
+uv run dock dm --list ./some.torrent           # a command of the installed plugin
 moon run cli:test             # tests in throwaway DOCK_HOMEs; they need Docker (or podman)
 ```
 
@@ -83,7 +80,7 @@ On macOS the test folders must be in a path the Docker VM shares (`/Users` by de
 ### Interactive shell
 
 `uv run dock shell` (or bare `dock` on a terminal) opens a `dock>` prompt.
-Each line is an operation, split with shell-style quoting: `hello "Ada Lovelace"`.
+Each line is an operation, split with shell-style quoting: `dm --list ./some.torrent`.
 Plugins stay running between operations.
 Built-ins: `help`, `version`, `plugin ...`, `search ...`, `status`, `exit`/`quit` (or Ctrl-D).
 `status` lists the running plugins with their idle time and the container runtime they run in.
@@ -103,7 +100,7 @@ idle_timeout = 300   # seconds; 0 = never stop idle plugins
 Ctrl-C cancels the running operation and returns to the prompt. A non-zero exit
 code is printed as `exit <n>`. Every plugin is stopped on exit.
 `dock shell` also works without a terminal: lines are read from stdin, so
-`printf 'hello Bob\nstatus\n' | uv run dock shell` runs them in one session.
+`printf 'plugin list\nstatus\n' | uv run dock shell` runs them in one session.
 
 #### Live and plain output
 
@@ -144,11 +141,11 @@ not reflow may lose a line or two above the drawing.
 Behaviour change: bare `dock` on a terminal now opens the shell instead of
 printing help (`dock help` still prints it; piped stdin still prints help).
 
-Behaviour change: `hello` and `count` declare typed inputs, so
-dock checks their arguments before starting them (usage errors exit 2). A name of
-several words must be quoted (`hello "Ada Lovelace"`; `hello Ada Lovelace` is an
-error), and `count abc` is dock's "must be an integer" error. dock reads anything
-starting with `-` as a flag, so a negative number goes after `--` (`count -- -3`).
+Behaviour change: a command that declares typed inputs has its arguments checked
+by dock before the plugin starts (usage errors exit 2). A value of several words
+must be quoted, and a non-number for an `int` input is dock's "must be an integer"
+error. dock reads anything starting with `-` as a flag, so a negative number goes
+after `--`.
 
 ### Find plugins before installing
 
@@ -169,8 +166,8 @@ A command may list `keywords` in its `[[commands]]` entry (a list of non-empty s
 
 ```toml
 [[commands]]
-name = "hello"
-summary = "Greet someone: hello [name]"
+name = "greet"
+summary = "Greet someone: greet [name]"
 keywords = ["greet", "welcome"]
 ```
 
@@ -182,7 +179,7 @@ that installs it. A command that only a catalog copy of an installed plugin has 
 `not in installed <version>:` and the command that installs the catalog copy. Exit 0 with a match, 1 with none, 2 without a word.
 
 When a command is not installed but a catalog plugin has it, the "unknown command" error names that plugin and how to
-install it (`dev.dock.hello 0.2.0 in the catalog has it (installed: 0.1.0)` when that plugin is installed at another
+install it (`dev.dock.dm 0.2.0 in the catalog has it (installed: 0.1.0)` when that plugin is installed at another
 version); nothing is installed or started. `dock plugin install <id>` installs a catalog plugin by its id (an
 existing folder is still a path; an id found in several catalog folders must be installed by path), and
 `dock plugin info <id|path>` shows a plugin's manifest, with its keywords and `installed: no (<folder>)` (or
@@ -239,7 +236,7 @@ a TTY, which includes a piped `dock shell`) dock never reads stdin: without `--y
 `dock: <request>; rerun with --yes to approve` and installs nothing for that plugin (exit 1).
 
 **Behaviour change:** scripts and CI that install a plugin with permissions or env without a terminal now need
-`--yes`. Installs of plugins that ask for nothing (such as `hello`) are unchanged.
+`--yes`. Installs of plugins that ask for nothing (such as `dm`) are unchanged.
 
 ### dm
 
@@ -547,7 +544,7 @@ Things to know:
 |---|---|
 | Language independence | Same protocol for any language; the plugin is whatever its image runs |
 | Lazy discovery | `dock help` reads `index.json`; no plugin is started |
-| Namespacing and collisions | ids are `vendor.name`; on a clash use `dock dev.dock.hello:hello` |
+| Namespacing and collisions | ids are `vendor.name`; on a clash use `dock dev.dock.dm:dm` |
 | Ctrl-C | Host sends `cancel`, then force-kills the container after a grace period |
 | Host owns the UI | Plugins never print; they send `output` / `log` / `bar` / `table` / `panel` / `clear` / `prompt_user` / `form` |
 | Isolation | A plugin crash is an error message, not a host crash; stderr goes to `~/.dock/logs/`; the container only sees what its permissions allow |
@@ -595,7 +592,7 @@ Things to know:
    unless given, so it takes neither `default` nor `required`.
 
 2. A program that answers `initialize`, `invoke` and `shutdown` on stdio
-   (follow `plugins/hello/main.py` at the repository root, in any language).
+   (follow `plugins/planner/main.py` at the repository root, in any language).
 3. `dock plugin install ./thing`. The image is built on the first run, or with `dock plugin build you.thing`.
 4. A container sees only a fixed environment. To receive host variables, list their
    names: `[capabilities] env = ["MY_API_KEY"]` (see "How plugins run").

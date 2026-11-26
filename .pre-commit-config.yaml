@@ -9,13 +9,13 @@ fail_fast: false
 repos:
   - repo: local
     hooks:
-      # ruff check --fix, then ty, over apps/cli and plugins/hello. A fix fails the commit so the fixed files can be staged.
+      # ruff check --fix, then ty, over apps/cli. A fix fails the commit so the fixed files can be staged.
       - id: cli-check
         name: cli check (ruff --fix, ty)
         entry: moon run cli:check
         language: system
         pass_filenames: false
-        files: ^(apps/cli|plugins/hello)/.*\.py$
+        files: ^apps/cli/.*\.py$
       # Same for the dm plugin (plugins/dm).
       - id: dm-check
         name: dm check (ruff --fix, ty)

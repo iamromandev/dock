@@ -68,7 +68,7 @@ class RecordingUI:
                 "clear": self.clear, "prompt_user": self.prompt_user, "form": self.form}
 
 
-PLUGINS = (ROOT.parent.parent / "plugins" / "hello", ROOT / "tests" / "fixtures" / "pidprobe")
+PLUGINS = (ROOT / "tests" / "fixtures" / "uiprobe", ROOT / "tests" / "fixtures" / "pidprobe")
 
 
 class SessionSeams(unittest.TestCase):
@@ -96,27 +96,27 @@ class SessionSeams(unittest.TestCase):
 
     def test_default_ui_is_the_plain_ui_when_not_live(self):
         session = Session(self.store, verbose=True)
-        ui = session._ui("dev.dock.hello")
+        ui = session._ui("dev.dock.uiprobe")
         self.assertIsInstance(ui, PlainUI)
-        self.assertEqual((ui.plugin_id, ui.verbose), ("dev.dock.hello", True))
+        self.assertEqual((ui.plugin_id, ui.verbose), ("dev.dock.uiprobe", True))
 
     def test_invoke_sends_output_and_bars_to_the_ui(self):
         session = self.session()
-        code = session.invoke(self.store.get("dev.dock.hello"), "count", ["2"])
+        code = session.invoke(self.store.get("dev.dock.uiprobe"), "show", ["basic"])
         self.assertEqual(code, 0)
-        self.assertEqual(self.made, ["dev.dock.hello"])
-        self.assertIn(("dev.dock.hello", "bar", 100.0), self.events)
-        self.assertIn(("dev.dock.hello", "output", "counted to 2\n"), self.events)
+        self.assertEqual(self.made, ["dev.dock.uiprobe"])
+        self.assertIn(("dev.dock.uiprobe", "bar", 100.0), self.events)
+        self.assertIn(("dev.dock.uiprobe", "output", "basic done\n"), self.events)
 
     def test_warnings_go_through_the_ui(self):
         def stuck(session):
-            manifest = self.store.get("dev.dock.hello")
+            manifest = self.store.get("dev.dock.uiprobe")
             proc = session.start(manifest, session._ui(manifest.id))
             proc.pending.add(99)  # an answer that never comes
             session._stop_unresponsive()
 
         def interrupted(session):
-            session._interrupted(session._ui("dev.dock.hello"))
+            session._interrupted(session._ui("dev.dock.uiprobe"))
 
         cases = (("stuck plugin", stuck, "did not stop on cancel; stopped it"),
                  ("interrupt notice", interrupted, "interrupted, cancelling…"))
@@ -124,7 +124,7 @@ class SessionSeams(unittest.TestCase):
             with self.subTest(name):
                 self.events.clear()
                 act(self.session())
-                self.assertIn(("dev.dock.hello", "warn", message), self.events)
+                self.assertIn(("dev.dock.uiprobe", "warn", message), self.events)
 
     def test_the_process_cwd_is_what_the_plugin_is_told(self):
         project = os.path.realpath(tempfile.mkdtemp(prefix="dock-seams-cwd-"))

@@ -58,12 +58,12 @@ class RealDocker(unittest.TestCase):
             **os.environ, "DOCK_HOME": str(cls.store.home), "PYTHONPATH": str(ROOT),
             "DOCK_TEST_HOST_SECRET": cls.HOST_SECRET, "DOCK_TEST_DECLARED": "test-model",
         }
-        plugins = [ROOT.parent.parent / "plugins" / "hello", FIXTURES / "jail", cls.jail_copy("jailcwd", ["fs:write:cwd"])]
+        plugins = [FIXTURES / "jail", cls.jail_copy("jailcwd", ["fs:write:cwd"])]
         if NETWORK_CONTROL:
             plugins.append(cls.jail_copy("jailnet", ["network"]))
         for path in plugins:
             m = cls.store.install(path)
-            if path.parent == cls.tmp:  # a copy under its own id: ours to delete; hello and jail are shared
+            if path.parent == cls.tmp:  # a copy under its own id: ours to delete; jail is shared
                 cls.addClassCleanup(dockenv.remove_image, f"dock/{m.id}:{m.version}")
             # Also covers `dock plugin build` for real: the images exist before any test runs.
             built = cls.run_dock("plugin", "build", m.id, cwd=ROOT, timeout=BUILD_TIMEOUT)
@@ -100,10 +100,6 @@ class RealDocker(unittest.TestCase):
 
     # AC9 / R10, F2: the host PATH points at host programs; the image's own PATH is the right one inside
     def test_the_plugin_runs_inside_the_container_with_its_own_path(self):
-        with self.subTest("isolated hello greets"):
-            r = self.dock("hello", "Roman")
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(r.stdout.strip(), "hello, Roman!")
         with self.subTest("the plugin really runs inside the container"):
             # A native run would see the user's own HOME; the container sets HOME=/tmp.
             self.assertEqual(self.jail("env", "HOME"), "set:/tmp")
@@ -115,16 +111,15 @@ class RealDocker(unittest.TestCase):
             self.assertNotIn("dock-test-host-only", inside)
             self.assertNotEqual(inside, f"set:{host_path}")
             self.assertIn("/usr/local/bin", inside.removeprefix("set:").split(":"))  # python:3.15.2-slim's PATH
-        with self.subTest("hello works when the host path lacks /usr/local/bin"):
+        with self.subTest("the plugin works when the host path lacks /usr/local/bin"):
             bindir = self.tmp / "only-docker"
             bindir.mkdir(exist_ok=True)
             if not (bindir / "docker").exists():
                 (bindir / "docker").symlink_to(dockenv.require_runtime())
             host_path = f"{bindir}{os.pathsep}/usr/bin{os.pathsep}/bin"
             self.assertNotIn("/usr/local/bin", host_path.split(os.pathsep))
-            r = self.dock("hello", "Roman", env={**self.env, "PATH": host_path})
-            self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertEqual(r.stdout.strip(), "hello, Roman!")  # python3 was found on the image's PATH
+            # python3 was found on the image's PATH
+            self.assertEqual(self.jail("env", "DOCK_PLUGIN_ID", env={**self.env, "PATH": host_path}), "set:dev.dock.jail")
 
     # NFR1: network
     def test_plugin_without_network_cannot_connect_out(self):
@@ -162,7 +157,7 @@ class RealDocker(unittest.TestCase):
     # NFR4
     def test_no_container_outlives_the_run(self):
         self.jail("net")
-        self.dock("hello", "x")
+        self.jail("env", "TZ")
         # Only this run's dock processes: other dock containers on the machine are not ours to judge.
         mine = [
             dockenv.run_runtime("ps", "-a", "--filter", f"label=dev.dock.owner={socket.gethostname()}:{pid}",

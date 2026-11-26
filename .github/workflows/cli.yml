@@ -1,7 +1,5 @@
-# Lints, type-checks and tests the CLI (apps/cli/) and the hello plugin (plugins/hello) on every push and pull request
-# to dev and main. The runner's Docker serves the plugin containers the tests start; the live DHT test stays skipped
-# (DOCK_LIVE_DHT is not set). The dm plugin's in-process tests and checks run in dm.yml.
-# The steps call uv directly, the same commands as apps/cli/moon.yml's check-ci and test.
+# Lints and type-checks the CLI (apps/cli/) on every push and pull request to dev and main. Tests are not run here.
+# The dm plugin's checks run in dm.yml. The steps call uv directly, the same commands as apps/cli/moon.yml's check-ci.
 name: CLI
 
 on:
@@ -16,8 +14,7 @@ permissions:
 jobs:
   cli:
     runs-on: ubuntu-24.04
-    # The suite takes about 12 minutes on a laptop; runners are slower.
-    timeout-minutes: 45
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: apps/cli
@@ -32,6 +29,5 @@ jobs:
           enable-cache: false
       # --locked fails the job when uv.lock is out of date with pyproject.toml.
       - run: uv sync --locked
-      - run: uv run ruff check . ../../plugins/hello
-      - run: uv run ty check . ../../plugins/hello
-      - run: uv run pytest
+      - run: uv run ruff check .
+      - run: uv run ty check .

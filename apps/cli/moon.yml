@@ -6,8 +6,8 @@ tags: ["host"]
 fileGroups:
   sources: ["src/**/*"]
   configs: ["pyproject.toml", "uv.lock", "/ruff.toml"]
-  # The plugins live at the repo root. The hello plugin is still linted and type-checked from here; dm is its own
-  # project. The tests build the plugins' images, so `test` still takes all of plugins/ as input.
+  # The plugins live at the repo root. dm and planner are their own
+  # projects. The tests build the plugins' images, so `test` still takes all of plugins/ as input.
   plugins: ["/plugins/**/*"]
 
 tasks:
@@ -17,13 +17,13 @@ tasks:
     preset: "utility"
   check:
     # Fixes what ruff can, so it edits sources and is never cached.
-    script: "uv run ruff check --fix . ../../plugins/hello && uv run ty check . ../../plugins/hello"
+    script: "uv run ruff check --fix . && uv run ty check ."
     deps: ["install"]
     options:
       cache: false
   check-ci:
     # Same checks without fixing anything. For CI.
-    script: "uv run ruff check . ../../plugins/hello && uv run ty check . ../../plugins/hello"
+    script: "uv run ruff check . && uv run ty check ."
     deps: ["install"]
     # ty resolves the CLI tests' imports through plugins/dm and its tests (pyproject extra-paths), so dm is an input.
     inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*"]
@@ -48,12 +48,8 @@ tasks:
     options:
       cache: false
       interactive: true
-  plugin-install:
-    # Installs the example plugin into $DOCK_HOME (default ~/.dock).
-    command: "uv run dock plugin install ../../plugins/hello"
-    preset: "utility"
 
   # cleanup
   clean:
-    script: "find . ../../plugins/hello -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
     preset: "utility"
