@@ -5,7 +5,7 @@ tags: ["plugin"]
 
 fileGroups:
   sources: ["main.py", "plugin.toml", "Dockerfile"]
-  configs: ["pyproject.toml", "uv.lock", "/ruff.toml"]
+  configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
 
 tasks:
   # python tools (uv)

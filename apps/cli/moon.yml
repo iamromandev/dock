@@ -5,7 +5,7 @@ tags: ["host"]
 
 fileGroups:
   sources: ["src/**/*"]
-  configs: ["pyproject.toml", "uv.lock", "/ruff.toml"]
+  configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
   # The plugins live at the repo root. dm and planner are their own
   # projects. The tests build the plugins' images, so `test` still takes all of plugins/ as input.
   plugins: ["/plugins/**/*"]

@@ -9,7 +9,6 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 ├─ .moon/            moon workspace: every apps/* and plugins/* folder with a moon.yml is a project
 ├─ .prototools       tool versions (moon, uv); `proto install` installs them
 ├─ makefile          delegates to moon (no logic of its own)
-├─ ruff.toml         lint settings for every Python project
 ├─ apps/
 │  └─ cli/           the Python host (moon project `cli`)
 │     ├─ src/        the host package (python -m src, or the `dock` command)
