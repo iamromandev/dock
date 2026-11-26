@@ -606,8 +606,8 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
         from src import process
         from src.lifecycle import Session
 
-        dockenv.prebuild_plugins(ROOT.parent.parent / "plugins" / "hello")
-        self.store.install(ROOT.parent.parent / "plugins" / "hello")
+        dockenv.prebuild_plugins(ROOT / "tests" / "fixtures" / "probe")
+        self.store.install(ROOT / "tests" / "fixtures" / "probe")
         self.configure()
         seen = []
         real_popen = subprocess.Popen
@@ -653,11 +653,11 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
                 mock.patch("src.lifecycle.make_ui", side_effect=lambda *a, **k: UI()):
             session = Session(self.store)
             try:
-                self.assertEqual(session.invoke(self.store.get("dev.dock.hello"), "hello", ["Ada"]), 0)
-                session.invoke(self.store.get("dev.dock.hello"), "count", ["1"])  # a second call: same process
+                self.assertEqual(session.invoke(self.store.get("dev.dock.probe"), "echoargs", ["Ada"]), 0)
+                session.invoke(self.store.get("dev.dock.probe"), "code", ["0"])  # a second call: same process
             finally:
                 session.close()
-        self.assertEqual(events[0], "hello, Ada!\n")
+        self.assertIn('"args": ["Ada"]', events[0])
         self.assertEqual(len(seen), 1)  # one plugin, one start
         self.assertEqual(seen[0][:2], [str(self.wrapper), "run"])
 
@@ -804,7 +804,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 class DockIsolated(RecordingRuntimeCase):
     """Real `python3 -m src` runs against the real runtime, recorded."""
 
-    PLUGINS = (ROOT.parent.parent / "plugins" / "hello", FIXTURES / "probe")
+    PLUGINS = (FIXTURES / "uiprobe", FIXTURES / "probe")
 
     @classmethod
     def setUpClass(cls):
@@ -927,9 +927,6 @@ class IsolatedRun(DockIsolated):
         self.assertEqual(names, {"LANG", "TZ", "HOME", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"})  # not PATH: the image's own
         self.assertNotIn("s3cret", " ".join(argv))
 
-    def test_prompt_through_the_host_works_in_a_container(self):
-        self.assertIn("hello, Ada!", self.dock("hello", stdin="Ada\n").stdout)
-
     def test_declared_inputs_reach_the_isolated_plugin(self):
         r = self.dock("fetch", "http://x", "-o", "out.bin")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -937,9 +934,9 @@ class IsolatedRun(DockIsolated):
         self.assertEqual(got, {"url": "http://x", "output": "out.bin", "retries": 3, "quiet": False})
 
     def test_shell_reuses_one_warm_container_for_two_operations(self):
-        r = self.dock("shell", stdin="hello a\nhello b\n")
-        self.assertIn("hello, a!", r.stdout)
-        self.assertIn("hello, b!", r.stdout)
+        r = self.dock("shell", stdin="echoargs a\nechoargs b\n")
+        self.assertIn('"args": ["a"]', r.stdout)
+        self.assertIn('"args": ["b"]', r.stdout)
         self.assertEqual(len(self.run_calls()), 1)
 
 
@@ -973,7 +970,7 @@ class ContainerCleanup(DockIsolated):
             self.assertAllRemoved()
         with self.subTest("every container of a session is removed at exit"):
             self.reset_calls()
-            r = self.dock("shell", stdin="hello a\ncode 0\n")
+            r = self.dock("shell", stdin="show basic\ncode 0\n")
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(len(self.container_names()), 2)
             self.assertAllRemoved()
@@ -1158,10 +1155,10 @@ class BrokenConfig(DockIsolated):
 
     def assertRefusedWithoutStarting(self, r):
         self.assertEqual(r.returncode, 1, r.stderr)
-        self.assertNotIn("hello,", r.stdout)
+        self.assertNotIn('"args"', r.stdout)
         self.assertIn("config.toml", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
-        self.assertFalse(self.store.log_path("dev.dock.hello").exists(), "a plugin process was started")
+        self.assertFalse(self.store.log_path("dev.dock.probe").exists(), "a plugin process was started")
         self.assertEqual(self.run_calls(), [])
 
     def test_bad_config_refuses_without_starting(self):
@@ -1186,24 +1183,24 @@ class BrokenConfig(DockIsolated):
                     path.rmdir()
                 path.unlink(missing_ok=True)
                 self.reset_calls()
-                self.store.log_path("dev.dock.hello").unlink(missing_ok=True)
+                self.store.log_path("dev.dock.probe").unlink(missing_ok=True)
                 setup()
-                r = self.dock("hello", "Roman")
+                r = self.dock("echoargs", "Roman")
                 self.assertRefusedWithoutStarting(r)
                 for text in expected:
                     self.assertIn(text, r.stderr)
 
     def test_a_broken_container_header_refuses_in_the_shell_too_without_starting(self):
         self.write(f'[container\nruntime = "{self.wrapper}"\n')
-        r = self.dock("shell", stdin="hello a\nstatus\n")
-        self.assertNotIn("hello, a!", r.stdout)
+        r = self.dock("shell", stdin="echoargs a\nstatus\n")
+        self.assertNotIn('"args"', r.stdout)
         self.assertIn("config.toml", r.stderr)
-        self.assertFalse(self.store.log_path("dev.dock.hello").exists())
+        self.assertFalse(self.store.log_path("dev.dock.probe").exists())
 
     def test_a_valid_container_table_with_other_tables_runs_in_a_container(self):
         self.write(self.container_section() + "[shell]\nidle_timeout = 5\n")
-        r = self.dock("hello", "Roman")
-        self.assertEqual(r.stdout.strip(), "hello, Roman!", r.stderr)
+        r = self.dock("echoargs", "Roman")
+        self.assertEqual(json.loads(r.stdout)["args"], ["Roman"], r.stderr)
         self.assertEqual(len(self.run_calls()), 1)
 
 
@@ -1216,23 +1213,23 @@ class PluginBuild(DockIsolated):
         bindir.mkdir()
         (bindir / "docker").symlink_to(self.wrapper)
         env = {**self.env, "PATH": f"{bindir}{os.pathsep}{os.environ['PATH']}"}
-        r = self.dock("plugin", "build", "dev.dock.hello", env=env)
+        r = self.dock("plugin", "build", "dev.dock.probe", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("built dock/dev.dock.hello:0.2.0", r.stdout)
+        self.assertIn("built dock/dev.dock.probe:0.1.0", r.stdout)
         builds = self.calls("build")
         self.assertEqual(len(builds), 1)
-        self.assertEqual(builds[0][builds[0].index("-t") + 1], "dock/dev.dock.hello:0.2.0")
-        self.assertEqual(builds[0][-1], str(self.store.get("dev.dock.hello").root))
+        self.assertEqual(builds[0][builds[0].index("-t") + 1], "dock/dev.dock.probe:0.1.0")
+        self.assertEqual(builds[0][-1], str(self.store.get("dev.dock.probe").root))
         self.assertEqual(self.run_calls(), [])  # building starts nothing
 
     def test_rebuilds_even_when_the_image_exists(self):
         self.configure()
-        self.assertEqual(self.dock("hello", "a").returncode, 0)  # the image exists: used, not built
+        self.assertEqual(self.dock("echoargs", "a").returncode, 0)  # the image exists: used, not built
         self.assertEqual(len(self.calls("build")), 0)
-        r = self.dock("plugin", "build", "dev.dock.hello")
+        r = self.dock("plugin", "build", "dev.dock.probe")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.calls("build")), 1)
-        self.assertEqual(self.calls("image"), [["image", "inspect", "dock/dev.dock.hello:0.2.0"]])  # not asked again
+        self.assertEqual(self.calls("image"), [["image", "inspect", "dock/dev.dock.probe:0.1.0"]])  # not asked again
 
     def test_bad_build_arguments_are_reported(self):
         with self.subTest("an unknown plugin is reported"):
@@ -1249,11 +1246,11 @@ class PluginBuild(DockIsolated):
             def break_build(path):
                 (path / "Dockerfile").write_text("FROM python:3.15.2-slim\nRUN false\n")
 
-            self.store.install(self.plugin_copy(ROOT.parent.parent / "plugins" / "hello", "dev.dock.hellofail", break_build))
-            r = self.dock("plugin", "build", "dev.dock.hellofail")
+            self.store.install(self.plugin_copy(FIXTURES / "probe", "dev.dock.probefail", break_build))
+            r = self.dock("plugin", "build", "dev.dock.probefail")
             self.assertEqual(r.returncode, 1)
-            log = self.store.log_path("dev.dock.hellofail")
-            self.assertIn(f"dock: dev.dock.hellofail: image build failed (see {log})", r.stderr)
+            log = self.store.log_path("dev.dock.probefail")
+            self.assertIn(f"dock: dev.dock.probefail: image build failed (see {log})", r.stderr)
             self.assertNotIn("built dock/", r.stdout)
         with self.subTest("a plugin without a Dockerfile is refused"):
             self.reset_calls()
@@ -1266,14 +1263,14 @@ class PluginBuild(DockIsolated):
             self.assertEqual(self.calls("build"), [])
         with self.subTest("a missing runtime is refused"):
             self.configure(runtime="no-such-runtime-xyz")
-            r = self.dock("plugin", "build", "dev.dock.hello")
+            r = self.dock("plugin", "build", "dev.dock.probe")
             self.assertEqual(r.returncode, 1)
             self.assertIn("dock: container runtime 'no-such-runtime-xyz' not found", r.stderr)
 
     def test_works_from_the_shell_and_the_help_lists_it(self):
         self.configure()
-        r = self.dock("shell", stdin="plugin build dev.dock.hello\nhelp\n")
-        self.assertIn("built dock/dev.dock.hello:0.2.0", r.stdout)
+        r = self.dock("shell", stdin="plugin build dev.dock.probe\nhelp\n")
+        self.assertIn("built dock/dev.dock.probe:0.1.0", r.stdout)
         self.assertEqual(len(self.calls("build")), 1)
         self.assertEqual(r.stdout.count("plugin build <id>"), 1)  # in the shell's help
         self.assertIn("plugin build <id>", self.dock("help").stdout)
@@ -1293,11 +1290,11 @@ class PluginInfoRuntime(DockIsolated):
     def test_runtime_line(self):
         with self.subTest("without network and cwd access"):
             self.configure()
-            self.assertEqual(self.runtime_line("dev.dock.hello"), "runtime:     docker (no network, no cwd access)")
+            self.assertEqual(self.runtime_line("dev.dock.probe"), "runtime:     docker (no network, no cwd access)")
             self.assertEqual(self.calls(), [])  # info asks the runtime nothing
         with self.subTest("the runtime is found without any config"):
             (self.store.home / "config.toml").unlink()
-            self.assertEqual(self.runtime_line("dev.dock.hello"), "runtime:     docker (no network, no cwd access)")
+            self.assertEqual(self.runtime_line("dev.dock.probe"), "runtime:     docker (no network, no cwd access)")
         with self.subTest("network without cwd"):
             install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network"]')
             self.configure()
@@ -1307,10 +1304,10 @@ class PluginInfoRuntime(DockIsolated):
             self.assertEqual(self.runtime_line("dev.dock.sample"), "runtime:     docker (network, cwd)")
 
     def test_info_layout_has_nothing_of_a_removed_feature(self):
-        keys = [l.split(":")[0] for l in self.info("dev.dock.hello").splitlines()]  # the runtime after env, before location
+        keys = [l.split(":")[0] for l in self.info("dev.dock.probe").splitlines()]  # the runtime after env, before location
         self.assertEqual(keys, ["id", "version", "protocol", "description", "commands", "permissions", "env", "keywords",
                                 "runtime", "location"])
-        text = self.info("dev.dock.hello")
+        text = self.info("dev.dock.probe")
         for removed in ("runner:", "isolation:", "builds:", "provision", "provides", "requires", "http:"):
             self.assertNotIn(removed, text)
 
@@ -1319,11 +1316,11 @@ class PluginInfoRuntime(DockIsolated):
             empty = self.tmp / "empty"
             empty.mkdir()
             env = {**self.env, "PATH": str(empty)}  # AC8: info needs no runtime
-            self.assertEqual(self.runtime_line("dev.dock.hello", env),
+            self.assertEqual(self.runtime_line("dev.dock.probe", env),
                              "runtime:     none found (install docker or podman, or set [container] runtime)")
         with self.subTest("a broken config does not break info"):
             (self.store.home / "config.toml").write_text("[container\n")
-            self.assertIn("runtime:     unknown", self.runtime_line("dev.dock.hello"))
+            self.assertIn("runtime:     unknown", self.runtime_line("dev.dock.probe"))
 
 
 class PluginInfoEnv(DockIsolated):
@@ -1335,7 +1332,7 @@ class PluginInfoEnv(DockIsolated):
 
     def test_the_env_line(self):
         with self.subTest("a dash without declared env"):
-            self.assertEqual(self.line("dev.dock.hello"), "env:         -")
+            self.assertEqual(self.line("dev.dock.probe"), "env:         -")
         with self.subTest("declared names are listed after the permissions"):
             install(self.store, CONTAINER, '\n[capabilities]\npermissions = ["network"]\nenv = ["A_ONE", "B_TWO"]\n')
             self.assertEqual(self.line("dev.dock.sample"), "env:         A_ONE, B_TWO")
@@ -1348,8 +1345,8 @@ class PluginInfoEnv(DockIsolated):
         (root / "Dockerfile").write_text("FROM scratch\n")
         out = self.dock("plugin", "install", "--yes", str(root)).stdout
         self.assertIn("  env:         A_ONE, B_TWO", out.splitlines())
-        # hello under another id: a reinstall of hello itself would delete the image the whole run shares
-        out = self.dock("plugin", "install", str(self.plugin_copy(ROOT.parent.parent / "plugins" / "hello", "dev.dock.hellosummary"))).stdout
+        # probe under another id: a reinstall of probe itself would delete the image the whole run shares
+        out = self.dock("plugin", "install", str(self.plugin_copy(FIXTURES / "probe", "dev.dock.probesummary"))).stdout
         self.assertNotIn("env:", out)
 
 
@@ -1363,16 +1360,16 @@ class ShellStatus(DockIsolated):
 
     def test_status_shows_id_idle_time_and_the_runtime(self):
         self.configure()
-        r = self.dock("shell", stdin="hello a\nstatus\n")
-        line = self.status_line(r.stdout, "dev.dock.hello")
-        self.assertRegex(line, r"^dev\.dock\.hello +running +idle 0m\d\ds +docker$")
+        r = self.dock("shell", stdin="echoargs a\nstatus\n")
+        line = self.status_line(r.stdout, "dev.dock.probe")
+        self.assertRegex(line, r"^dev\.dock\.probe +running +idle 0m\d\ds +docker$")
 
 
 class ReinstallDropsTheImage(RecordingRuntimeCase):
     """F6: an image is named by id and version, so a reinstall of the same version must not reuse a stale one.
 
     The plugin is a copy under its own id (dev.dock.reinstallprobe): a reinstall deletes its image, and the
-    images of hello and the fixtures are shared by the whole run and must never be touched.
+    images of the fixtures are shared by the whole run and must never be touched.
     """
 
     ID = "dev.dock.reinstallprobe"
@@ -1415,7 +1412,7 @@ class ReinstallDropsTheImage(RecordingRuntimeCase):
         self.assertEqual(len(self.calls("build")), 2)
 
     def test_a_first_install_asks_the_runtime_nothing_and_so_never_drops_a_shared_image(self):
-        # A fresh DOCK_HOME installing hello must not delete the hello image other homes (and tests) rely on.
+        # A fresh DOCK_HOME installing a plugin must not delete the image other homes (and tests) rely on.
         self.configure()
         self.own_image(self.TAG)
         with redirect_stderr(StringIO()):

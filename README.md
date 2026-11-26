@@ -14,9 +14,8 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │  └─ cli/           the Python host (moon project `cli`)
 │     ├─ src/        the host package (python -m src, or the `dock` command)
 │     ├─ tests/      the host tests (pytest), plus the host-driven dm tests (they start containers)
-│     └─ moon.yml    install, check, check-ci, test, run, plugin-install, clean
+│     └─ moon.yml    install, check, check-ci, test, run, clean
 ├─ plugins/          container plugins, usable by any host
-│  ├─ hello/         the example plugin
 │  ├─ dm/            the downloader (moon project `dm`)
 │  │  ├─ tests/      dm's in-process tests (pytest, no container runtime) and the torrent fixtures
 │  │  └─ moon.yml    install, check, check-ci, test, clean
@@ -40,19 +39,18 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 | Target               | What it does                                                       |
 |----------------------|--------------------------------------------------------------------|
 | `make cli-install`   | Install dependencies (`uv sync`)                                   |
-| `make cli-check`     | Lint and typecheck the CLI and hello (ruff with `--fix`, ty) |
+| `make cli-check`     | Lint and typecheck the CLI (ruff with `--fix`, ty) |
 | `make cli-check-ci`  | The same without fixing anything                                   |
 | `make cli-test`      | Run the tests (needs Docker or podman)                             |
 | `make cli-run`       | Run dock, e.g. `make cli-run ARGS="plugin list"`                   |
-| `make cli-plugin-install` | Install the example plugin into `$DOCK_HOME` (default `~/.dock`) |
-| `make cli-clean`     | Remove the CLI's and hello's Python caches                         |
+| `make cli-clean`     | Remove the CLI's Python caches                         |
 | `make dm-install`    | Install dm's dev tools (`uv sync`)                                 |
 | `make dm-check`      | Lint and typecheck dm (ruff with `--fix`, ty)                      |
 | `make dm-check-ci`   | The same without fixing anything                                   |
 | `make dm-test`       | Run dm's in-process tests (no Docker or podman needed)             |
 | `make dm-clean`      | Remove dm's Python caches                                          |
 | `make planner-install`, `planner-check`, `planner-check-ci`, `planner-test`, `planner-clean` | The same for the planner (its tests need no Docker or model) |
-| `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py` and `plugins/hello/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
+| `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
 | `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project                  |
 | `make help`          | List the targets                                                   |
 

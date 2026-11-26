@@ -79,9 +79,9 @@ class ApiVersion(unittest.TestCase):
 
 
 class ShippedPluginsMoveToV2(unittest.TestCase):
-    """AC14: every plugin in the repository is v2, and `plugin update` works from the v1 installs of hello and dm."""
+    """AC14: every plugin in the repository is v2, and `plugin update` works from the v1 install of dm."""
 
-    PLUGINS = (("hello", "dev.dock.hello", "0.1.0"), ("dm", "dev.dock.dm", "0.4.0"))
+    PLUGINS = (("dm", "dev.dock.dm", "0.4.0"),)
     FIXTURES = ("probe", "jail", "pidprobe")
 
     def setUp(self):

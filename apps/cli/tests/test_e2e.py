@@ -9,6 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
+PROBE = ROOT / "tests" / "fixtures" / "probe"
 
 import dockenv
 
@@ -16,12 +17,11 @@ import dockenv
 class DockE2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        dockenv.prebuild_plugins(ROOT.parent.parent / "plugins" / "hello")
+        dockenv.prebuild_plugins(PROBE)
         cls.home = tempfile.mkdtemp(prefix="dock-home-")
         cls.env = {**os.environ, "DOCK_HOME": cls.home, "PYTHONPATH": str(ROOT)}
-        for name in ("hello",):
-            r = cls.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / name))
-            assert r.returncode == 0, r.stderr
+        r = cls.dock("plugin", "install", str(PROBE))
+        assert r.returncode == 0, r.stderr
         dockenv.write_config(cls.home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
 
     @classmethod
@@ -34,7 +34,7 @@ class DockE2E(unittest.TestCase):
 
     def test_help_lists_plugin_commands_without_running_them(self):
         r = self.dock("help")
-        for cmd in ("hello", "count"):
+        for cmd in ("code", "fetch"):
             self.assertIn(cmd, r.stdout)
         for line in r.stdout.splitlines():
             self.assertNotRegex(line, r"\bserve\b")
@@ -45,20 +45,6 @@ class DockE2E(unittest.TestCase):
             with self.subTest(args=args):
                 r = self.dock(*args)
                 self.assertEqual((r.returncode, r.stdout, r.stderr), (1, "", message))
-
-    def test_greeting(self):
-        for name, args, expected in (("with args", ("Roman",), "hello, Roman!"),
-                                     ("quoted multi-word name", ("Ada Lovelace",), "hello, Ada Lovelace!"),
-                                     ("empty name greets instead of prompting", ("",), "hello, stranger!")):
-            with self.subTest(name):
-                r = self.dock("hello", *args)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertNotIn("your name", r.stdout)
-                self.assertEqual(r.stdout.strip(), expected)
-
-    def test_python_plugin_prompts_through_host(self):
-        r = self.dock("hello", stdin="Ada\n")
-        self.assertIn("hello, Ada!", r.stdout)
 
     def starts(self, plugin_id):
         log = Path(self.home, "logs", f"{plugin_id}.log")
@@ -75,20 +61,11 @@ class DockE2E(unittest.TestCase):
     def test_usage_errors_are_refused_before_anything_starts(self):
         # dock reads a leading '-' as a flag, so a negative number goes after `--`
         for name, message, args in (
-                ("bad args", "input 'n' must be an integer, got 'abc'", ("count", "abc")),
-                ("two words unquoted", "unexpected argument 'Lovelace'", ("hello", "Ada", "Lovelace")),
-                ("negative number without --", "unknown flag '-3'", ("count", "-3"))):
+                ("bad args", "input 'retries' must be an integer, got 'abc'", ("fetch", "u", "--retries", "abc")),
+                ("two words unquoted", "unexpected argument 'Lovelace'", ("fetch", "Ada", "Lovelace")),
+                ("negative number without --", "unknown flag '-3'", ("fetch", "u", "-3"))):
             with self.subTest(name):
-                self.assert_usage_error("dev.dock.hello", message, *args)
-
-    def test_count(self):
-        for name, args, expected in (("given number", ("3",), "counted to 3"),
-                                     ("defaults to ten", (), "counted to 10"),
-                                     ("negative number after --", ("--", "-3"), "counted to -3")):
-            with self.subTest(name):
-                r = self.dock("count", *args)
-                self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertIn(expected, r.stdout)
+                self.assert_usage_error("dev.dock.probe", message, *args)
 
     def test_unknown_command(self):
         r = self.dock("nope")
@@ -99,11 +76,11 @@ class DockE2E(unittest.TestCase):
         home = tempfile.mkdtemp(prefix="dock-home-")
         self.addCleanup(__import__("shutil").rmtree, home, True)
         env = {**self.env, "DOCK_HOME": home}
-        r = self.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / "hello"), env=env)
+        r = self.dock("plugin", "install", str(PROBE), env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(home, text)
-        return self.dock("hello", "Ada", env=env), Path(home, "logs", "dev.dock.hello.log")
+        return self.dock("code", "0", env=env), Path(home, "logs", "dev.dock.probe.log")
 
     def test_a_bad_config_fails_the_command_naming_the_problem_and_starts_nothing(self):
         cases = [(f"removed [{t}] table", body, f"[{t}] ") for t, body in (
@@ -118,20 +95,19 @@ class DockE2E(unittest.TestCase):
                 r, log = self.run_with_config(body)
                 self.assertEqual(r.returncode, 1, r.stderr)
                 self.assertIn(expected, r.stderr)
-                self.assertNotIn("hello, Ada!", r.stdout)
                 self.assertFalse(log.exists() and " start " in log.read_text(), "the plugin was started")
 
     def test_a_container_runtime_that_is_not_installed_fails_the_command_with_the_fix(self):
         home = tempfile.mkdtemp(prefix="dock-home-")
         self.addCleanup(__import__("shutil").rmtree, home, True)
         env = {**self.env, "DOCK_HOME": home, "PATH": str(Path(sys.executable).parent)}  # python, no docker or podman
-        self.assertEqual(self.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / "hello"), env=env).returncode, 0)
-        r = self.dock("hello", "Ada", env=env)
+        self.assertEqual(self.dock("plugin", "install", str(PROBE), env=env).returncode, 0)
+        r = self.dock("code", "0", env=env)
         self.assertEqual(r.returncode, 1, r.stderr)  # AC8
         self.assertEqual(r.stderr.strip(), "dock: no container runtime found (install docker or podman, "
                                            f"or set [container] runtime in {Path(home, 'config.toml')})")
         self.assertEqual(self.dock("help", env=env).returncode, 0)
-        self.assertEqual(self.dock("plugin", "info", "dev.dock.hello", env=env).returncode, 0)
+        self.assertEqual(self.dock("plugin", "info", "dev.dock.probe", env=env).returncode, 0)
 
 
 if __name__ == "__main__":

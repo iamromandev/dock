@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
+PROBE = ROOT / "tests" / "fixtures" / "probe"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
@@ -94,7 +95,7 @@ class ShellProc:
 class ShellE2E(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.plugins = (ROOT.parent.parent / "plugins" / "hello", ROOT / "tests" / "fixtures" / "probe")
+        cls.plugins = (ROOT / "tests" / "fixtures" / "probe", ROOT / "tests" / "fixtures" / "uiprobe")
         dockenv.prebuild_plugins(*cls.plugins)
         cls.home = tempfile.mkdtemp(prefix="dock-shell-home-")
         cls.env = {**os.environ, "DOCK_HOME": cls.home, "PYTHONPATH": str(ROOT)}
@@ -133,11 +134,11 @@ class ShellE2E(unittest.TestCase):
         return sp
 
     def private_home(self, *plugins, config=None):
-        """A fresh DOCK_HOME with the named bundled plugins installed; returns (home, env)."""
+        """A fresh DOCK_HOME with the named fixture plugins installed; returns (home, env)."""
         home = tempfile.mkdtemp(prefix="dock-shell-priv-")
         env = {**self.env, "DOCK_HOME": home}
         for name in plugins:
-            r = self.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / name), env=env)
+            r = self.dock("plugin", "install", str(ROOT / "tests" / "fixtures" / name), env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
         dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
         if config:
@@ -153,39 +154,39 @@ class ShellE2E(unittest.TestCase):
 
     # AC2
     def test_quoted_arg_and_unknown_command(self):
-        script = 'hello "Ada Lovelace"\nnosuch\n'
+        script = 'echoargs "Ada Lovelace"\nnosuch\n'
         with self.subTest("readline on"):
             r = self.shell(script)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("hello, Ada Lovelace!", r.stdout)
+            self.assertIn('"args": ["Ada Lovelace"]', r.stdout)
             self.assertIn("unknown command 'nosuch'", r.stderr)
         with self.subTest("readline off"):
             home = tempfile.mkdtemp(prefix="dock-shell-nort-")
             env = {**self.env, "DOCK_HOME": home, "DOCK_NO_READLINE": "1"}
-            self.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / "hello"), env=env)
+            self.dock("plugin", "install", str(PROBE), env=env)
             dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
             r = self.dock("shell", stdin=script, env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("hello, Ada Lovelace!", r.stdout)
+            self.assertIn('"args": ["Ada Lovelace"]', r.stdout)
             self.assertIn("unknown command 'nosuch'", r.stderr)
             self.assertFalse(Path(home, "history").exists())
 
     def test_unbalanced_quote_returns_to_prompt(self):
-        r = self.shell('hello "Ada\nhello Bob\n')
+        r = self.shell('echoargs "Ada\nechoargs Bob\n')
         self.assertIn("dock:", r.stderr)
-        self.assertIn("hello, Bob!", r.stdout)
+        self.assertIn('"args": ["Bob"]', r.stdout)
 
     def test_blank_line_and_exit(self):
-        r = self.shell("\n  \nexit\nhello Late\n")
+        r = self.shell("\n  \nexit\nechoargs Late\n")
         self.assertEqual(r.returncode, 0)
         self.assertNotIn("Late", r.stdout)
 
     # AC4
     def test_nonzero_exit_code_is_printed_and_shell_continues(self):
-        r = self.shell("code 3\ncode 0\nhello Bob\n")
+        r = self.shell("code 3\ncode 0\nechoargs Bob\n")
         self.assertEqual(r.stderr.count("exit 3"), 1)
         self.assertNotIn("exit 0", r.stderr)
-        self.assertIn("hello, Bob!", r.stdout)
+        self.assertIn('"args": ["Bob"]', r.stdout)
 
     # AC5
     def test_crash_reports_error_and_next_use_restarts(self):
@@ -201,8 +202,8 @@ class ShellE2E(unittest.TestCase):
         sh.wait_for("sleeping")  # inside the invoke
         sh.sigint()
         sh.wait_for(PROMPT, count=2)
-        sh.send("hello Bob")
-        sh.wait_for("hello, Bob!")
+        sh.send("echoargs Bob")
+        sh.wait_for('"args": ["Bob"]')
         sh.wait_for(PROMPT, count=3)
         self.assertEqual(sh.finish(), 0, sh.err)
         self.assertEqual(self.starts("dev.dock.probe"), 1)
@@ -210,90 +211,90 @@ class ShellE2E(unittest.TestCase):
     # R7: a cancel that reaches a plugin with nothing in flight changes nothing
     def test_sigint_leaves_idle_warm_plugin_working(self):
         sh = self.shell_proc()
-        sh.send("hello a")
-        sh.wait_for("hello, a!")
-        sh.send("sleep 30")  # SIGINT cancels this; hello gets the cancel while idle
+        sh.send("show basic")
+        sh.wait_for("basic done")
+        sh.send("sleep 30")  # SIGINT cancels this; uiprobe gets the cancel while idle
         sh.wait_for("sleeping")
         sh.sigint()
         sh.wait_for(PROMPT, count=3)
-        sh.send("hello Bob")
-        sh.wait_for("hello, Bob!")
+        sh.send("show basic")
+        sh.wait_for("basic done", count=2)
         self.assertEqual(sh.finish(), 0, sh.err)
-        self.assertNotIn("dev.dock.hello:", sh.err)
-        self.assertEqual(self.starts("dev.dock.hello"), 1)
+        self.assertNotIn("dev.dock.uiprobe:", sh.err)
+        self.assertEqual(self.starts("dev.dock.uiprobe"), 1)
 
     def test_plugin_update_stops_a_running_plugin_first_but_not_on_dry_run(self):
         tmp = Path(tempfile.mkdtemp(prefix="dock-shell-upd-"))
-        copy = dockenv.plugin_copy(ROOT.parent.parent / "plugins" / "hello", tmp / "v1", "dev.dock.helloupd")
-        self.addCleanup(dockenv.remove_image, "dock/dev.dock.helloupd:0.2.0")
-        self.addCleanup(dockenv.remove_image, "dock/dev.dock.helloupd:0.3.0")
+        copy = dockenv.plugin_copy(PROBE, tmp / "v1", "dev.dock.probeupd")
+        self.addCleanup(dockenv.remove_image, "dock/dev.dock.probeupd:0.1.0")
+        self.addCleanup(dockenv.remove_image, "dock/dev.dock.probeupd:0.2.0")
         home = tempfile.mkdtemp(prefix="dock-shell-upd-home-")
         env = {**self.env, "DOCK_HOME": home}
         self.assertEqual(self.dock("plugin", "install", str(copy), env=env).returncode, 0)
-        newer = dockenv.plugin_copy(ROOT.parent.parent / "plugins" / "hello", tmp / "cat", "dev.dock.helloupd")
+        newer = dockenv.plugin_copy(PROBE, tmp / "cat", "dev.dock.probeupd")
         toml = newer / "plugin.toml"
-        toml.write_text(toml.read_text().replace('version = "0.2.0"', 'version = "0.3.0"', 1))
+        toml.write_text(toml.read_text().replace('version = "0.1.0"', 'version = "0.2.0"', 1))
         dockenv.write_config(home, dockenv.require_runtime())
         dockenv.add_config(Path(home), f'[catalog]\npaths = ["{newer}"]\n')
-        r = self.dock("shell", stdin="hello a\nplugin update --dry-run\nhello b\nplugin update\nhello c\n", env=env)
+        r = self.dock("shell", stdin="echoargs a\nplugin update --dry-run\nechoargs b\nplugin update\nechoargs c\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("would update dev.dock.helloupd 0.2.0 → 0.3.0", r.stdout)
-        self.assertIn("updated dev.dock.helloupd 0.2.0 → 0.3.0", r.stdout)
-        self.assertIn("hello, c!", r.stdout)
-        log = Path(home, "logs", "dev.dock.helloupd.log").read_text()
+        self.assertIn("would update dev.dock.probeupd 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn("updated dev.dock.probeupd 0.1.0 → 0.2.0", r.stdout)
+        self.assertIn('"args": ["c"]', r.stdout)
+        log = Path(home, "logs", "dev.dock.probeupd.log").read_text()
         self.assertEqual(log.count(" start "), 2)  # a and b shared one process; the update stopped it; c started anew
 
     # AC8
     def test_plugin_remove_or_install_of_a_running_id_stops_it_first(self):
-        # a copy of hello under its own id: a remove or reinstall drops only that copy's image, never the shared hello one
+        # a copy of probe under its own id: a remove or reinstall drops only that copy's image, never the shared probe one
         with self.subTest("remove"):
             tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
-            copy = dockenv.plugin_copy(ROOT.parent.parent / "plugins" / "hello", tmp, "dev.dock.hellorm")
-            self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellorm:0.1.0")
+            copy = dockenv.plugin_copy(PROBE, tmp, "dev.dock.proberm")
+            self.addCleanup(dockenv.remove_image, "dock/dev.dock.proberm:0.1.0")
             home = tempfile.mkdtemp(prefix="dock-shell-rm-")
             env = {**self.env, "DOCK_HOME": home}
             self.dock("plugin", "install", str(copy), env=env)
             dockenv.write_config(home, dockenv.require_runtime())
-            r = self.dock("shell", stdin="hello a\nplugin remove dev.dock.hellorm\nhello b\n", env=env)
-            self.assertIn("removed dev.dock.hellorm", r.stdout)
-            self.assertIn("unknown command 'hello'", r.stderr)
-            self.assertNotIn("hello, b!", r.stdout)
-            log = Path(home, "logs", "dev.dock.hellorm.log")
+            r = self.dock("shell", stdin="echoargs a\nplugin remove dev.dock.proberm\nechoargs b\n", env=env)
+            self.assertIn("removed dev.dock.proberm", r.stdout)
+            self.assertIn("unknown command 'echoargs'", r.stderr)
+            self.assertNotIn('"args": ["b"]', r.stdout)
+            log = Path(home, "logs", "dev.dock.proberm.log")
             self.assertEqual(log.read_text().count(" start "), 1)
-            self.assertFalse(dockenv.image_exists("dock/dev.dock.hellorm:0.1.0"))
+            self.assertFalse(dockenv.image_exists("dock/dev.dock.proberm:0.1.0"))
         with self.subTest("install"):
             tmp = Path(tempfile.mkdtemp(prefix="dock-shell-copy-"))
-            copy = dockenv.plugin_copy(ROOT.parent.parent / "plugins" / "hello", tmp, "dev.dock.hellocopy")
-            self.addCleanup(dockenv.remove_image, "dock/dev.dock.hellocopy:0.1.0")
+            copy = dockenv.plugin_copy(PROBE, tmp, "dev.dock.probecopy")
+            self.addCleanup(dockenv.remove_image, "dock/dev.dock.probecopy:0.1.0")
             home = tempfile.mkdtemp(prefix="dock-shell-priv-")  # its own home and logs: nothing carries over from the case before
             env = {**self.env, "DOCK_HOME": home}
             self.assertEqual(self.dock("plugin", "install", str(copy), env=env).returncode, 0)
             dockenv.write_config(home, dockenv.require_runtime())
-            r = self.dock("shell", stdin=f"hello a\nplugin install {copy}\nhello b\n", env=env)
+            r = self.dock("shell", stdin=f"echoargs a\nplugin install {copy}\nechoargs b\n", env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
-            self.assertIn("installed dev.dock.hellocopy", r.stdout)
-            self.assertIn("hello, b!", r.stdout)
-            log = Path(home, "logs", "dev.dock.hellocopy.log")
+            self.assertIn("installed dev.dock.probecopy", r.stdout)
+            self.assertIn('"args": ["b"]', r.stdout)
+            log = Path(home, "logs", "dev.dock.probecopy.log")
             self.assertEqual(log.read_text().count(" start "), 2)
 
     # AC11
     def _idle_run(self, timeout):
         home = tempfile.mkdtemp(prefix="dock-shell-idle-")
         env = {**self.env, "DOCK_HOME": home}
-        self.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / "hello"), env=env)
+        self.dock("plugin", "install", str(PROBE), env=env)
         dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
         dockenv.add_config(home, f"[shell]\nidle_timeout = {timeout}\n")
         p = subprocess.Popen([sys.executable, "-m", "src", "shell"], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                              env=env, cwd=ROOT, **dockenv.SIGINT_DEFAULT)
-        p.stdin.write("hello Bob\n")
+        p.stdin.write("echoargs Bob\n")
         p.stdin.flush()
         seen = ""
-        while "hello, Bob!" not in seen:  # the container start is not instant: idle time counts from the reply
+        while '"args": ["Bob"]' not in seen:  # the container start is not instant: idle time counts from the reply
             line = p.stdout.readline()
             if line == "":
                 p.kill()
-                self.fail(f"the shell ended before greeting: {p.stderr.read()}")
+                self.fail(f"the shell ended before echoing: {p.stderr.read()}")
             seen += line
         time.sleep(2.5)
         out, _ = p.communicate("\nstatus\n", timeout=60)
@@ -302,14 +303,14 @@ class ShellE2E(unittest.TestCase):
     def test_idle_timeout_zero_keeps_plugin(self):
         out = self._idle_run(0)
         self.assertNotIn("no plugins running", out)
-        self.assertIn("dev.dock.hello", out)
+        self.assertIn("dev.dock.probe", out)
 
     # AC12
     def test_status_lists_running_plugins(self):
-        r = self.shell("status\nhello Bob\nstatus\n")
+        r = self.shell("status\nechoargs Bob\nstatus\n")
         self.assertIn("no plugins running", r.stdout)
         tail = r.stdout.rsplit("no plugins running", 1)[1]
-        self.assertRegex(tail, r"dev\.dock\.hello\s+running\s+idle 0m\d\ds")
+        self.assertRegex(tail, r"dev\.dock\.probe\s+running\s+idle 0m\d\ds")
         for removed in ("provides:", "isolated:", "wasm"):  # AC15
             self.assertNotIn(removed, tail)
 
@@ -324,19 +325,18 @@ class ShellE2E(unittest.TestCase):
         import types
         sh = self._shell_obj()
         with self.subTest("first word"):
-            self.assertEqual(sh.candidates("he", "he"), ["hello", "help"])
+            self.assertEqual(sh.candidates("ec", "ec"), ["echoargs"])
         with self.subTest("plugin subcommands and ids"):
             self.assertEqual(sh.candidates("plugin ", ""), ["list", "info", "install", "build", "remove", "update"])
-            self.assertEqual(sh.candidates("plugin update ", ""), ["dev.dock.hello", "dev.dock.probe"])
-            self.assertEqual(sh.candidates("plugin update dev.dock.hello ", ""), ["dev.dock.probe"])
+            self.assertEqual(sh.candidates("plugin update ", ""), ["dev.dock.probe", "dev.dock.uiprobe"])
+            self.assertEqual(sh.candidates("plugin update dev.dock.probe ", ""), ["dev.dock.uiprobe"])
             self.assertEqual(sh.candidates("plugin info dev.dock.", "dev.dock."),
-                             ["dev.dock.hello", "dev.dock.probe"])
-            self.assertEqual(sh.candidates("plugin build dev.dock.h", "dev.dock.h"), ["dev.dock.hello"])
+                             ["dev.dock.probe", "dev.dock.uiprobe"])
+            self.assertEqual(sh.candidates("plugin build dev.dock.u", "dev.dock.u"), ["dev.dock.uiprobe"])
         with self.subTest("complete uses line buffer and state"):
             sh.readline = types.SimpleNamespace(get_line_buffer=lambda: "he")
-            self.assertEqual(sh.complete("he", 0), "hello")
-            self.assertEqual(sh.complete("he", 1), "help")
-            self.assertIsNone(sh.complete("he", 2))
+            self.assertEqual(sh.complete("he", 0), "help")
+            self.assertIsNone(sh.complete("he", 1))
 
     # AC14
     @staticmethod
@@ -348,17 +348,17 @@ class ShellE2E(unittest.TestCase):
     def test_history_file_records_entered_lines_and_is_private(self):
         home = tempfile.mkdtemp(prefix="dock-shell-hist-")
         env = {**self.env, "DOCK_HOME": home}
-        self.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / "hello"), env=env)
+        self.dock("plugin", "install", str(PROBE), env=env)
         dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
-        r = self.dock("shell", stdin="hello a\n\nnosuch\n", env=env)
+        r = self.dock("shell", stdin="echoargs a\n\nnosuch\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertEqual(self.history(home), ["hello a", "nosuch"])
+        self.assertEqual(self.history(home), ["echoargs a", "nosuch"])
         self.assertEqual(Path(home, "history").stat().st_mode & 0o777, 0o600)
 
     def test_history_is_capped_at_1000(self):
         home = tempfile.mkdtemp(prefix="dock-shell-hist-")
         env = {**self.env, "DOCK_HOME": home}
-        self.dock("plugin", "install", str(ROOT.parent.parent / "plugins" / "hello"), env=env)
+        self.dock("plugin", "install", str(PROBE), env=env)
         dockenv.write_config(home, dockenv.require_runtime())  # a first install asks the runtime nothing, so setting the runtime here is only the last step of the setup
         r = self.dock("shell", stdin="help\n" * 1100, env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -395,12 +395,12 @@ class ShellE2E(unittest.TestCase):
                 self.assertTrue(dockenv.wait_container_gone(self.cid(self.home)))
 
     def test_builtins_work_inside_the_shell(self):
-        r = self.shell("help\nversion\nplugin list\nplugin info dev.dock.hello\n")
+        r = self.shell("help\nversion\nplugin list\nplugin info dev.dock.probe\n")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("plugin install", r.stdout)
         self.assertIn(f"dock {__version__}", r.stdout)
-        self.assertRegex(r.stdout, r"dev\.dock\.hello\s+0\.2\.0")
-        self.assertIn("id:          dev.dock.hello", r.stdout)
+        self.assertRegex(r.stdout, r"dev\.dock\.probe\s+0\.1\.0")
+        self.assertIn("id:          dev.dock.probe", r.stdout)
         # the help it printed lists the shell built-ins and not `shell`
         for word in ("status", "exit, quit"):
             self.assertRegex(r.stdout, rf"(?m)^  {word}\b", word)
@@ -408,19 +408,19 @@ class ShellE2E(unittest.TestCase):
         self.assertNotIn("usage: dock <command>", r.stdout)
 
     def test_unwritable_history_warns_once_and_exits_cleanly(self):
-        home, env = self.private_home("hello")
+        home, env = self.private_home("probe")
         Path(home, "history").mkdir()  # a directory cannot be written as a file
-        r = self.dock("shell", stdin="hello a\n", env=env)
+        r = self.dock("shell", stdin="echoargs a\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stderr.count("cannot write history"), 1, r.stderr)
-        self.assertIn("hello, a!", r.stdout)
+        self.assertIn('"args": ["a"]', r.stdout)
 
     # ---- idle reaping ---------------------------------------------------------------
     def test_idle_plugin_is_stopped_before_the_line_that_follows_the_wait(self):
-        home, env = self.private_home("hello", config="[shell]\nidle_timeout = 1\n")
+        home, env = self.private_home("probe", config="[shell]\nidle_timeout = 1\n")
         sh = self.shell_proc(env)
-        sh.send("hello Bob")
-        sh.wait_for("hello, Bob!")
+        sh.send("echoargs Bob")
+        sh.wait_for('"args": ["Bob"]')
         sh.wait_for(PROMPT, count=2)
         time.sleep(1.5)  # idle at the prompt longer than idle_timeout
         sh.send("status")  # no blank line in between: the line itself triggers the reap
@@ -428,22 +428,21 @@ class ShellE2E(unittest.TestCase):
         self.assertEqual(sh.finish(), 0, sh.err)
 
     def test_invalid_idle_timeout_warns_once_per_shell(self):
-        home, env = self.private_home("hello", config='[shell]\nidle_timeout = "soon"\n')
-        r = self.dock("shell", stdin="hello a\nhello b\nhelp\n", env=env)
+        home, env = self.private_home("probe", config='[shell]\nidle_timeout = "soon"\n')
+        r = self.dock("shell", stdin="echoargs a\nechoargs b\nhelp\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stderr.count("invalid [shell] idle_timeout"), 1, r.stderr)
-        self.assertIn("hello, b!", r.stdout)
+        self.assertIn('"args": ["b"]', r.stdout)
 
     def test_a_broken_config_toml_stops_every_plugin_start_but_the_shell_survives(self):
-        home, env = self.private_home("hello", config="[shell\n")
-        r = self.dock("shell", stdin="hello a\nhello b\nstatus\nversion\n", env=env)
+        home, env = self.private_home("probe", config="[shell\n")
+        r = self.dock("shell", stdin="echoargs a\nechoargs b\nstatus\nversion\n", env=env)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertGreaterEqual(r.stderr.count("config.toml"), 2, r.stderr)  # each start is refused, loudly
-        self.assertNotIn("hello, a!", r.stdout)
-        self.assertNotIn("hello, b!", r.stdout)
+        self.assertNotIn('"args"', r.stdout)
         self.assertIn("no plugins running", r.stdout)
         self.assertIn(f"dock {__version__}", r.stdout)  # built-ins that start no plugin still work
-        self.assertFalse(Path(home, "logs", "dev.dock.hello.log").exists(), "a plugin process was started")
+        self.assertFalse(Path(home, "logs", "dev.dock.probe.log").exists(), "a plugin process was started")
 
 
 class SessionUnit(unittest.TestCase):
@@ -451,16 +450,16 @@ class SessionUnit(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        dockenv.prebuild_plugins(ROOT.parent.parent / "plugins" / "hello")
+        dockenv.prebuild_plugins(PROBE)
 
     def setUp(self):
-        self.home = dockenv.make_home("dock-session-", ROOT.parent.parent / "plugins" / "hello")
+        self.home = dockenv.make_home("dock-session-", PROBE)
         self.store = Store(self.home)
         self.session = Session(self.store)
         self.addCleanup(self.session.close)
 
     def test_stop_proc_forgets_the_process(self):
-        manifest = self.store.get("dev.dock.hello")
+        manifest = self.store.get("dev.dock.probe")
         with self.subTest("drops replies still queued for it"):
             proc = self.session.start(manifest, PlainUI(manifest.id))
             other = self.session.start(manifest, PlainUI(manifest.id))
@@ -477,7 +476,7 @@ class SessionUnit(unittest.TestCase):
             self.assertEqual(self.session.hub.replies, {})
 
     def test_drain_pending(self):
-        manifest = self.store.get("dev.dock.hello")
+        manifest = self.store.get("dev.dock.probe")
         with self.subTest("returns once nothing is pending"):
             self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
             proc = self.session.start(manifest, PlainUI(manifest.id))
@@ -500,7 +499,7 @@ class SessionUnit(unittest.TestCase):
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            for plugin_id in ("dev.dock.hello", "dev.dock.hello"):
+            for plugin_id in ("dev.dock.probe", "dev.dock.probe"):
                 manifest = self.store.get(plugin_id)
                 proc = self.session.start(manifest, PlainUI(manifest.id))
                 self.session.stop_proc(proc)  # graceful

@@ -194,8 +194,8 @@ with a message naming the command. A plugin never receives them.
 
 ```toml
 [[commands]]
-name = "hello"
-summary = "Greet someone: hello [name]"
+name = "greet"
+summary = "Greet someone: greet [name]"
 keywords = ["greet", "welcome"]
 ```
 
