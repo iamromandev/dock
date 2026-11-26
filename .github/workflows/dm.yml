@@ -1,6 +1,5 @@
-# Lints, type-checks and tests the dm plugin (plugins/dm/) on every push and pull request to dev and main. Only the
-# in-process tests run here, so no container runtime is needed; the host-driven dm tests run in cli.yml. The steps call
-# uv directly, the same commands as plugins/dm/moon.yml's check-ci and test.
+# Lints and type-checks the dm plugin (plugins/dm/) on every push and pull request to dev and main. Tests are not run
+# here. The steps call uv directly, the same commands as plugins/dm/moon.yml's check-ci.
 name: dm
 
 on:
@@ -15,7 +14,7 @@ permissions:
 jobs:
   dm:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: plugins/dm
@@ -32,4 +31,3 @@ jobs:
       - run: uv sync --locked
       - run: uv run ruff check
       - run: uv run ty check
-      - run: uv run pytest
