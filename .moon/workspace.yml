@@ -7,5 +7,5 @@ projects:
 
 # Configures the version control system (VCS).
 vcs:
-  defaultBranch: "main"
+  defaultBranch: "dev"
   provider: "github"

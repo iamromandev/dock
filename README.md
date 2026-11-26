@@ -37,7 +37,9 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 
 | Target               | What it does                                                       |
 |----------------------|--------------------------------------------------------------------|
-| `make cli-install`   | Install dependencies (`uv sync`)                                   |
+| `make cli-sync`      | Install dependencies (`uv sync`)                                   |
+| `make cli-install`   | Put `dock` on your PATH (editable uv tool install of this checkout; `git pull` upgrades it) |
+| `make cli-uninstall` | Remove that `dock` command                                         |
 | `make cli-check`     | Lint and typecheck the CLI (ruff with `--fix`, ty) |
 | `make cli-check-ci`  | The same without fixing anything                                   |
 | `make cli-test`      | Run the tests (needs Docker or podman)                             |
@@ -50,7 +52,7 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 | `make dm-clean`      | Remove dm's Python caches                                          |
 | `make planner-install`, `planner-check`, `planner-check-ci`, `planner-test`, `planner-clean` | The same for the planner (its tests need no Docker or model) |
 | `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
-| `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project                  |
+| `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project (`install` runs `cli:sync` for the CLI) |
 | `make help`          | List the targets                                                   |
 
 ## Flows
