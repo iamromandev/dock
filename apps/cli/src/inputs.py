@@ -161,3 +161,41 @@ def parse_for(manifest, command: str, args: list[str]) -> dict | None:
     if cmd is None or cmd.inputs is None:
         return None
     return parse_args(cmd.inputs, args)
+
+
+def check_values(specs: list[InputSpec], values: dict) -> dict:
+    """Validate ready-made values (e.g. from a flow) against `specs`; returns them typed, defaults filled.
+
+    Strings are converted as the command line would be, already-typed JSON values are kept; raises UsageError.
+    """
+    by_name = {s.name: s for s in specs}
+    out: dict = {}
+    for name, value in values.items():
+        spec = by_name.get(name)
+        if spec is None:
+            raise UsageError(f"unknown input '{name}'")
+        if spec.type == "bool":
+            if not isinstance(value, bool):
+                raise UsageError(f"input '{name}' must be a boolean, got {value!r}")
+            out[name] = value
+        elif spec.type == "int":
+            if isinstance(value, str):
+                out[name] = _convert(spec, value)
+            elif isinstance(value, int) and not isinstance(value, bool):
+                out[name] = value
+            else:
+                raise UsageError(f"input '{name}' must be an integer, got {value!r}")
+        else:
+            if not isinstance(value, str):
+                raise UsageError(f"input '{name}' must be a string, got {value!r}")
+            out[name] = value
+    for s in specs:
+        if s.name in out:
+            continue
+        if s.required:
+            raise UsageError(f"missing required input '{s.name}'")
+        if s.type == "bool":
+            out[s.name] = False
+        elif s.default is not None:
+            out[s.name] = s.default
+    return out

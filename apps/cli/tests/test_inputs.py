@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src.inputs import InputSpec, UsageError, parse_args, parse_for, specs_from_toml
+from src.inputs import InputSpec, UsageError, check_values, parse_args, parse_for, specs_from_toml
 from src.manifest import Manifest
 
 FETCH = [
@@ -22,6 +22,32 @@ FETCH = [
     {"name": "retries", "type": "int", "flag": "--retries", "default": 3},
     {"name": "quiet", "type": "bool", "flag": "--quiet"},
 ]
+
+
+class CheckValuesTests(unittest.TestCase):
+    SPECS = specs_from_toml("fetch", FETCH)
+
+    def fails(self, values, text):
+        with self.assertRaises(UsageError) as cm:
+            check_values(self.SPECS, values)
+        self.assertIn(text, str(cm.exception))
+
+    def test_typed_and_string_values_are_accepted_and_defaults_filled(self):
+        got = check_values(self.SPECS, {"url": "u", "retries": "5", "quiet": True})
+        self.assertEqual(got, {"url": "u", "retries": 5, "quiet": True})
+        self.assertEqual(check_values(self.SPECS, {"url": "u"}), {"url": "u", "retries": 3, "quiet": False})
+
+    def test_missing_required_is_rejected(self):
+        self.fails({}, "missing required input 'url'")
+
+    def test_unknown_name_is_rejected(self):
+        self.fails({"url": "u", "nope": 1}, "unknown input 'nope'")
+
+    def test_wrong_types_are_rejected(self):
+        self.fails({"url": "u", "retries": "x"}, "must be an integer")
+        self.fails({"url": "u", "retries": True}, "must be an integer")
+        self.fails({"url": 3}, "must be a string")
+        self.fails({"url": "u", "quiet": "yes"}, "must be a boolean")
 
 
 class DeclarationTests(unittest.TestCase):

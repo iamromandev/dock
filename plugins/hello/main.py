@@ -1,5 +1,5 @@
 """hello plugin for dock, written against the raw protocol (stdlib only).
-JSON-RPC 2.0, one JSON object per line on stdin/stdout. See docs/PROTOCOL.md.
+JSON-RPC 2.0, one JSON object per line on stdin/stdout. See protocol/PROTOCOL.md.
 """
 
 import json
@@ -57,7 +57,9 @@ def prompt(text):
 # ---- commands -------------------------------------------------------------
 def hello(inputs):
     name = inputs["name"] if "name" in inputs else prompt("what's your name? ")
-    output(f"hello, {name or 'stranger'}!")
+    text = f"hello, {name or 'stranger'}!"
+    output(text)
+    return {"greeting": text}
 
 
 def count(inputs):
@@ -86,8 +88,8 @@ def handle(msg):
             if fn is None:
                 raise Failure(f"unknown command {params.get('command')}", -32601)
             cancelled.clear()
-            fn(params.get("inputs") or {})
-            result = {"exit_code": 0}
+            outputs = fn(params.get("inputs") or {})
+            result = {"exit_code": 0, **({"outputs": outputs} if outputs else {})}
         elif method == "shutdown":
             send({"id": msg_id, "result": {}})
             return True

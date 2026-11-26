@@ -778,26 +778,27 @@ def _prepare(w, meta, specs, target, key, handle, resume, progress, note, chosen
 
 
 def run_torrent(path, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None,
-                on_stats=None, selection=None):
+                on_stats=None, selection=None, files=None):
     """Download the torrent at path into target.folder. Returns (final path, bytes, number of files).
 
     `selection` (select.Picks) limits it to the picked files; the bytes and the count are then theirs.
 
     An interrupted download keeps its partial (`.<name>.<key>.dm-part`); the next run of the same torrent
     re-checks every piece on disk and fetches the rest. `resume=False` throws an old partial away.
+    `files`, a list, is filled with the absolute paths of the files written (the picked ones).
     """
     return _run(metainfo.load(path), None, target, progress, handle, opts, log, resume, note, on_stats,
-                selection)[:3]
+                selection, files)[:3]
 
 
 def run_magnet(magnet, target, progress, handle=None, opts=None, log=None, *, resume=True, note=None,
-               on_stats=None, selection=None):
+               on_stats=None, selection=None, files=None):
     """Download a magnet link (a magnet.Magnet) into target.folder.
 
     Returns (final path, bytes, number of files, the info dictionary bytes). The metadata is fetched from
     peers; everything else is as for run_torrent, and a partial from `.torrent` of the same info-hash resumes.
     """
-    return _run(None, magnet, target, progress, handle, opts, log, resume, note, on_stats, selection)
+    return _run(None, magnet, target, progress, handle, opts, log, resume, note, on_stats, selection, files)
 
 
 class _Listed(Exception):
@@ -880,7 +881,8 @@ def _choose(meta, specs, selection):
     return None if len(chosen) == len(specs) else chosen
 
 
-def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_stats=None, selection=None):
+def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_stats=None, selection=None,
+         files=None):
     handle = handle or TorrentHandle()
     opts = opts or Options()
     say = note or (lambda text: None)
@@ -1010,4 +1012,11 @@ def _run(meta, magnet, target, progress, handle, opts, log, resume, note, on_sta
         picked_bytes, picked_files = session.selected_total, len(wanted)
     else:
         picked_bytes, picked_files = w.meta.total, len(w.meta.files)
+    if files is not None:
+        if w.meta.multi:
+            wanted = session.storage.wanted if session is not None and session.storage is not None else None
+            files.extend(os.path.abspath(final / Path(*spec.parts))
+                         for i, spec in enumerate(layout.plan_files(w.meta)) if wanted is None or i in wanted)
+        else:
+            files.append(os.path.abspath(final))
     return final, picked_bytes, picked_files, (session.metadata if session is not None else None)

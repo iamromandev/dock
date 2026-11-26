@@ -1,7 +1,7 @@
 # dock CLI
 
 A tiny CLI host where every feature is a plugin. A plugin is any program, in
-any language, that speaks the [dock protocol](docs/PROTOCOL.md):
+any language, that speaks the [dock protocol](../../protocol/PROTOCOL.md):
 JSON-RPC 2.0 over stdin/stdout, one message per line. Every plugin runs in a
 container.
 
@@ -52,27 +52,29 @@ src/ (Python host)
 
 ## Try it
 
-Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.15.2) and Docker or Podman (running). Run these from
-`cli/` (from the repository root, use the `cli-*` targets, such as `make cli-test`).
+Needs [uv](https://docs.astral.sh/uv/) (it installs Python 3.15.2) and Docker or Podman (running). Run the `uv`
+commands from `apps/cli/`; the `moon` ones work from anywhere in the repository (from its root, the `cli-*` make
+targets, such as `make cli-test`, do the same).
 
 ```sh
 uv sync
-make plugin-install   # install the example plugin into ~/.dock (the image is built on first use)
+moon run cli:plugin-install   # install the example plugin into ~/.dock (the image is built on first use)
 uv run dock help
 uv run dock hello Roman
 uv run dock hello "Ada Lovelace"                   # quote a name of several words
 uv run dock count 30
-make test             # tests in throwaway DOCK_HOMEs; they need Docker (or podman)
+moon run cli:test             # tests in throwaway DOCK_HOMEs; they need Docker (or podman)
 ```
 
-`uv run dock` runs the `dock` command from the project environment. Run everything from `cli/` (plugin paths such as `plugins/dm` are relative to it); dock is meant to run from this checkout with uv, not to be published or installed as a wheel. Set `DOCK_HOME` to use
-another plugin folder.
+`uv run dock` runs the `dock` command from the project environment. Run it from `apps/cli/`: the plugins live at the
+repository root, so their paths are `../../plugins/dm` from there. dock is meant to run from this checkout with uv,
+not to be published or installed as a wheel. Set `DOCK_HOME` to use another plugin folder.
 
 With no container runtime, a command that starts a plugin fails with `dock: no container runtime found (install
 docker or podman, or set [container] runtime in <config>)` (exit 1). `help`, `version`, `plugin list` and
 `plugin info` still work (`plugin info` shows `runtime: none found ...`).
 
-`make test` needs a running runtime and stops at once with one line if there is none. `DOCK_TEST_RUNTIME` overrides
+`moon run cli:test` needs a running runtime and stops at once with one line if there is none. `DOCK_TEST_RUNTIME` overrides
 the runtime the tests use. Test modules that start no plugin (such as the unit classes in `tests/test_inputs.py`)
 run without one. The first run builds a few small fixture images, which can take minutes; later runs reuse them.
 On macOS the test folders must be in a path the Docker VM shares (`/Users` by default); if mounts come up empty, set
@@ -244,7 +246,7 @@ a TTY, which includes a piped `dock shell`) dock never reads stdin: without `--y
 `dm` is a bundled plugin (`dev.dock.dm`) that downloads one http(s) URL, the content of a `.torrent` file, or a magnet link into the current folder:
 
 ```sh
-uv run dock plugin install plugins/dm        # by path, or `uv run dock plugin install dev.dock.dm` from the catalog
+uv run dock plugin install ../../plugins/dm  # by path, or `uv run dock plugin install dev.dock.dm` from the catalog
 uv run dock dm https://example.com/file.tar.gz
 uv run dock dm https://example.com/file.tar.gz -o name.tar.gz     # a file name, or a path in an existing subfolder
 uv run dock dm https://example.com/file.tar.gz -d downloads       # an existing subfolder; the name comes from the URL
@@ -577,7 +579,7 @@ Things to know:
 
    A command can declare typed inputs; dock then parses and checks the args
    before starting the plugin and sends them as `inputs` with `invoke`
-   (see `docs/PROTOCOL.md`, "Typed inputs"):
+   (see `protocol/PROTOCOL.md`, "Typed inputs"):
 
    ```toml
    [[commands]]
@@ -593,7 +595,7 @@ Things to know:
    unless given, so it takes neither `default` nor `required`.
 
 2. A program that answers `initialize`, `invoke` and `shutdown` on stdio
-   (follow `plugins/hello/main.py`, in any language).
+   (follow `plugins/hello/main.py` at the repository root, in any language).
 3. `dock plugin install ./thing`. The image is built on the first run, or with `dock plugin build you.thing`.
 4. A container sees only a fixed environment. To receive host variables, list their
    names: `[capabilities] env = ["MY_API_KEY"]` (see "How plugins run").
@@ -601,4 +603,4 @@ Things to know:
 ## Not in this example yet
 
 Remote registry and `dock plugin install <name>`, checksums and signatures. See
-`docs/PROTOCOL.md` for the parts that are fixed and the versioning rule for adding them.
+`protocol/PROTOCOL.md` for the parts that are fixed and the versioning rule for adding them.

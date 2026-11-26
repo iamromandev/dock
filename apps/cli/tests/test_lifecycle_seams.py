@@ -68,7 +68,7 @@ class RecordingUI:
                 "clear": self.clear, "prompt_user": self.prompt_user, "form": self.form}
 
 
-PLUGINS = (ROOT / "plugins" / "hello", ROOT / "tests" / "fixtures" / "pidprobe")
+PLUGINS = (ROOT.parent.parent / "plugins" / "hello", ROOT / "tests" / "fixtures" / "pidprobe")
 
 
 class SessionSeams(unittest.TestCase):
@@ -136,6 +136,74 @@ class SessionSeams(unittest.TestCase):
         self.assertEqual(prepare.call_args.args, (self.store, self.store.get("dev.dock.pidprobe")))
         self.assertNotIn("cwd", prepare.call_args.kwargs)
         self.assertTrue(any(kind == "output" and f"cwd {project}" in text for _, kind, text in self.events), self.events)
+
+
+class InvokeInputs(unittest.TestCase):
+    """No runtime needed: a flow hands ready-made inputs to a running plugin and gets the whole result back."""
+
+    class FakeProc:
+        def __init__(self, result):
+            self.result = result
+            self.sent = []
+            self.handlers = {}
+
+        def alive(self):
+            return True
+
+        def send_request(self, method, params):
+            self.sent.append((method, params))
+            return 1
+
+        def wait_for(self, invoke_id, method, timeout=None):
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return self.result
+
+    def session_with(self, result):
+        session = Session(Store(Path(tempfile.mkdtemp(prefix="dock-seams-inputs-"))))
+        manifest = mock.Mock(id="p")
+        proc = self.FakeProc(result)
+        session.commands["p"] = proc
+        patch = mock.patch("src.lifecycle.make_ui", side_effect=lambda *a, **k: RecordingUI("p", []))
+        patch.start()
+        self.addCleanup(patch.stop)
+        return session, manifest, proc
+
+    def test_inputs_are_sent_as_given_without_parsing_args(self):
+        session, manifest, proc = self.session_with({"exit_code": 0, "outputs": {"files": ["a"]}})
+        with mock.patch("src.lifecycle.parse_for", side_effect=AssertionError("must not parse")):
+            result = session.invoke_inputs(manifest, "go", {"n": 2})
+        self.assertEqual(result, {"exit_code": 0, "outputs": {"files": ["a"]}})
+        method, params = proc.sent[0]
+        self.assertEqual((method, params["command"], params["args"], params["inputs"]), ("invoke", "go", [], {"n": 2}))
+
+    def test_work_is_sent_only_when_the_session_has_a_work_folder(self):
+        session, manifest, proc = self.session_with({"exit_code": 0})
+        session.invoke_inputs(manifest, "go", {"n": 1})
+        self.assertNotIn("work", proc.sent[0][1])
+        session.work_dir = Path("/some/work")
+        session.invoke_inputs(manifest, "go", {"n": 1})
+        self.assertEqual(proc.sent[1][1]["work"], "/some/work")
+
+    def test_none_inputs_omit_the_inputs_key_and_send_no_args(self):
+        from src.manifest import Command
+
+        session, manifest, proc = self.session_with({"exit_code": 0})
+        manifest.command.return_value = Command("go")  # declares no inputs
+        session.invoke_inputs(manifest, "go", None)
+        params = proc.sent[0][1]
+        self.assertNotIn("inputs", params)
+        self.assertEqual(params["args"], [])
+
+    def test_plugin_error_propagates(self):
+        session, manifest, _ = self.session_with(src.process.PluginError("boom"))
+        with self.assertRaises(src.process.PluginError):
+            session.invoke_inputs(manifest, "go", {})
+
+    def test_invoke_still_returns_the_exit_code(self):
+        session, manifest, _ = self.session_with({"exit_code": 4, "outputs": {}})
+        with mock.patch("src.lifecycle.parse_for", return_value=None):
+            self.assertEqual(session.invoke(manifest, "go", []), 4)
 
 
 class InvokeBracketsTheUI(unittest.TestCase):

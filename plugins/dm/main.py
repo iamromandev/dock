@@ -1,5 +1,5 @@
 """dm plugin for dock: download one http(s) URL or .torrent file into the current folder (stdlib only).
-JSON-RPC 2.0, one JSON object per line on stdin/stdout. See docs/PROTOCOL.md.
+JSON-RPC 2.0, one JSON object per line on stdin/stdout. See protocol/PROTOCOL.md.
 """
 
 import json
@@ -50,9 +50,11 @@ def handle(msg):
             if params.get("command") != "dm":
                 raise Failure(f"unknown command {params.get('command')}", -32601)
             cancelled.clear()
+            outputs = {}
             code = dmcore.run(params.get("inputs") or {}, params.get("cwd") or os.getcwd(), notify, cancelled,
-                              data_dir=data_dir)
-            result = {"exit_code": code}
+                              data_dir=data_dir, outputs=outputs,
+                              work_dir=params.get("work") if isinstance(params.get("work"), str) else None)
+            result = {"exit_code": code, "outputs": {"files": outputs.get("files", [])}}
         elif method == "shutdown":
             send({"id": msg_id, "result": {}})
             return True

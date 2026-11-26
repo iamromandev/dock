@@ -133,11 +133,12 @@ def _bind(path: str) -> list[str]:
 
 
 def run_argv(runtime: str, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env: dict[str, str],
-             passthrough=()) -> list[str]:
+             passthrough=(), work_dir=None) -> list[str]:
     """The `run` command line. uid_gid is None where there is no POSIX user (Windows).
 
     `env` is set by value; `passthrough` names are given as a bare `-e NAME`, so the runtime client reads
     the value from its own environment and a secret never shows up in the process list.
+    `work_dir` (a flow's work folder) is mounted read-write at the same path for any plugin.
     """
     return [
         runtime, "run", "-i", "--rm", "--pull", "never", "--name", name, "--label", f"{LABEL}={owner_label()}",
@@ -146,6 +147,7 @@ def run_argv(runtime: str, m: Manifest, *, name: str, data_dir, cwd, uid_gid, en
         *(["--network", "none"] if "network" not in m.permissions else []),
         *_bind(_mountable(m, data_dir, "data directory")),
         *(_bind(_mountable(m, cwd, "current directory (fs:write:cwd)")) if "fs:write:cwd" in m.permissions else []),
+        *(_bind(_mountable(m, work_dir, "work folder")) if work_dir is not None else []),
         "--workdir", "/plugin",
         *[x for k, v in env.items() for x in ("-e", f"{k}={v}")],
         *[x for n in passthrough for x in ("-e", n)],
@@ -298,7 +300,7 @@ def _check_cwd_mount(store, m: Manifest, cwd: str) -> None:
         )
 
 
-def prepare(store, m: Manifest, cwd: str | None = None) -> Launch:
+def prepare(store, m: Manifest, cwd: str | None = None, work_dir=None) -> Launch:
     """Decide how to spawn `m`: in a container, building its image first if needed."""
     cfg = _resolved(store)
     _require_dockerfile(m)
@@ -308,13 +310,15 @@ def prepare(store, m: Manifest, cwd: str | None = None) -> Launch:
     if "fs:write:cwd" in m.permissions:
         _check_cwd_mount(store, m, cwd)
         _mountable(m, cwd, "current directory (fs:write:cwd)")
+    if work_dir is not None:
+        _mountable(m, work_dir, "work folder")
     ensure_image(cfg, store, m)
 
     name = container_name(m)
     argv = run_argv(
         cfg.runtime, m, name=name, data_dir=data_dir, cwd=cwd,
         uid_gid=(os.getuid(), os.getgid()) if hasattr(os, "getuid") else None,
-        env=container_env(m), passthrough=passthrough_env(m),
+        env=container_env(m), passthrough=passthrough_env(m), work_dir=work_dir,
     )
     # The runtime client keeps the host environment (it needs DOCKER_HOST and friends, and resolves the
     # value-free `-e NAME` entries from it); only the -e entries above reach the plugin.

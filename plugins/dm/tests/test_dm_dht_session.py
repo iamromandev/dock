@@ -20,7 +20,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "plugins" / "dm"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "tests" / "fixtures" / "torrent"))
 
@@ -37,7 +37,7 @@ from test_dm_torrent_local import PL
 
 LINK = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056&tr=udp://203.0.113.9:1"
 BARE = "magnet:?xt=urn:btih:c9e15763f722f23e98a29decdfae341b98d53056"
-MAIN = ROOT / "plugins" / "dm" / "main.py"
+MAIN = ROOT / "main.py"
 
 
 class Wiring(unittest.TestCase):
@@ -795,9 +795,10 @@ class MainData(unittest.TestCase):
         seen = Path(out) / "seen.json"
         code = (
             "import json, runpy, sys\n"
-            f"sys.path.insert(0, {str(ROOT / 'plugins' / 'dm')!r})\n"
+            f"sys.path.insert(0, {str(ROOT)!r})\n"
             "import dmcore\n"
             "def fake(inputs, cwd, notify, cancelled, **kw):\n"
+            "    kw.pop('outputs')['files'] = ['/w/a']\n"
             f"    open({str(seen)!r}, 'w').write(json.dumps(kw, default=str))\n"
             "    return 0\n"
             "dmcore.run = fake\n"
@@ -806,20 +807,30 @@ class MainData(unittest.TestCase):
         r = subprocess.run([sys.executable, "-c", code], input=stdin, capture_output=True, text=True,
                            timeout=60, check=False)
         self.assertEqual(r.returncode, 0, r.stderr)
+        self.answers = [json.loads(l) for l in r.stdout.splitlines() if l.strip()]
         return json.loads(seen.read_text())
 
-    def invoke(self, init_params):
+    def invoke(self, init_params, **extra):
         return self.run_main([
             {"id": 1, "method": "initialize", "params": init_params},
-            {"id": 2, "method": "invoke", "params": {"command": "dm", "inputs": {"url": "x"}, "cwd": "/"}},
+            {"id": 2, "method": "invoke", "params": {"command": "dm", "inputs": {"url": "x"}, "cwd": "/", **extra}},
             {"id": 3, "method": "shutdown"}])
 
     def test_data_dir_reaches_run(self):
-        self.assertEqual(self.invoke({"data_dir": "/the/data"}), {"data_dir": "/the/data"})
+        self.assertEqual(self.invoke({"data_dir": "/the/data"}), {"data_dir": "/the/data", "work_dir": None})
+
+    def test_the_work_folder_reaches_run_only_when_it_is_a_string(self):
+        self.assertEqual(self.invoke({}, work="/w")["work_dir"], "/w")
+        self.assertIsNone(self.invoke({}, work=5)["work_dir"])
+
+    def test_invoke_answers_with_the_files_outputs(self):
+        self.invoke({})
+        answer = next(a for a in self.answers if a.get("id") == 2)
+        self.assertEqual(answer["result"], {"exit_code": 0, "outputs": {"files": ["/w/a"]}})
 
     def test_a_missing_or_odd_data_dir_is_none(self):
-        self.assertEqual(self.invoke({}), {"data_dir": None})
-        self.assertEqual(self.invoke({"data_dir": 5}), {"data_dir": None})
+        self.assertEqual(self.invoke({}), {"data_dir": None, "work_dir": None})
+        self.assertEqual(self.invoke({"data_dir": 5}), {"data_dir": None, "work_dir": None})
 
 
 if __name__ == "__main__":

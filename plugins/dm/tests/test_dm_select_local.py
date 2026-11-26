@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "plugins" / "dm"))
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_dm_torrent_local as local
@@ -276,8 +276,9 @@ class Run(Selected):
 
     def dm(self, arg, **inputs):
         events = []
+        self.outputs = {}
         code = dmcore.run({"url": arg, "no_dht": True, **inputs}, str(self.cwd),
-                          lambda method, **p: events.append((method, p)), threading.Event())
+                          lambda method, **p: events.append((method, p)), threading.Event(), outputs=self.outputs)
         self.events = events
         return code
 
@@ -339,6 +340,13 @@ class Run(Selected):
         self.assertEqual(self.dm("data.torrent", only="a/*"), 0, self.errors())
         self.assertEqual(self.output(), "saved t (40.0 kB, 2 files)\n")
         self.assertEqual(tree(self.cwd / "t"), ["a/", "a/1.bin", "a/2.bin"])
+
+    def test_run_gives_back_the_absolute_paths_of_the_picked_files_only(self):
+        self.served()
+        self.assertEqual(self.dm("data.torrent", only="a/*"), 0, self.errors())
+        root = os.path.realpath(self.cwd / "t")
+        self.assertEqual(self.outputs, {"files": [f"{root}/a/1.bin", f"{root}/a/2.bin"]})
+        self.assertTrue(all(os.path.isfile(f) for f in self.outputs["files"]))
 
     def test_skip_through_run(self):
         self.served()

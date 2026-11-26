@@ -10,7 +10,7 @@ ignore = [
 [lint.per-file-ignores]
 # Tests deliberately sys.path.insert(...) before importing, bind fixtures for readability, and
 # use test-only idioms.
-"tests/**" = [
+"{apps/cli,plugins/dm,plugins/planner}/tests/**" = [
     "B023",   # test closures over loop variables run inside the same iteration
     "B905",   # zip without strict= on equal-length test data
     "E402",   # imports follow sys.path.insert lines the tests depend on
@@ -30,8 +30,8 @@ ignore = [
 "plugins/dm/dmcore/torrent/metadata.py" = ["SIM102"]  # nested ifs kept for readability
 "plugins/dm/dmcore/torrent/session.py" = ["E731"]  # a one-line lambda alias is clearer here
 "plugins/dm/dmcore/torrent/storage.py" = ["RUF005"]  # tuple concatenation reads clearer than unpacking
-"src/editor.py" = ["RUF071"]  # commonprefix of completion candidates is character-wise on purpose
-"src/inputs.py" = ["B023", "B905"]  # closure runs inside the same iteration; zip is used as a bounded pairing
-"src/live.py" = ["RUF001", "RUF002"]  # the single angle quote is the deliberate prompt glyph
-"src/main.py" = ["SIM108"]  # if/else kept: the two branches read as separate cases
-"src/process.py" = ["SIM115"]  # the log file is closed in stop()
+"apps/cli/src/editor.py" = ["RUF071"]  # commonprefix of completion candidates is character-wise on purpose
+"apps/cli/src/inputs.py" = ["B023", "B905"]  # closure runs inside the same iteration; zip is used as a bounded pairing
+"apps/cli/src/live.py" = ["RUF001", "RUF002"]  # the single angle quote is the deliberate prompt glyph
+"apps/cli/src/main.py" = ["SIM108"]  # if/else kept: the two branches read as separate cases
+"apps/cli/src/process.py" = ["SIM115"]  # the log file is closed in stop()

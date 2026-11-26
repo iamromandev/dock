@@ -35,6 +35,11 @@ built-in:
   plugin remove <id>        uninstall a plugin
   plugin update [--dry-run] [--yes] [<id>...]
                             update installed plugins from the catalog
+  flow run [--yes] [--keep] <file> [name=value...]
+                            run a flow: several plugins' commands, in order
+  flow check <file>         check a flow and show what it would do
+  do [--yes] [--keep] [--] "<request>"
+                            plan a flow from a request with a local model, then run it (needs the planner plugin)
 
 options (before the command):
   -v, --verbose             show plugin debug logs
@@ -281,6 +286,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_plugin(store, argv[1:])
         if argv[0] == "search":
             return cmd_search(store, argv[1:])
+        if argv[0] == "flow":
+            from src import flow_cli
+
+            return flow_cli.cmd_flow(store, argv[1:], verbose=verbose)
+        if argv[0] == "do":
+            from src import flow_cli
+
+            return flow_cli.cmd_do(store, argv[1:], verbose=verbose)
 
         manifest, command = store.resolve(argv[0])
         parse_for(manifest, command, argv[1:])  # a bad invocation must start no process

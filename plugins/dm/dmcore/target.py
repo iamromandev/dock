@@ -29,9 +29,13 @@ def _inside(cwd_real, path_real):
         return False
 
 
-def _folder(cwd_real, cwd, given):
+def _allowed(roots, real):
+    return any(_inside(root, real) for root in roots)
+
+
+def _folder(roots, cwd, given):
     real = os.path.realpath(os.path.join(cwd, given))
-    if not _inside(cwd_real, real):
+    if not _allowed(roots, real):
         raise DmError(f"{given} is outside the current folder")
     if not os.path.isdir(real):
         raise DmError(f"folder {given} does not exist")
@@ -47,14 +51,16 @@ def _file_name(name):
     return name
 
 
-def resolve(cwd, output, dir):
+def resolve(cwd, output, dir, work=None):
+    """`work`: a flow's work folder; a target inside it is as good as one inside cwd."""
     if output is not None and dir is not None:
         raise DmError("use -o or -d, not both", 2)
     cwd_real = os.path.realpath(cwd)
+    roots = (cwd_real, os.path.realpath(work)) if work else (cwd_real,)
     if dir is not None:
         if dir == "":
             raise DmError("invalid folder ''")
-        return _folder(cwd_real, cwd, dir)
+        return _folder(roots, cwd, dir)
     if output is None:
         return Target(Path(cwd_real), None)
     if os.path.basename(output) in (".", ".."):
@@ -63,9 +69,9 @@ def resolve(cwd, output, dir):
         _file_name(output)
     cand = os.path.join(cwd, output)
     if os.path.isdir(cand):
-        return _folder(cwd_real, cwd, output)
-    if not _inside(cwd_real, os.path.realpath(cand)):
+        return _folder(roots, cwd, output)
+    if not _allowed(roots, os.path.realpath(cand)):
         raise DmError(f"{output} is outside the current folder")
     parent_given = os.path.dirname(output) or "."
-    folder = _folder(cwd_real, cwd, parent_given).folder
+    folder = _folder(roots, cwd, parent_given).folder
     return Target(folder, _file_name(os.path.basename(cand)))

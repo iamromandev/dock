@@ -328,10 +328,10 @@ class RunArgv(unittest.TestCase):
         return Manifest.load(make_plugin(f"container = {container}", extra))
 
     def argv(self, m, env=None, cwd="/work/dir", uid_gid=(501, 20), data_dir="/home/u/.dock/data/dev.dock.sample",
-             passthrough=()):
+             passthrough=(), **kw):
         return isolation.run_argv(self.RUNTIME, m, name="dock-dev-dock-sample-1-0", data_dir=data_dir,
                                   cwd=cwd, uid_gid=uid_gid, env=env if env is not None else {"HOME": "/tmp"},
-                                  passthrough=passthrough)
+                                  passthrough=passthrough, **kw)
 
     def test_exact_argv_without_permissions(self):
         m = self.manifest()
@@ -369,6 +369,30 @@ class RunArgv(unittest.TestCase):
     def test_network_flag_only_without_network_permission(self):
         self.assertIn("--network", self.argv(self.manifest()))
         self.assertNotIn("--network", self.argv(self.manifest(["network"])))
+
+    def test_work_folder_is_mounted_read_write_only_when_given_whatever_the_permissions(self):
+        mount = "type=bind,src=/flows/w1,dst=/flows/w1"
+        for perms in ([], ["fs:write:cwd"]):
+            with self.subTest(perms=perms):
+                m = self.manifest(perms)
+                self.assertNotIn(mount, self.argv(m))
+                argv = self.argv(m, work_dir="/flows/w1")
+                self.assertEqual(argv[argv.index(mount) - 1], "--mount")
+                self.assertNotIn("readonly", mount)
+        self.assertNotIn("type=bind,src=/work/dir,dst=/work/dir", self.argv(self.manifest(), work_dir="/flows/w1"))
+
+    def test_work_folder_with_an_unsafe_path_is_refused(self):
+        with self.assertRaises(ManifestError) as cm:
+            self.argv(self.manifest(), work_dir="/flows/a,b")
+        self.assertIn("work folder", str(cm.exception))
+
+    def test_the_planner_gets_the_work_folder_and_network_but_no_cwd_mount(self):
+        m = Manifest.load(ROOT.parent.parent / "plugins" / "planner")
+        argv = self.argv(m, work_dir="/flows/w1")
+        self.assertIn("type=bind,src=/flows/w1,dst=/flows/w1", argv)
+        self.assertNotIn("type=bind,src=/work/dir,dst=/work/dir", argv)
+        self.assertNotIn("--network", argv)
+        self.assertEqual(m.env, ["DOCK_PLANNER_URL", "DOCK_PLANNER_MODEL"])
 
     def test_cwd_is_mounted_only_with_fs_write_cwd(self):
         cwd_mount = "type=bind,src=/work/dir,dst=/work/dir"
@@ -582,8 +606,8 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
         from src import process
         from src.lifecycle import Session
 
-        dockenv.prebuild_plugins(ROOT / "plugins" / "hello")
-        self.store.install(ROOT / "plugins" / "hello")
+        dockenv.prebuild_plugins(ROOT.parent.parent / "plugins" / "hello")
+        self.store.install(ROOT.parent.parent / "plugins" / "hello")
         self.configure()
         seen = []
         real_popen = subprocess.Popen
@@ -720,6 +744,16 @@ class CwdMount(RecordingRuntimeCase):
         launch = self.prepare("/", m)
         self.assertNotIn("/:/", launch.argv)
 
+    def test_a_work_folder_is_mounted_and_an_unmountable_one_is_refused_before_anything_starts(self):
+        work = (self.tmp / "flows" / "w1").resolve()
+        work.mkdir(parents=True)
+        with redirect_stderr(StringIO()):
+            launch = isolation.prepare(self.store, self.m, cwd=str(self.user_home / "project"), work_dir=work)
+        self.assertIn(f"type=bind,src={work},dst={work}", launch.argv)
+        with self.assertRaises(ManifestError) as cm:
+            isolation.prepare(self.store, self.m, cwd=str(self.user_home / "project"), work_dir=self.tmp / "a,b")
+        self.assertIn("work folder", str(cm.exception))
+
     def test_too_broad_a_cwd_is_refused(self):
         cases = (
             ("the filesystem root", lambda: "/", "filesystem root"),
@@ -770,7 +804,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 class DockIsolated(RecordingRuntimeCase):
     """Real `python3 -m src` runs against the real runtime, recorded."""
 
-    PLUGINS = (ROOT / "plugins" / "hello", FIXTURES / "probe")
+    PLUGINS = (ROOT.parent.parent / "plugins" / "hello", FIXTURES / "probe")
 
     @classmethod
     def setUpClass(cls):
@@ -1215,7 +1249,7 @@ class PluginBuild(DockIsolated):
             def break_build(path):
                 (path / "Dockerfile").write_text("FROM python:3.15.2-slim\nRUN false\n")
 
-            self.store.install(self.plugin_copy(ROOT / "plugins" / "hello", "dev.dock.hellofail", break_build))
+            self.store.install(self.plugin_copy(ROOT.parent.parent / "plugins" / "hello", "dev.dock.hellofail", break_build))
             r = self.dock("plugin", "build", "dev.dock.hellofail")
             self.assertEqual(r.returncode, 1)
             log = self.store.log_path("dev.dock.hellofail")
@@ -1315,7 +1349,7 @@ class PluginInfoEnv(DockIsolated):
         out = self.dock("plugin", "install", "--yes", str(root)).stdout
         self.assertIn("  env:         A_ONE, B_TWO", out.splitlines())
         # hello under another id: a reinstall of hello itself would delete the image the whole run shares
-        out = self.dock("plugin", "install", str(self.plugin_copy(ROOT / "plugins" / "hello", "dev.dock.hellosummary"))).stdout
+        out = self.dock("plugin", "install", str(self.plugin_copy(ROOT.parent.parent / "plugins" / "hello", "dev.dock.hellosummary"))).stdout
         self.assertNotIn("env:", out)
 
 
@@ -1540,6 +1574,34 @@ class InstallKeepsBuildFiles(unittest.TestCase):
             (root / "target" / "big").write_text("x")
             m = self.store.install(root)
             self.assertNotIn("target", {p.name for p in m.root.iterdir()})
+
+    def test_venv_is_never_installed(self):
+        root = self.plugin(CONTAINER)
+        for d in (root / ".venv", root / "sub" / ".venv"):
+            d.mkdir(parents=True)
+            (d / "f").write_text("x")
+        m = self.store.install(root)
+        self.assertFalse((m.root / ".venv").exists())
+        self.assertFalse((m.root / "sub" / ".venv").exists())
+
+    def test_escaping_symlink_inside_venv_does_not_block_install(self):
+        root = self.plugin(CONTAINER)
+        outside = temp_dir("dock-iso-outside-") / "python"
+        outside.write_text("x")
+        (root / ".venv" / "bin").mkdir(parents=True)
+        (root / ".venv" / "bin" / "python").symlink_to(outside)
+        m = self.store.install(root)
+        self.assertFalse((m.root / ".venv").exists())
+
+    def test_escaping_symlink_next_to_venv_is_still_refused(self):
+        root = self.plugin(CONTAINER)
+        outside = temp_dir("dock-iso-outside-") / "python"
+        outside.write_text("x")
+        (root / ".venv").mkdir()
+        (root / "leak").symlink_to(outside)
+        with self.assertRaises(ManifestError) as cm:
+            self.store.install(root)
+        self.assertIn("points outside the plugin folder", str(cm.exception))
 
 
 if __name__ == "__main__":

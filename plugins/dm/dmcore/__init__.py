@@ -62,8 +62,12 @@ def save_torrent(final, target, info, trackers):
         raise
 
 
-def run(inputs, cwd, notify, cancelled, data_dir=None):
+def run(inputs, cwd, notify, cancelled, data_dir=None, outputs=None, work_dir=None):
     """Run one dm invocation. Returns the exit code; raises Cancelled on cancel.
+
+    `outputs`, a dict, gets "files": the absolute paths of the files written (a torrent: the picked ones).
+
+    `work_dir`: a flow's work folder, also allowed as a download target next to cwd.
 
     data_dir is the plugin's own folder: dm keeps one file there, the DHT node cache."""
     from . import fetch
@@ -75,6 +79,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
     arg = inputs["url"]
     handle = fetch.Handle()
     result = {}
+    saved_files: list = []
     done = threading.Event()
 
     last = {}  # the newest percent and message: the bar is closed with them when the download succeeds
@@ -136,7 +141,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
                                        lambda m: notify("log", level="debug", message=m),
                                        resume=not inputs.get("no_resume"),
                                        note=lambda text: notify("output", text=text + "\n"),
-                                       on_stats=view.stats, selection=picks)
+                                       on_stats=view.stats, selection=picks, files=saved_files)
         except DmError as e:  # which torrent failed is the part worth showing
             result["err"] = DmError(f"{arg}: {e}", e.code, e.keep)
         except BaseException as e:
@@ -153,7 +158,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
                                                    lambda m: notify("log", level="debug", message=m),
                                                    resume=not inputs.get("no_resume"),
                                                    note=lambda text: notify("output", text=text + "\n"),
-                                                   on_stats=view.stats, selection=picks)
+                                                   on_stats=view.stats, selection=picks, files=saved_files)
             result["ok"] = (final, size, nfiles)
             try:  # the download is in place: failing to write the .torrent only warns
                 saved, name = save_torrent(final, target, info, link.trackers)
@@ -170,7 +175,7 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
             done.set()
 
     try:
-        target = resolve(cwd, inputs.get("output"), inputs.get("dir"))
+        target = resolve(cwd, inputs.get("output"), inputs.get("dir"), work=work_dir)
         link = None
         dht = not inputs.get("no_dht")
         if magnet.is_magnet(arg):
@@ -233,6 +238,8 @@ def run(inputs, cwd, notify, cancelled, data_dir=None):
             drop_bar()
             return 0
         path, size, *files = result["ok"]
+        if outputs is not None:
+            outputs["files"] = saved_files or [os.path.abspath(path)]
         rel = os.path.relpath(path, os.path.realpath(cwd))
         count = f", {files[0]} file{'s' if files[0] != 1 else ''}" if files else ""
         if view is not None:

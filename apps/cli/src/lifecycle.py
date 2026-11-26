@@ -22,8 +22,9 @@ CANCEL_GRACE = float(os.environ.get("DOCK_CANCEL_GRACE", 5))  # seconds a plugin
 
 
 class Session:
-    def __init__(self, store: Store, verbose: bool = False, term=None):
+    def __init__(self, store: Store, verbose: bool = False, term=None, work_dir=None):
         self.store = store
+        self.work_dir = work_dir                     # a flow's work folder: mounted read-write into every plugin
         self.verbose = verbose
         self.term = term                             # the Terminal in live mode: plugins' messages are drawn on it
         self.hub = Hub()                             # all plugins of the session share one inbox
@@ -38,7 +39,7 @@ class Session:
     # starting plugins ------------------------------------------------------
     def start(self, manifest: Manifest, ui: UI) -> PluginProcess:
         # may build an image; raises before anything starts
-        launch = isolation.prepare(self.store, manifest)
+        launch = isolation.prepare(self.store, manifest, work_dir=self.work_dir)
         proc = PluginProcess(manifest, self.store.log_path(manifest.id), ui.handlers(), launch, self.hub)
         proc.start()
         self.procs.append(proc)
@@ -177,9 +178,11 @@ class Session:
             raise first
 
     # running a command -----------------------------------------------------------
-    def _invoke(self, manifest: Manifest, command: str, args: list[str], ui: UI) -> dict:
+    def _invoke(self, manifest: Manifest, command: str, args: list[str], ui: UI, inputs: dict | None = None) -> dict:
+        """`inputs` given (a flow step): sent as they are, `args` are not parsed."""
         # Parse first: a usage error (UsageError) must surface before anything starts.
-        inputs = parse_for(manifest, command, args)
+        if inputs is None:
+            inputs = parse_for(manifest, command, args)
         proc = self.commands.get(manifest.id)
         try:
             if proc is not None and not proc.alive():
@@ -200,6 +203,8 @@ class Session:
             params = {"command": command, "args": args, "cwd": os.getcwd()}  # what prepare() mounts for fs:write:cwd
             if inputs is not None:
                 params["inputs"] = inputs
+            if self.work_dir is not None:
+                params["work"] = str(self.work_dir)  # the flow's work folder, mounted read-write at this path
             invoke_id = proc.send_request("invoke", params)
             try:
                 result = proc.wait_for(invoke_id, "invoke", timeout=None)
@@ -233,6 +238,19 @@ class Session:
         finally:
             ui.end()  # whatever the plugin left on screen goes to scrollback, on every way out
         return int(result.get("exit_code", 0))
+
+    def invoke_inputs(self, manifest: Manifest, command: str, inputs: dict | None) -> dict:
+        """Run a command with ready-made inputs; returns the whole result ({exit_code, outputs?}).
+
+        `inputs` None (a command that declares none): no "inputs" key is sent, as for a one-shot command.
+        Raises PluginError when the plugin fails (what the user sees is the caller's to say).
+        """
+        ui = self._ui(manifest.id)
+        ui.begin()
+        try:
+            return self._invoke(manifest, command, [], ui, inputs)
+        finally:
+            ui.end()
 
 
 def run(store: Store, manifest: Manifest, command: str, args: list[str], verbose: bool = False, term=None) -> int:

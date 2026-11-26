@@ -14,7 +14,7 @@ from unittest import mock
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT / "plugins" / "dm"))
+sys.path.insert(0, str(ROOT))
 
 import dmcore
 from dmcore import fetch, fmt, names, target
@@ -169,6 +169,31 @@ class Target(unittest.TestCase):
         open(os.path.join(self.outside, "f"), "w").close()
         os.symlink(os.path.join(self.outside, "f"), os.path.join(self.cwd, "flink"))
         self.assertEqual(self.fails(output="flink"), "flink is outside the current folder")
+
+    def test_dir_in_the_work_folder_outside_cwd_is_accepted(self):
+        t = target.resolve(self.cwd, None, self.outside, work=self.outside)
+        self.assertEqual((str(t.folder), t.fixed_name), (self.outside, None))
+        t = target.resolve(self.cwd, os.path.join(self.outside, "f.bin"), None, work=self.outside)
+        self.assertEqual((str(t.folder), t.fixed_name), (self.outside, "f.bin"))
+        t = target.resolve(self.cwd, "sub", None, work=self.outside)  # relative still resolves against cwd
+        self.assertEqual(str(t.folder), os.path.join(self.cwd, "sub"))
+
+    def test_outside_both_cwd_and_work_is_refused(self):
+        other = os.path.join(os.path.dirname(self.cwd), "other")
+        os.mkdir(other)
+        with self.assertRaises(target.DmError) as cm:
+            target.resolve(self.cwd, None, other, work=self.outside)
+        self.assertEqual(str(cm.exception), f"{other} is outside the current folder")
+
+    def test_symlink_in_work_pointing_outside_both_is_refused(self):
+        elsewhere = os.path.join(os.path.dirname(self.cwd), "elsewhere")
+        os.mkdir(elsewhere)
+        os.symlink(elsewhere, os.path.join(self.outside, "link"))
+        link = os.path.join(self.outside, "link")
+        for kw in ({"dir": link}, {"output": os.path.join(link, "x")}):
+            with self.subTest(kw=kw), self.assertRaises(target.DmError) as cm:
+                target.resolve(self.cwd, kw.get("output"), kw.get("dir"), work=self.outside)
+            self.assertIn("is outside the current folder", str(cm.exception))
 
     def test_missing_folder(self):
         self.assertEqual(self.fails(dir="nope"), "folder nope does not exist")
@@ -548,6 +573,22 @@ class Run(ServerCase):
         self.assertEqual(calls[-1][0], "log")
         bars = [p for m, p in calls if m == "bar"]
         self.assertEqual(bars[-1]["percent"], 100)
+
+    def test_success_gives_back_the_absolute_path_of_the_saved_file(self):
+        outputs = {}
+        code = dmcore.run({"url": self.base + "/file/data.bin"}, self.cwd, lambda m, **p: None, threading.Event(),
+                          outputs=outputs)
+        self.assertEqual(code, 0)
+        self.assertEqual(outputs, {"files": [os.path.realpath(os.path.join(self.cwd, "data.bin"))]})
+
+    def test_a_download_into_the_work_folder_outside_cwd_gives_files_inside_it(self):
+        with tempfile.TemporaryDirectory() as w:
+            work = os.path.realpath(w)
+            outputs = {}
+            code = dmcore.run({"url": self.base + "/file/data.bin", "dir": work}, self.cwd, lambda m, **p: None,
+                              threading.Event(), outputs=outputs, work_dir=work)
+            self.assertEqual(code, 0)
+            self.assertEqual(outputs, {"files": [os.path.join(work, "data.bin")]})
 
     def test_success_ends_the_bar_as_done_before_the_saved_line(self):
         _, calls = self.run_dm({"url": self.base + "/file/data.bin"})
