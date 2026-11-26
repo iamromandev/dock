@@ -1,0 +1,11 @@
+# Configures all projects within the workspace to create a project graph.
+# packages/* joins the globs when the host core gets its own moon.yml.
+projects:
+  globs:
+    - "apps/*"
+    - "plugins/*"
+
+# Configures the version control system (VCS).
+vcs:
+  defaultBranch: "main"
+  provider: "github"

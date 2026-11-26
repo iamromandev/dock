@@ -1,4 +1,5 @@
-# The hook runs the CLI's make check, so the checks and tool versions (cli/uv.lock) live in one place.
+# The hooks run moon's cli:check and dm:check, so the checks and tool versions (apps/cli/uv.lock, plugins/dm/uv.lock,
+# .prototools) live in one place.
 # Install once from the repository root:
 #     make install-hooks
 
@@ -8,10 +9,17 @@ fail_fast: false
 repos:
   - repo: local
     hooks:
-      # ruff check --fix, then ty. A fix fails the commit so the fixed files can be staged.
+      # ruff check --fix, then ty, over apps/cli and plugins/hello. A fix fails the commit so the fixed files can be staged.
       - id: cli-check
         name: cli check (ruff --fix, ty)
-        entry: make -C cli check
+        entry: moon run cli:check
         language: system
         pass_filenames: false
-        files: ^cli/.*\.py$
+        files: ^(apps/cli|plugins/hello)/.*\.py$
+      # Same for the dm plugin (plugins/dm).
+      - id: dm-check
+        name: dm check (ruff --fix, ty)
+        entry: moon run dm:check
+        language: system
+        pass_filenames: false
+        files: ^plugins/dm/.*\.py$

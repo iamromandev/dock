@@ -1,0 +1,43 @@
+id: "dm"
+language: "python"
+layer: "application"
+tags: ["plugin"]
+
+fileGroups:
+  sources: ["main.py", "plugin.toml", "Dockerfile", "dmcore/**/*"]
+  configs: ["pyproject.toml", "uv.lock", "/ruff.toml"]
+
+tasks:
+  # python tools (uv)
+  install:
+    command: "uv sync"
+    preset: "utility"
+  check:
+    # Fixes what ruff can, so it edits sources and is never cached.
+    script: "uv run ruff check --fix && uv run ty check"
+    deps: ["install"]
+    options:
+      cache: false
+  check-ci:
+    # Same checks without fixing anything. For CI.
+    script: "uv run ruff check && uv run ty check"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+  test:
+    # In-process tests only: no container runtime needed. The host-driven dm tests are in apps/cli.
+    command: "uv run pytest"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*", "$DOCK_LIVE_DHT"]
+
+  coverage:
+    # Test run under coverage (subprocesses included) with per-test contexts; writes coverage.json and coverage.txt.
+    # One test is deselected: its tracemalloc memory bound fails under coverage's own allocations (it passes without).
+    script: "uv run coverage erase && uv run coverage run -m pytest -q --deselect tests/test_dm_magnet_local.py::HostileMetadata::test_a_full_size_junk_set_is_refused_within_the_memory_bound && uv run coverage combine && uv run coverage json -o coverage.json && uv run coverage report > coverage.txt"
+    deps: ["install"]
+    options:
+      cache: false
+
+  # cleanup
+  clean:
+    script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    preset: "utility"

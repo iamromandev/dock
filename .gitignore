@@ -18,3 +18,13 @@ __pycache__
 
 ### allow ###
 !.env.example
+
+### moon ###
+.moon/cache
+.moon/docker
+
+### coverage ###
+.coverage
+.coverage.*
+coverage.json
+coverage.txt

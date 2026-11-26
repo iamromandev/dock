@@ -1,0 +1,59 @@
+id: "cli"
+language: "python"
+layer: "application"
+tags: ["host"]
+
+fileGroups:
+  sources: ["src/**/*"]
+  configs: ["pyproject.toml", "uv.lock", "/ruff.toml"]
+  # The plugins live at the repo root. The hello plugin is still linted and type-checked from here; dm is its own
+  # project. The tests build the plugins' images, so `test` still takes all of plugins/ as input.
+  plugins: ["/plugins/**/*"]
+
+tasks:
+  # python tools (uv)
+  install:
+    command: "uv sync"
+    preset: "utility"
+  check:
+    # Fixes what ruff can, so it edits sources and is never cached.
+    script: "uv run ruff check --fix . ../../plugins/hello && uv run ty check . ../../plugins/hello"
+    deps: ["install"]
+    options:
+      cache: false
+  check-ci:
+    # Same checks without fixing anything. For CI.
+    script: "uv run ruff check . ../../plugins/hello && uv run ty check . ../../plugins/hello"
+    deps: ["install"]
+    # ty resolves the CLI tests' imports through plugins/dm and its tests (pyproject extra-paths), so dm is an input.
+    inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*"]
+  test:
+    # Needs Docker or podman, and stops at once without one. The images are built from plugins/ and
+    # tests/fixtures/, both inputs, so a cached pass is never for a stale image.
+    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run pytest"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*", "$DOCK_TEST_RUNTIME", "$DOCK_LIVE_DHT"]
+
+  coverage:
+    # The test task under coverage (subprocesses included) with per-test contexts; writes coverage.json and coverage.txt.
+    # One test is deselected: its CPU-share budget fails under coverage overhead (it passes without).
+    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run coverage erase && uv run coverage run -m pytest -q --deselect tests/test_live_pty.py::LivePty::test_10000_updates_a_second_cost_at_most_30_redraws_a_second_and_a_quarter_of_a_core && uv run coverage combine && uv run coverage json -o coverage.json && uv run coverage report > coverage.txt"
+    deps: ["install"]
+    options:
+      cache: false
+
+  # run: arguments after -- go to dock, e.g. moon run cli:run -- plugin list
+  run:
+    command: "uv run dock"
+    options:
+      cache: false
+      interactive: true
+  plugin-install:
+    # Installs the example plugin into $DOCK_HOME (default ~/.dock).
+    command: "uv run dock plugin install ../../plugins/hello"
+    preset: "utility"
+
+  # cleanup
+  clean:
+    script: "find . ../../plugins/hello -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    preset: "utility"
