@@ -1,0 +1,24 @@
+id = "dev.dock.jail"
+version = "0.1.0"
+api_version = "2"
+description = "Test fixture: reports what the plugin can reach (network, cwd files, environment)"
+
+# No [capabilities].permissions on purpose: isolated, it gets no network and no cwd.
+# It declares one variable, so tests can tell a declared host variable from an undeclared one.
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+env = ["DOCK_TEST_DECLARED"]
+
+[[commands]]
+name = "net"
+summary = "Try to connect to 1.1.1.1:53; prints blocked or open"
+
+[[commands]]
+name = "readcwd"
+summary = "Read a file in the user's cwd: readcwd <name>; prints its text or unreadable"
+
+[[commands]]
+name = "env"
+summary = "Show an environment variable: env <NAME>; prints set:<value> or unset"

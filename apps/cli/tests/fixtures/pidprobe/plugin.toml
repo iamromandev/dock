@@ -1,0 +1,17 @@
+id = "dev.dock.pidprobe"
+version = "0.1.0"
+api_version = "2"
+description = "Test fixture: reports its pid, container id and cwd, and asks the host for removed methods"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[[commands]]
+name = "pid"
+summary = "Print pid, container id and cwd, and return them: pid"
+inputs = []
+
+[[commands]]
+name = "askhost"
+summary = "Send the host a `call` and an `http` request and print the error codes: askhost"
+inputs = []

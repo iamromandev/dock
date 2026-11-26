@@ -1,0 +1,17 @@
+id = "dev.dock.uiprobe"
+version = "0.1.0"
+api_version = "2"
+description = "Test fixture: sends bars, tables, panels, hostile text, invalid messages and forms"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[[commands]]
+name = "show"
+summary = "Play a script of UI messages: show <basic|invalid|hostile|slow>"
+inputs = [{ name = "script", type = "string", required = true }]
+
+[[commands]]
+name = "ask"
+summary = "Send a form with text, secret, confirm and choice fields and print the values as JSON: ask"
+inputs = []

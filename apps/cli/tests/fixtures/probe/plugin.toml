@@ -1,0 +1,46 @@
+id = "dev.dock.probe"
+version = "0.1.0"
+api_version = "2"
+description = "Test fixture: exit codes, crashes, pids, cancellable sleep"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[[commands]]
+name = "code"
+summary = "Return exit code n: code <n>"
+
+[[commands]]
+name = "crash"
+summary = "Exit the process mid-invoke"
+
+[[commands]]
+name = "pid"
+summary = "Write pid and container id to data_dir/pid and data_dir/cid, and print the pid"
+
+[[commands]]
+name = "sleep"
+summary = "Sleep s seconds, honours cancel: sleep <s>"
+
+[[commands]]
+name = "stubborn"
+summary = "Sleep s seconds and ignore cancel: stubborn <s>"
+
+[[commands]]
+name = "fetch"
+summary = "fetch <url> [-o file] [--retries n] [--quiet]"
+inputs = [
+  { name = "url",     type = "string", required = true },
+  { name = "output",  type = "string", flag = "--output", short = "-o" },
+  { name = "retries", type = "int",    flag = "--retries", default = 3 },
+  { name = "quiet",   type = "bool",   flag = "--quiet" },
+]
+
+[[commands]]
+name = "echoargs"
+summary = "Echo raw args and received inputs (no declaration)"
+
+[[commands]]
+name = "noargs"
+summary = "Takes no args (empty inputs declaration)"
+inputs = []

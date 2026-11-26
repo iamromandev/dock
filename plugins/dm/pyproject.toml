@@ -1,0 +1,50 @@
+[project]
+name = "dock-dm"
+version = "0.0.0"  # dm's real version is in plugin.toml; this project only holds dev tools
+requires-python = "==3.15.2"
+dependencies = []
+
+[dependency-groups]
+dev = ["coverage==7.17.5", "pytest==9.1.1", "ruff==0.17.0", "ty==0.0.86"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+# Not `source`: main.py only runs as a script, never as an importable module.
+include = ["*/plugins/dm/main.py", "*/plugins/dm/dmcore/*"]
+patch = ["subprocess"]
+parallel = true
+dynamic_context = "test_function"
+data_file = ".coverage"
+
+[tool.coverage.json]
+show_contexts = true
+
+[tool.ty.environment]
+extra-paths = ["tests"]
+
+# The code base is untyped and relies on Optional attributes narrowed at runtime, so these rules
+# fire on correct code. Counts are the diagnostics each one hides in dmcore/ and main.py.
+[tool.ty.rules]
+invalid-argument-type = "ignore"    # 5: Optional values narrowed by runtime state
+invalid-assignment = "ignore"       # 2: untyped dict/attribute shapes
+not-iterable = "ignore"             # 1: Optional iterables narrowed at runtime
+too-many-positional-arguments = "ignore"  # 2: callbacks invoked with extra positional args
+unresolved-attribute = "ignore"     # 19: Optional attributes
+unsupported-operator = "ignore"     # 2: Optional numbers narrowed at runtime
+
+# These fire only in tests (fakes, assertLess on mixed types, sys.path set up by the tests).
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+invalid-method-override = "ignore"  # log_message overrides in test HTTP servers
+no-matching-overload = "ignore"     # assertLess with mixed numeric types
+possibly-missing-submodule = "ignore"  # submodules imported elsewhere in the tests
+unresolved-import = "ignore"        # fixture modules (dht, server) are put on sys.path by the tests

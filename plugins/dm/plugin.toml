@@ -1,0 +1,26 @@
+id = "dev.dock.dm"
+version = "0.8.0"
+api_version = "2"
+description = "Download a URL, a .torrent or a magnet link into the current folder"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["network", "fs:write:cwd"]
+
+[[commands]]
+name = "dm"
+summary = "Download a URL, a .torrent or a magnet link into the current folder: dm <url|file.torrent|magnet> [-o name | -d folder] [--no-resume] [--no-dht] [--list] [--only picks] [--skip picks]"
+keywords = ["download", "fetch", "get", "url", "http", "torrent", "bittorrent", "magnet"]
+inputs = [
+  { name = "url", type = "string", required = true },
+  { name = "output", type = "string", flag = "--output", short = "-o" },
+  { name = "dir", type = "string", flag = "--dir", short = "-d" },
+  { name = "stall", type = "int", flag = "--stall-seconds" },
+  { name = "no_resume", type = "bool", flag = "--no-resume" },
+  { name = "no_dht", type = "bool", flag = "--no-dht" },
+  { name = "list", type = "bool", flag = "--list" },
+  { name = "only", type = "string", flag = "--only" },
+  { name = "skip", type = "string", flag = "--skip" },
+]

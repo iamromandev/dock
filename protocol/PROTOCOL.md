@@ -1,4 +1,4 @@
-# dock plugin protocol — version 1
+# dock plugin protocol — version 2
 
 This file is the contract. Any program, in any language, that follows it is a
 dock plugin. The host never loads plugin code; it starts the plugin as a child
@@ -12,7 +12,7 @@ process and talks to it over stdin/stdout.
   stack traces) goes to **stderr**; the host writes it to
   `$DOCK_HOME/logs/<plugin-id>.log`.
 - The plugin never touches the terminal. All user-facing I/O goes through the
-  `output`, `log`, `progress` and `prompt_user` messages, so the host owns the UI.
+  `output`, `log`, `bar`, `table`, `panel`, `clear`, `prompt_user` and `form` messages, so the host owns the UI.
 
 
 ## Environment the host sets
@@ -20,7 +20,7 @@ process and talks to it over stdin/stdout.
 | Variable           | Meaning                          |
 |--------------------|----------------------------------|
 | `DOCK_PLUGIN_ID`   | The plugin's id from its manifest |
-| `DOCK_API_VERSION` | Protocol version (`1`)           |
+| `DOCK_API_VERSION` | Protocol version (`2`)           |
 
 The plugin runs in a container with `/plugin` as the working directory, so it can
 find its own files. The user's directory arrives in `invoke.cwd`.
@@ -51,7 +51,9 @@ What the container gets:
   The host refuses to start such a plugin when the cwd is the filesystem root, the user's home directory,
   any folder above it, or the dock home or something above or inside it. A `data_dir` or cwd path that
   contains `:`, `,` or `"` is refused.
-- Network: none, unless the plugin declares the `network` permission.
+- Network: none, unless the plugin declares the `network` permission. `network` is all or nothing: the planner plugin
+  (`dev.dock.planner`, used by `dock do`) declares plain `network` in v1, so it is not limited to the model endpoint
+  (a known gap).
 - Privileges: all capabilities dropped, `no-new-privileges`, run as the host user's uid:gid.
 
 Permissions are `network` and `fs:write:cwd`, under `[capabilities] permissions`.
@@ -83,7 +85,7 @@ A manifest that uses a removed feature fails the install: `provides` and `requir
 | Method        | Params                                        | Result                | Notes |
 |---------------|-----------------------------------------------|-----------------------|-------|
 | `initialize`  | `{api_version, host:{name,version}, data_dir}` | `{name, ...}`         | Always first. `data_dir` is a private, persistent folder for the plugin. |
-| `invoke`      | `{command, args: [string], cwd, inputs?}`     | `{exit_code: int, ...}` | Run one command. The result may carry extra fields next to `exit_code`; `exit_code` stays required, and a host that does not know a field ignores it. A cancelled call always ends with `-32800`. `args` are the raw CLI args after the command name; the plugin may parse them, or use `inputs` (see Typed inputs). Resolve relative paths in `args` against `cwd` (the user's directory), not the plugin's own. |
+| `invoke`      | `{command, args: [string], cwd, inputs?, work?}`| `{exit_code: int, ...}` | Run one command. The result may carry extra fields next to `exit_code`; `exit_code` stays required, and a host that does not know a field ignores it. The result may carry an optional `outputs` object of JSON values (for example `{"files": ["/w/a.zip"]}`), used by hosts that chain commands (flows) to pass one command's results to the next; a host that does not know it ignores it, and this is still protocol v2. A cancelled call always ends with `-32800`. `args` are the raw CLI args after the command name; the plugin may parse them, or use `inputs` (see Typed inputs). Resolve relative paths in `args` against `cwd` (the user's directory), not the plugin's own. |
 | `shutdown`    | `{}`                                          | `{}`                  | Plugin should exit after replying. Host kills it after a timeout. |
 
 ## Host → plugin notifications
@@ -94,19 +96,108 @@ A manifest that uses a removed feature fails the install: `provides` and `requir
 
 ## Plugin → host notifications
 
-| Method     | Params                       | Host behaviour |
-|------------|------------------------------|----------------|
-| `output`   | `{text}`                     | Written to stdout as-is (include your own `\n`; partial text allows streaming). |
-| `log`      | `{level, message}`           | `debug` / `info` / `warn` / `error`, written to stderr. |
-| `progress` | `{percent, message}`         | Progress bar on stderr. `percent` 0-100, or `null` if unknown. |
+| Method   | Params                                          | Host behaviour |
+|----------|-------------------------------------------------|----------------|
+| `output` | `{text}`                                        | Written to stdout (include your own `\n`; partial text allows streaming). |
+| `log`    | `{level, message}`                              | `debug` / `info` / `warn` / `error`, written to stderr. |
+| `bar`    | `{id, label?, percent, message?, done?}`        | Creates or updates a progress bar. `percent` is 0-100, or `null` when unknown. `done: true` marks it finished. |
+| `table`  | `{id, columns, rows, title?}`                   | Creates a table, or replaces its contents. `columns` is a list of strings, `rows` a list of lists of strings or numbers. |
+| `panel`  | `{id, items, title?}`                           | Creates a key-value panel, or replaces its contents. `items` is a list of `[key, value]` pairs (strings or numbers). |
+| `clear`  | `{id, kind}`                                    | Removes a live area. `kind` is `bar`, `table` or `panel`. |
+
+A notification the host does not know, such as the `progress` of version 1, is ignored and logged to the plugin's
+log file as `[unknown notification] <method>`.
+
+### Live areas
+
+`bar`, `table` and `panel` describe *live areas*. An area is identified by its `id` and its kind: the same `id`
+used for two kinds makes two areas. Sending a message for an existing area replaces its contents; sending one for an
+`id` that was cleared creates a new area. A `clear` for an unknown area is ignored. Areas belong to one `invoke`:
+when it ends (success, error or cancel) the host shows their final state and forgets them.
+
+- `percent` outside 0-100 is clamped; `NaN` counts as `null`.
+- A bar with `percent: null` shows an activity marker instead of a bar; marked `done` it shows `done`.
+- `label` and `message` are optional strings, empty by default. `title` is an optional string.
+- Output written during an `invoke` (`output`, `log`) appears above the live areas. The areas' final state is written
+  when the `invoke` ends, so in live mode a line such as dm's `saved ...` comes before the final panel and table
+  in the scrollback, and in plain mode the areas print after it.
+- The host does not limit how often an area is updated; a plugin should keep to about 5 updates a second for each
+  area. dm does: a bar, panel or table of a torrent run changes at most every 0.2 s. The one exemption is the
+  final update of a run (the closing `done` bars and the last panel and table), which is sent at once whatever
+  the cap says, so that the last numbers on screen are the true ones.
 
 ## Plugin → host requests
 
-| Method        | Params     | Result                           |
-|---------------|------------|----------------------------------|
-| `prompt_user` | `{prompt}` | `{text}` or `{eof: true}` when input has ended |
+| Method        | Params            | Result                           |
+|---------------|-------------------|----------------------------------|
+| `prompt_user` | `{prompt}`        | `{text}` or `{eof: true}` when input has ended |
+| `form`        | `{title?, fields}` | `{values: {name: value}}` or `{eof: true}` when input has ended |
 
 Any other request from a plugin (`call` and `http` included) is answered with error `-32601`.
+
+### Forms
+
+`fields` is a list of fields, each `{name, label, type, ...}` with a unique `name` and one of these types:
+
+| `type`    | Extra keys                                       | Value in `values` |
+|-----------|--------------------------------------------------|-------------------|
+| `text`    | `default?` (string), `secret?` (bool, not echoed) | string            |
+| `confirm` | `default?` (bool)                                | boolean           |
+| `choice`  | `choices` (list of strings), `default?` (one of them) | string       |
+
+A form that is cancelled (Ctrl-C) ends the run the same way a cancelled `prompt_user` does. An answer that
+arrives after the plugin was cancelled is dropped. In plain mode (below) a field is asked up to 3 times, and a
+form with no valid answer gets error `-32602`.
+
+## Limits and invalid messages
+
+| What                         | Limit |
+|------------------------------|-------|
+| `id` length                  | 64 characters |
+| live areas per `invoke`      | 32 |
+| table columns / rows         | 64 / 10,000 |
+| form fields / choices        | 32 / 256 |
+
+A message with a missing or wrongly typed field, or over a limit, is *invalid*. An invalid notification is dropped
+and logged to the plugin's log file as `[invalid <method>] <reason>` (method and reason on one line, escaped and cut
+short; for a host-side failure the reason is only the exception's class); the `invoke` goes on. An invalid `form`
+request is answered with error `-32602` and the reason.
+
+## Text the host shows
+
+Everything a plugin sends as text (`output`, `log`, `prompt_user`, and every label, message, title, column, cell,
+key, value and choice) is shown without control characters, in every rendering mode: C0 and C1 controls, DEL and
+ESC are replaced with `U+FFFD`. So are Unicode format characters (category Cf: bidirectional overrides and isolates,
+zero-width and invisible marks, tag characters) and the line and paragraph separators (`U+2028`, `U+2029`). The
+zero-width joiner (`U+200D`) and non-joiner (`U+200C`) stay, so emoji sequences and Persian or Indic words keep their
+shape; variation selectors are marks and stay too. The exceptions are the newline in `output` and `log`, and the tab
+in `output`, which is shown as spaces. A plugin cannot send an escape sequence to the user's terminal.
+
+## Rendering: live and plain
+
+The host picks a mode per process. In *live* mode (stderr is a terminal, `TERM` is not `dumb`, and `DOCK_PLAIN` is
+unset or empty) live areas are drawn on stderr and updated in place. In *plain* mode they are text, and no escape
+sequence is written anywhere:
+
+- a bar prints one line when it is marked `done`, or when the `invoke` ends;
+- a table or panel prints its final contents, as aligned text, when it is cleared or the `invoke` ends;
+- `output` and `log` print as they arrive;
+- a form asks each field on stderr and reads one line per answer from stdin.
+
+The plugin does not need to know which mode is in use.
+
+## Keywords
+
+A `[[commands]]` entry may have `keywords`, a list of non-empty strings that `dock search` matches (next to the
+command's name and summary). Anything else (not a list, a non-string, an empty string) fails `dock plugin install`
+with a message naming the command. A plugin never receives them.
+
+```toml
+[[commands]]
+name = "hello"
+summary = "Greet someone: hello [name]"
+keywords = ["greet", "welcome"]
+```
 
 ## Typed inputs
 
@@ -147,12 +238,17 @@ next word even if it starts with `-`; a `bool` flag takes no value and sets
 are rejected at install; invalid args fail with `dock: <command>: <message>`
 (exit code 2 in one-shot use) and the plugin is not started.
 
-`invoke` params become `{command, args, cwd, inputs?}`. `inputs` is an object
+`invoke` params become `{command, args, cwd, inputs?, work?}`. `inputs` is an object
 `{name: value}` with JSON types (string, integer, boolean), present only for
 commands that declare `inputs` (an empty declaration gives `{}`). `args` stays
 the unchanged raw list. When present, `inputs` is authoritative: a plugin
 should use it instead of re-parsing `args`. The change is additive within
-protocol v1.
+protocol v2.
+
+`work` is an optional absolute path string, set only when the command runs as a
+flow step: that folder is mounted read-write at that same path, and the plugin
+may write there as well as in `cwd`. Plugins that do not know `work` ignore it.
+Single-command runs never carry it. Still protocol v2.
 
 
 ## Error codes
@@ -160,7 +256,7 @@ protocol v1.
 | Code     | Meaning |
 |----------|---------|
 | `-32601` | Unknown method or command |
-| `-32602` | Bad arguments |
+| `-32602` | Bad arguments, or an invalid `form` |
 | `-32800` | Cancelled |
 | `-32000` | Any other plugin error (`message` is shown to the user) |
 
@@ -174,7 +270,7 @@ spawn → initialize → invoke* → shutdown → (kill on timeout)
 ```
 
 `invoke` may repeat any number of times, sequentially, between
-`initialize` and `shutdown` (the interactive `dock shell` and `dock serve` keep
+`initialize` and `shutdown` (the interactive `dock shell` keeps
 plugins running between operations). A plugin must handle every `invoke` in
 the same process and must not leak per-invoke state into the next one, unless
 it documents otherwise. The host force-kills a plugin that ignores `cancel` past the grace period,
@@ -182,9 +278,19 @@ and removes its container whenever the plugin stops.
 
 ## Versioning
 
-`api_version` in `plugin.toml` must match the host's. Changes inside version 1
-are additive only (new optional params, new methods). Breaking changes bump the
-version, and the host may support several versions side by side.
+`api_version` in `plugin.toml` must match the host's: a manifest with another version fails to load with
+`<id> needs protocol v<n>, this dock speaks v2`, at install and when an installed plugin is invoked. Changes inside
+a version are additive only (new optional params, new methods). Breaking changes bump the version.
+
+### Changes from v1
+
+- `api_version` and `DOCK_API_VERSION` are `2`; version 1 plugins are refused, and every plugin in this repository
+  moved to version 2. `dock plugin update` and `dock plugin remove` still work on an installed version 1 plugin.
+- The `progress` notification is removed. Use `bar`.
+- New notifications `bar`, `table`, `panel` and `clear`, and the new request `form`.
+- Limits on ids, areas, tables and forms; invalid messages are dropped and logged.
+- All text is sanitised by the host.
+- `initialize` sends `api_version: "2"`.
 
 Version 1 dropped the requests `call`, `http`, `provision` and `unprovision`, the notifications
 `call_event`, `http_event` and `event`, the `ended_by_cancel` result field, the progress transfer fields

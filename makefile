@@ -1,27 +1,91 @@
 ## core
 # variables
-PYTHON := python3
+# This file owns no logic. Each target hands off to moon, which runs the project tasks defined in apps/*/moon.yml and plugins/*/moon.yml.
+# The exception is repo setup (install-hooks), which is no project's task. cross-* and server-* targets will be added
+# here when apps/cross and apps/server land. Tool versions (moon, uv) are in .prototools: run `proto install` once.
+MOON := moon
+UV := uv
 
 # phony targets
-.PHONY: build install test clean help
+.PHONY: install-hooks install check check-ci test clean help \
+	cli-install cli-check cli-check-ci cli-test cli-run cli-plugin-install cli-clean \
+	dm-install dm-check dm-check-ci dm-test dm-clean \
+	planner-install planner-check planner-check-ci planner-test planner-clean
 
-## operation
-# build
-build: # Nothing to build: plugins are built into images on first use
-	@echo "nothing to build"
+## repo setup
+install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
+	$(UV) tool install pre-commit
+	$(UV) tool run pre-commit install
 
-# plugins
-install: build # Install the example plugin into $$DOCK_HOME (default ~/.dock)
-	$(PYTHON) -m cli plugin install plugin/hello
+## all projects - runs the task in every project that defines it
+install: # Install every project's dependencies
+	$(MOON) run :install
 
-# checks
-test: build # Run the test suite (needs Docker or podman; stops at once without one)
-	@$(PYTHON) -c "import sys; sys.excepthook = lambda t, e, tb: print('make: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()"
-	$(PYTHON) -m unittest discover -s tests -v
+check: # Lint (with fixes) and type-check every project
+	$(MOON) run :check
 
-# cleanup
+check-ci: # Lint and type-check every project without fixing anything. For CI.
+	$(MOON) run :check-ci
+
+test: # Run every project's tests (the CLI's need Docker or podman; dm's do not)
+	$(MOON) run :test
+
 clean: # Remove Python caches
-	find . -name __pycache__ -type d -prune -exec rm -r {} +
+	$(MOON) run :clean
+
+## cli - delegates to apps/cli/moon.yml
+cli-install: # Install CLI dependencies
+	$(MOON) run cli:install
+
+cli-check: # Lint + typecheck the CLI and hello (fixes what ruff can)
+	$(MOON) run cli:check
+
+cli-check-ci: # Lint + typecheck the CLI and hello without fixing anything. For CI.
+	$(MOON) run cli:check-ci
+
+cli-test: # Run the CLI tests (needs Docker or podman; stops at once without one)
+	$(MOON) run cli:test
+
+cli-run: # Run dock, e.g. make cli-run ARGS="plugin list"
+	$(MOON) run cli:run -- $(ARGS)
+
+cli-plugin-install: # Install the example plugin into $DOCK_HOME (default ~/.dock)
+	$(MOON) run cli:plugin-install
+
+cli-clean: # Remove the CLI's and hello's Python caches
+	$(MOON) run cli:clean
+
+## dm - delegates to plugins/dm/moon.yml
+dm-install: # Install dm's dev tools
+	$(MOON) run dm:install
+
+dm-check: # Lint + typecheck dm (fixes what ruff can)
+	$(MOON) run dm:check
+
+dm-check-ci: # Lint + typecheck dm without fixing anything. For CI.
+	$(MOON) run dm:check-ci
+
+dm-test: # Run dm's in-process tests (no Docker or podman needed)
+	$(MOON) run dm:test
+
+dm-clean: # Remove dm's Python caches
+	$(MOON) run dm:clean
+
+## planner - delegates to plugins/planner/moon.yml
+planner-install: # Install the planner's dev tools
+	$(MOON) run planner:install
+
+planner-check: # Lint + typecheck the planner (fixes what ruff can)
+	$(MOON) run planner:check
+
+planner-check-ci: # Lint + typecheck the planner without fixing anything. For CI.
+	$(MOON) run planner:check-ci
+
+planner-test: # Run the planner's tests (a local stand-in model server; no Docker or model needed)
+	$(MOON) run planner:test
+
+planner-clean: # Remove the planner's Python caches
+	$(MOON) run planner:clean
 
 # help
 help:

@@ -1,0 +1,37 @@
+line-length = 110
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length is not enforced (no formatter in this repo); long wrapped literals are deliberate
+    "SIM105", # try/except/pass is deliberate best-effort cleanup; suppress() would hide the intent
+]
+
+[lint.per-file-ignores]
+# Tests deliberately sys.path.insert(...) before importing, bind fixtures for readability, and
+# use test-only idioms.
+"{apps/cli,plugins/dm,plugins/planner}/tests/**" = [
+    "B023",   # test closures over loop variables run inside the same iteration
+    "B905",   # zip without strict= on equal-length test data
+    "E402",   # imports follow sys.path.insert lines the tests depend on
+    "E741",   # short names like l / O in tests
+    "F841",   # a test binds a fixture to a local for readability
+    "I001",   # sorting imports would move them past sys.path.insert lines
+    "RUF001", # ambiguous unicode characters are test data for output sanitising
+    "RUF005", # list concatenation is clearer than unpacking in the tests
+    "RUF007", # zip(a, a[1:]) is clearer than itertools.pairwise in the tests
+    "RUF012", # mutable class attributes are read-only test fixtures
+    "RUF059", # unused unpacked variables document the shape of the returned tuple
+    "SIM117", # nested with-blocks are kept for readability in the tests
+    "UP031",  # %-formatting is used for byte strings and protocol text
+]
+"plugins/dm/dmcore/fetch.py" = ["B018"]  # bare parts.port access deliberately raises ValueError on a bad port
+"plugins/dm/dmcore/torrent/dht/cache.py" = ["B905"]  # zip(range(N), entries) deliberately stops at the shorter one (a scan cap)
+"plugins/dm/dmcore/torrent/metadata.py" = ["SIM102"]  # nested ifs kept for readability
+"plugins/dm/dmcore/torrent/session.py" = ["E731"]  # a one-line lambda alias is clearer here
+"plugins/dm/dmcore/torrent/storage.py" = ["RUF005"]  # tuple concatenation reads clearer than unpacking
+"apps/cli/src/editor.py" = ["RUF071"]  # commonprefix of completion candidates is character-wise on purpose
+"apps/cli/src/inputs.py" = ["B023", "B905"]  # closure runs inside the same iteration; zip is used as a bounded pairing
+"apps/cli/src/live.py" = ["RUF001", "RUF002"]  # the single angle quote is the deliberate prompt glyph
+"apps/cli/src/main.py" = ["SIM108"]  # if/else kept: the two branches read as separate cases
+"apps/cli/src/process.py" = ["SIM115"]  # the log file is closed in stop()

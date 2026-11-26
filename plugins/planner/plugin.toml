@@ -1,0 +1,20 @@
+id = "dev.dock.planner"
+version = "0.1.0"
+api_version = "2"
+description = "Plan a flow of other plugins' commands from a request, with a local Ollama model"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["network"]
+env = ["DOCK_PLANNER_URL", "DOCK_PLANNER_MODEL"]
+
+[[commands]]
+name = "plan"
+summary = "Turn a request into a flow (used by `dock do`): plan <prompt> <catalog>"
+keywords = ["plan", "flow", "ai", "ollama"]
+inputs = [
+  { name = "prompt", type = "string", required = true },
+  { name = "catalog", type = "string", required = true },
+]

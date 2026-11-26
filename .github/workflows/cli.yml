@@ -1,0 +1,37 @@
+# Lints, type-checks and tests the CLI (apps/cli/) and the hello plugin (plugins/hello) on every push and pull request
+# to dev and main. The runner's Docker serves the plugin containers the tests start; the live DHT test stays skipped
+# (DOCK_LIVE_DHT is not set). The dm plugin's in-process tests and checks run in dm.yml.
+# The steps call uv directly, the same commands as apps/cli/moon.yml's check-ci and test.
+name: CLI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  cli:
+    runs-on: ubuntu-24.04
+    # The suite takes about 12 minutes on a laptop; runners are slower.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/cli
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # uv installs Python 3.15.2 from apps/cli/.python-version. Same uv as .prototools.
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: "0.13.10"
+          enable-cache: false
+      # --locked fails the job when uv.lock is out of date with pyproject.toml.
+      - run: uv sync --locked
+      - run: uv run ruff check . ../../plugins/hello
+      - run: uv run ty check . ../../plugins/hello
+      - run: uv run pytest

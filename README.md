@@ -1,258 +1,104 @@
 # dock
 
-A tiny CLI host where every feature is a plugin. A plugin is any program, in
-any language, that speaks the [dock protocol](protocol/PROTOCOL.md):
-JSON-RPC 2.0 over stdin/stdout, one message per line. Every plugin runs in a
-container.
+A tiny CLI host where every feature is an out-of-process, any-language plugin that runs in a container.
 
-### Behaviour change: dock runs plugins only in a container
+## Repository structure
 
-dock used to run a plugin as a native process, a WebAssembly module or (opt-in) a container. Now every plugin runs
-with `<runtime> run -i --rm` in a container, and nothing else. Removed:
+```
+.
+├─ .moon/            moon workspace: every apps/* and plugins/* folder with a moon.yml is a project
+├─ .prototools       tool versions (moon, uv); `proto install` installs them
+├─ makefile          delegates to moon (no logic of its own)
+├─ ruff.toml         lint settings for every Python project
+├─ apps/
+│  └─ cli/           the Python host (moon project `cli`)
+│     ├─ src/        the host package (python -m src, or the `dock` command)
+│     ├─ tests/      the host tests (pytest), plus the host-driven dm tests (they start containers)
+│     └─ moon.yml    install, check, check-ci, test, run, plugin-install, clean
+├─ plugins/          container plugins, usable by any host
+│  ├─ hello/         the example plugin
+│  ├─ dm/            the downloader (moon project `dm`)
+│  │  ├─ tests/      dm's in-process tests (pytest, no container runtime) and the torrent fixtures
+│  │  └─ moon.yml    install, check, check-ci, test, clean
+│  └─ planner/       plans a flow from a request with a local model (moon project `planner`)
+└─ protocol/         PROTOCOL.md, the plugin protocol every host and plugin follows
+```
 
-- native runs (`[run].any` and the per-platform `[run]` entries) and WASM runs (`[run].wasm`, the `wasmtime` runner);
-- HTTP through dock (`[capabilities].http`, the `http` request, `[http]` in `config.toml`);
-- the `network:listen` permission and `requires_permission`;
-- capabilities and providers (`provides`, `requires`, the `call` request, `[providers]` in `config.toml`);
-- provision and unprovision, with their crash recovery (`[lifecycle].provision`, the `state/` markers);
-- `ended_by_cancel` and the progress transfer fields (`done`, `total`, `speed`, `name`, `phase`, `uploaded`, `peers`);
-  progress is `{percent, message}`;
-- the bundled `chat`, `llm`, `download` and `image` plugins. Only `hello` is left.
+Planned: `apps/server` (a network host), `apps/cross` (a Kotlin Multiplatform client), `packages/host` (the host
+core the CLI and the server share).
 
-A plugin whose `[run]` is not exactly `container = { ... }`, or that uses a removed key, fails at install with a
-message that names the problem. A `config.toml` with an `[isolation]`, `[wasm]`, `[http]` or `[providers]` table fails
-too, and a `config.toml` that does not parse is always fatal. `[isolation]` became `[container]`:
+## Prerequisites
+
+- [proto](https://moonrepo.dev/proto), then `proto install` in the repository: it installs moon and uv at the
+  versions in `.prototools`. uv installs Python 3.15.2 for the CLI
+- Docker or Podman, running (every plugin runs in a container; the tests need one too)
+
+## Make targets
+
+Run from the repository root. Each one runs a moon task (`moon run <project>:<task>` does the same).
+
+| Target               | What it does                                                       |
+|----------------------|--------------------------------------------------------------------|
+| `make cli-install`   | Install dependencies (`uv sync`)                                   |
+| `make cli-check`     | Lint and typecheck the CLI and hello (ruff with `--fix`, ty) |
+| `make cli-check-ci`  | The same without fixing anything                                   |
+| `make cli-test`      | Run the tests (needs Docker or podman)                             |
+| `make cli-run`       | Run dock, e.g. `make cli-run ARGS="plugin list"`                   |
+| `make cli-plugin-install` | Install the example plugin into `$DOCK_HOME` (default `~/.dock`) |
+| `make cli-clean`     | Remove the CLI's and hello's Python caches                         |
+| `make dm-install`    | Install dm's dev tools (`uv sync`)                                 |
+| `make dm-check`      | Lint and typecheck dm (ruff with `--fix`, ty)                      |
+| `make dm-check-ci`   | The same without fixing anything                                   |
+| `make dm-test`       | Run dm's in-process tests (no Docker or podman needed)             |
+| `make dm-clean`      | Remove dm's Python caches                                          |
+| `make planner-install`, `planner-check`, `planner-check-ci`, `planner-test`, `planner-clean` | The same for the planner (its tests need no Docker or model) |
+| `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py` and `plugins/hello/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
+| `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project                  |
+| `make help`          | List the targets                                                   |
+
+## Flows
+
+A flow runs several plugins' commands in order. Write it as TOML:
 
 ```toml
-[container]
-runtime = "docker"      # a command name or an absolute path; without it dock uses docker, then podman
+[params.url]
+type = "string"      # string, int or bool
+required = true
+
+[[steps]]
+plugin = "dev.dock.dm"
+command = "dm"
+inputs = { url = "{params.url}", dir = "{work}" }
+label = "download"
+
+[[steps]]
+plugin = "dev.dock.unzip"
+command = "unzip"
+inputs = { file = "{steps.1.files[0]}" }
 ```
 
-`enabled` and `plugins` are gone: every plugin is always in a container.
+- `dock flow check <file>` checks it and shows what it would do, starting nothing.
+- `dock flow run [--yes] [--keep] <file> [name=value...]` shows the steps, asks `Run this flow? [y/N/s]` (`s` saves
+  it as `<name>.flow.toml` in the current folder first), then runs them. `--yes` skips the question.
+- References in input values: `{params.x}` a parameter, `{work}` the flow's private work folder (every step may write
+  there), `{steps.N.field}` and `{steps.N.field[i]}` an output of an earlier step (1-based).
+- At most 16 steps; the first failing step stops the flow. The work folder (under `$DOCK_HOME/flows`) is removed after
+  a successful run unless you pass `--keep`; after a failure it is kept and its path is printed.
 
-Leftovers in `~/.dock` are not read any more. `~/.dock/state` is unused. A `~/.dock/wasm` folder from WASM installs is
-read-only; delete it with `chmod -R u+w ~/.dock/wasm && rm -rf ~/.dock/wasm`.
+## dock do
 
-```
-cli/ (Python host)
- ├─ main.py       parse argv, built-ins, forward everything else
- ├─ store.py      ~/.dock: install, index, resolve command -> plugin
- ├─ manifest.py   plugin.toml: commands, permissions, how to build and run the container
- ├─ isolation.py  the container runner: image build, `run` argv, cwd checks, cleanup of dead containers
- ├─ lifecycle.py  session: start plugins, invoke, cancel, stop
- ├─ process.py    container process + JSON-RPC client, one shared inbox per session
- ├─ shell.py      the interactive dock> prompt
- ├─ serve.py      `dock serve`: JSON-RPC host mode for other programs
- └─ ui.py         the host owns the terminal: output, logs, progress, prompts
-        │  stdio (through `<runtime> run -i`)
-   ┌────┴─────────────┐
- hello (Python)
- 2 commands, prompts, progress
-```
+`dock do "<request>"` asks a local model to plan a flow from your request, shows it, and runs it after you approve
+(`y`, `N`, or `s` to save it as `plan.flow.toml`), the same way as `dock flow run`. Flags: `--yes`, `--keep`. A request that starts with `-` goes after `--`: `dock do -- "-5 degrees"`.
 
-## Try it
+- Install the planner once: `dock plugin install plugins/planner`.
+- It needs a local [Ollama](https://ollama.com) with a model pulled (default `qwen2.5:7b`).
+- `DOCK_PLANNER_URL` sets the endpoint (default `http://host.docker.internal:11434`) and `DOCK_PLANNER_MODEL` the
+  model. Both are read from your environment.
+- On Linux, or with podman, `host.docker.internal` may not resolve inside the container: set `DOCK_PLANNER_URL` to an
+  address that does (for example the host's LAN address).
+- The planner sees only the catalog of your installed plugins (ids, descriptions, commands, inputs), never your files.
 
-Needs Python 3.11+ and Docker or Podman (running).
+## Docs
 
-```sh
-make install      # install the example plugin into ~/.dock (the image is built on first use)
-python3 -m cli help
-python3 -m cli hello Roman
-python3 -m cli hello "Ada Lovelace"                   # quote a name of several words
-python3 -m cli count 30
-make test         # tests in throwaway DOCK_HOMEs; they need Docker (or podman)
-```
-
-`pip install -e .` gives you a real `dock` command. Set `DOCK_HOME` to use
-another plugin folder.
-
-With no container runtime, a command that starts a plugin fails with `dock: no container runtime found (install
-docker or podman, or set [container] runtime in <config>)` (exit 1). `help`, `version`, `plugin list` and
-`plugin info` still work (`plugin info` shows `runtime: none found ...`).
-
-`make test` needs a running runtime and stops at once with one line if there is none. `DOCK_TEST_RUNTIME` overrides
-the runtime the tests use. Test modules that start no plugin (such as the unit classes in `tests/test_inputs.py`)
-run without one. The first run builds a few small fixture images, which can take minutes; later runs reuse them.
-On macOS the test folders must be in a path the Docker VM shares (`/Users` by default); if mounts come up empty, set
-`TMPDIR` to a folder under `/Users`.
-
-### `dock serve`
-
-`python3 -m cli serve` runs dock as a JSON-RPC server on stdin/stdout so another program can run commands, many at a
-time, with progress, cancel and prompts. A finished call's container stays warm for a later call with the same plugin
-and folder. See [protocol/SERVE.md](protocol/SERVE.md).
-
-### Interactive shell
-
-`python3 -m cli shell` (or bare `dock` on a terminal) opens a `dock>` prompt.
-Each line is an operation, split with shell-style quoting: `hello "Ada Lovelace"`.
-Plugins stay running between operations.
-Built-ins: `help`, `version`, `plugin ...`, `status`, `exit`/`quit` (or Ctrl-D).
-`status` lists the running plugins with their idle time and the container runtime they run in.
-Tab completes commands, `plugin` subcommands and installed plugin ids.
-History is kept in `~/.dock/history` (last 1000 lines); set `DOCK_NO_READLINE=1`
-to run without readline (no completion or history).
-A plugin idle longer than `idle_timeout` seconds (default 300) is stopped
-before each prompt and again when a line is entered (so a long wait at the
-prompt counts), and restarts on demand; set it in `~/.dock/config.toml`:
-
-```toml
-[shell]
-idle_timeout = 300   # seconds; 0 = never stop idle plugins
-```
-
-Ctrl-C cancels the running operation and returns to the prompt. A non-zero exit
-code is printed as `exit <n>`. Every plugin is stopped on exit.
-`dock shell` also works without a terminal: lines are read from stdin, so
-`printf 'hello Bob\nstatus\n' | python3 -m cli shell` runs them in one session.
-
-Behaviour change: bare `dock` on a terminal now opens the shell instead of
-printing help (`dock help` still prints it; piped stdin still prints help).
-
-Behaviour change: `hello` and `count` declare typed inputs, so
-dock checks their arguments before starting them (usage errors exit 2). A name of
-several words must be quoted (`hello "Ada Lovelace"`; `hello Ada Lovelace` is an
-error), and `count abc` is dock's "must be an integer" error. dock reads anything
-starting with `-` as a flag, so a negative number goes after `--` (`count -- -3`).
-
-### How plugins run
-
-Every plugin runs in a container, started as `<runtime> run -i --rm`, so the stdio protocol and warm plugins in
-the shell and in `dock serve` work as for any child process. It gets only what the declared permissions allow:
-
-| Restriction | Detail |
-|-------------|--------|
-| Network | `--network none` unless the plugin declares `network` |
-| Files | read-only root, writable `/tmp`; the plugin's data dir is mounted read-write at the same path; your current directory is mounted read-write only with `fs:write:cwd` (see below) |
-| Environment | only `LANG`, `TZ` (if set), `HOME=/tmp`, `DOCK_PLUGIN_ID`, `DOCK_API_VERSION`, and the variables the plugin lists in `[capabilities] env` (see below); nothing else from your environment, not even `PATH` (the image's own is used) |
-| Privileges | `--cap-drop ALL`, `no-new-privileges`, run as your uid:gid |
-| Images | `--pull never`: a run never downloads anything; only `dock plugin build` and the first-use build do |
-
-dock refuses to start a plugin that declares `fs:write:cwd` when the current directory is the filesystem root, your
-home directory, any folder above your home directory, or the dock home (`~/.dock`) or a folder inside or above it.
-Paths are compared the way the filesystem does (case-insensitive on macOS). A data dir or a mounted current
-directory whose path contains `:`, `,` or `"` is refused too: such a path cannot be written in a `--mount` option.
-
-The runtime is `docker` from `PATH`, then `podman`, or the one you set in `~/.dock/config.toml`:
-
-```toml
-[container]
-runtime = "podman"      # a command name looked up on PATH, or an absolute path
-```
-
-A relative path such as `./docker` is refused (a plugin folder could ship its own). A configured runtime that is
-missing is an error: dock never falls back to another one. An unknown key or a misspelt table name (`[containr]`) is
-an error too, and so is a `config.toml` that does not parse. `config.toml` takes `[container]`, `[shell]
-idle_timeout` and `[serve] idle_timeout`; `[isolation]`, `[wasm]`, `[http]` and `[providers]` are errors with a
-message that says what replaced them.
-
-A plugin that needs more of your environment, such as an API key, lists the variable names in its manifest:
-
-```toml
-[capabilities]
-permissions = ["network"]
-env = ["MY_API_KEY", "MY_API_URL"]
-```
-
-Each listed name that is set on the host reaches the container; one that is not
-set is left out. Values are never put on the runtime's command line (dock passes
-a bare `-e NAME` and the runtime reads the value from its own environment), so
-they do not show up in the process list. Names must look like `MY_VAR` and may
-not be ones dock sets itself (`HOME`, `PATH`, `LANG`, `TZ`, `DOCK_PLUGIN_ID`,
-`DOCK_API_VERSION`). `dock plugin info <id>` shows the names on an `env:` line (`-` when there are none) and a
-`runtime:` line such as `docker (no network, no cwd access)`.
-
-**Images.** The image `dock/<id>:<version>` is built from the installed plugin folder on first use (dock prints
-`dock: building image ...`, and the build log goes to `~/.dock/logs/<id>.log`) and reused afterwards.
-`dock plugin build <id>` (re)builds it on demand, for example after editing the Dockerfile without a version bump.
-Reinstalling a plugin, or `dock plugin remove`, drops its image, so the next run rebuilds it from the new files. A
-first install into a `DOCK_HOME` that has no such plugin does not drop anything, so if you edit a plugin without
-bumping its version and install it into a fresh home, an image from an earlier install can still be used: run
-`dock plugin build <id>`. When dock cannot ask a runtime to drop an old image, it warns that the image may be stale.
-
-Dock removes a plugin's container whenever it stops or kills the plugin, and at
-startup removes containers left by dock processes that died (labelled
-`dev.dock.owner=<hostname>:<pid>`; only those of this machine whose pid is gone,
-never on Windows). That cleanup is best effort, not a guarantee: if the runtime
-is unreachable at that moment, a container can remain until a later start.
-The startup sweep gives the runtime at most 5 seconds.
-
-Things to know:
-
-- Image builds run with the runtime's default network access and without any
-  of the restrictions above, and run the Dockerfile's instructions as written;
-  only install plugins whose Dockerfile you trust. Base images (such as `python:3.12-slim`)
-  are not pinned to a digest.
-- The build context is the whole installed plugin folder, so anything in it is sent to
-  the runtime; give your plugin a `.dockerignore` for what the image does not need.
-- Cancelling a call in `dock serve` does not stop an image build in progress: the cancel waits for it.
-- On SELinux hosts, bind mounts need the `:z` or `:Z` option, which dock does not
-  add, so the plugin cannot read its mounts there.
-- On macOS the runtime's VM shares the files: Docker Desktop shares `/Users` by default, otherwise
-  the plugin sees an empty directory.
-- A new plugin version builds a new image and old `dock/*` images of other
-  versions are not deleted (`docker image rm` them).
-
-## What the example demonstrates
-
-| Idea | Where |
-|---|---|
-| Language independence | Same protocol for any language; the plugin is whatever its image runs |
-| Lazy discovery | `dock help` reads `index.json`; no plugin is started |
-| Namespacing and collisions | ids are `vendor.name`; on a clash use `dock dev.dock.hello:hello` |
-| Ctrl-C | Host sends `cancel`, then force-kills the container after a grace period |
-| Host owns the UI | Plugins never print; they send `output` / `log` / `progress` / `prompt_user` |
-| Isolation | A plugin crash is an error message, not a host crash; stderr goes to `~/.dock/logs/`; the container only sees what its permissions allow |
-
-## Write a plugin
-
-1. A folder with `plugin.toml`, a `Dockerfile` that puts the plugin at `/plugin`, and a `.dockerignore`:
-
-   ```toml
-   id = "you.thing"
-   version = "0.1.0"
-   api_version = "1"
-   [run]
-   container = { cmd = "python3", args = ["/plugin/main.py"] }  # dockerfile = "Dockerfile" by default
-   [[commands]]
-   name = "thing"
-   summary = "Does the thing"
-   ```
-
-   ```dockerfile
-   FROM python:3.12-slim
-   COPY . /plugin
-   ```
-
-   `[run]` must hold exactly `container`; any other key fails the install. The image `dock/<id>:<version>` is
-   built from the Dockerfile, so `id` and `version` may only hold letters, digits, `.`, `_` and `-`.
-   Permissions are `network` and `fs:write:cwd`, under `[capabilities] permissions`; both are enforced by the
-   container (see "How plugins run").
-
-   A command can declare typed inputs; dock then parses and checks the args
-   before starting the plugin and sends them as `inputs` with `invoke`
-   (see `protocol/PROTOCOL.md`, "Typed inputs"):
-
-   ```toml
-   [[commands]]
-   name = "fetch"
-   summary = "fetch <url> [--retries n]"
-   inputs = [
-     { name = "url",     type = "string", required = true },
-     { name = "retries", type = "int",    flag = "--retries", default = 3 },
-   ]
-   ```
-
-   Types are `string`, `int` and `bool`. A `bool` is a flag that is `false`
-   unless given, so it takes neither `default` nor `required`.
-
-2. A program that answers `initialize`, `invoke` and `shutdown` on stdio
-   (follow `plugin/hello/main.py`, in any language).
-3. `dock plugin install ./thing`. The image is built on the first run, or with `dock plugin build you.thing`.
-4. A container sees only a fixed environment. To receive host variables, list their
-   names: `[capabilities] env = ["MY_API_KEY"]` (see "How plugins run").
-
-## Not in this example yet
-
-Remote registry and `dock plugin install <name>`, checksums and signatures. See
-`protocol/PROTOCOL.md` for the parts that are fixed and the versioning rule for adding them.
+- [apps/cli/README.md](apps/cli/README.md): usage, shell, plugins, configuration, `dm`
+- [protocol/PROTOCOL.md](protocol/PROTOCOL.md): the plugin protocol
