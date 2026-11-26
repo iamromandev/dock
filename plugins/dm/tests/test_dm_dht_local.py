@@ -310,7 +310,12 @@ class Hostile(Base):
         self.assertIn(PEER, peers)
         await asyncio.sleep(0.2)
         dropped = c.stats["dropped_early"] + c.stats["dropped_late"]
-        self.assertGreaterEqual(dropped, 100)  # the kernel drops much of a burst of 13 MB
+        # How much of a 13 MB burst gets past the kernel depends on the socket's receive buffer (on Linux's default
+        # only about 92 of these datagrams fit), so no fixed count: every datagram that arrived and was not the
+        # answer to a query we sent is dropped.
+        forged = len(spent) - c.stats["sent"]
+        self.assertGreater(forged, 0, "none of the flood reached the client")
+        self.assertGreaterEqual(dropped, forged)
         # forged tids from a queried address are decoded, then dropped
         self.assertGreaterEqual(c.stats["dropped_late"], 1)
         self.assertEqual(c.stats["dropped"], dropped)
