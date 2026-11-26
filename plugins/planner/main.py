@@ -70,12 +70,15 @@ Answer with one JSON object only, shaped like:
 
 Rules:
 - Use only the plugins, commands and inputs in the catalog below. Never invent any. Give every required input.
+- Do not add steps the request does not ask for: use the fewest steps that do what it asks.
 - Do not declare params: write the concrete values from the request into the inputs.
 - At most {MAX_STEPS} steps. They run strictly in order; a failing step stops the flow.
 - Input values are strings, integers or booleans.
 - References inside string values: {{work}} is a private folder every step can write to, {{steps.N.field}} is the
   output field `field` of step N (1-based, an earlier step), {{steps.N.field[i]}} is item i of a list output.
-- Files a step downloads or writes must go into {{work}} (for example the dir input of a download command).
+- {{work}} is scratch space, deleted after a successful run. Put a file there only when a later step reads it.
+  Files the user asked for go to the current folder: leave out folder and file name inputs (such as `dir` or
+  `output`) unless the request names one.
 - The `label` is optional.
 
 Catalog:
