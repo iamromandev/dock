@@ -79,7 +79,8 @@ class TwoInvokes(unittest.TestCase):
         FakeProc.scripts = [script("one"), script("two")]
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.session = Session(Store(Path(tmp.name)))
+        self.make_ui = None
+        self.session = Session(Store(Path(tmp.name)), lambda _id: self.make_ui())
         self.manifest = mock.Mock(permissions=[])
         self.manifest.id = "p"
         for patch in (
@@ -96,9 +97,9 @@ class TwoInvokes(unittest.TestCase):
             self.addCleanup(patch.stop)
 
     def run_both(self, make_ui):
-        with mock.patch.object(self.session, "_ui", side_effect=lambda _id: make_ui()):
-            for _ in range(2):
-                self.session.invoke(self.manifest, "c", [])
+        self.make_ui = make_ui
+        for _ in range(2):
+            self.session.invoke(self.manifest, "c", [])
         self.assertEqual(len(FakeProc.instances), 1, "the process was meant to be reused")
 
     def test_live_each_invoke_shows_its_own_output_and_one_final_copy(self):

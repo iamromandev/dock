@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import test_catalog as tc
 from src import catalog
-from src.manifest import ManifestError
+from src.manifest import Manifest, ManifestError
 
 PID = "dev.t.p"
 
@@ -81,15 +81,20 @@ class StoreUpdate(tc.TmpCase):
         self.assertEqual(self.store_.index(), before)
         self.assertTrue((self.store_.plugin_dir / PID / "0.1.0" / "plugin.toml").is_file())
 
-    def stderr_of(self, folder):
-        with mock.patch("src.isolation.forget_image"), mock.patch("builtins.print") as pr:
-            self.store_.update(PID, folder)
-        return [str(c.args[0]) for c in pr.call_args_list]
-
     def test_unloadable_old_manifest_warns_the_image_stays(self):
-        (self.store_.plugin_dir / PID / "0.1.0" / "plugin.toml").write_text("not [ toml")
-        lines = self.stderr_of(self.new)
-        self.assertTrue(any(f"dock/{PID}:0.1.0" in ln and "not removed" in ln for ln in lines), lines)
+        # bug: the notice text drifts from the one users see ("could read" for "could not read")
+        old = self.store_.plugin_dir / PID / "0.1.0"
+        (old / "plugin.toml").write_text("not [ toml")
+        try:
+            Manifest.load(old, any_api=True)
+        except ManifestError as e:
+            why = e
+        seen = []
+        self.store_.notice = seen.append
+        with mock.patch("src.isolation.forget_image"):
+            self.store_.update(PID, self.new)
+        self.assertEqual(seen, [f"dock: old image dock/{PID}:0.1.0 was not removed: "
+                                f"could not read the old manifest ({why})"])
 
 
 def tree(home):

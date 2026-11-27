@@ -14,15 +14,15 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sys
 import tempfile
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from src import catalog, isolation
 from src.manifest import Manifest, ManifestError, NotAContainerPlugin, check_removed_tables
+from src.notice import default_notice
 
 
 def child(root: Path, name: str, what: str) -> Path:
@@ -93,7 +93,7 @@ def _make_writable(path: Path) -> None:
 
 
 class Store:
-    def __init__(self, home: Path | None = None):
+    def __init__(self, home: Path | None = None, notice: Callable[[str], None] | None = None):
         self.home = Path(os.path.abspath(home or os.environ.get("DOCK_HOME") or Path.home() / ".dock"))  # never relative: it is mounted
         self.plugin_dir = self.home / "plugin"
         self.data_root = self.home / "data"
@@ -101,6 +101,7 @@ class Store:
         self.index_path = self.home / "index.json"
         self.history_path = self.home / "history"
         self._warned_idle_timeout = False
+        self.notice = notice or default_notice  # every line the core says to the user
         self.dirs = None  # paths.Dirs, set by main() once the in/out folders are resolved
         for d in (self.plugin_dir, self.data_root, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
@@ -156,8 +157,8 @@ class Store:
             old_manifest = Manifest.load(Path(entry["path"]), any_api=True)
         except (ManifestError, OSError, KeyError) as e:
             old_manifest = None
-            print(f"dock: old image dock/{plugin_id}:{old_version} was not removed: "
-                  f"could not read the old manifest ({e})", file=sys.stderr)
+            self.notice(f"dock: old image dock/{plugin_id}:{old_version} was not removed: "
+                        f"could not read the old manifest ({e})")
         try:
             new_dir = child(plugin_root, Manifest.load(folder).version, "plugin version")
         except ManifestError:
@@ -172,15 +173,15 @@ class Store:
             raise
         if old_dir != child(plugin_root, manifest.version, "plugin version"):
             if Path(os.path.abspath(entry["path"])) != old_dir:
-                print(f"dock: left {entry['path']} in place: it is not {old_dir}", file=sys.stderr)
+                self.notice(f"dock: left {entry['path']} in place: it is not {old_dir}")
             elif old_dir.is_symlink():
-                print(f"dock: left {old_dir} in place: it is a symlink", file=sys.stderr)
+                self.notice(f"dock: left {old_dir} in place: it is a symlink")
             elif old_dir.exists():
                 try:
                     _make_writable(old_dir)
                     shutil.rmtree(old_dir)
                 except OSError as e:
-                    print(f"dock: could not remove old version folder {old_dir}: {e}", file=sys.stderr)
+                    self.notice(f"dock: could not remove old version folder {old_dir}: {e}")
         if old_manifest is not None and old_manifest.version != manifest.version:
             isolation.forget_image(self, old_manifest)
         return old_version, manifest
@@ -250,7 +251,7 @@ class Store:
         if isinstance(value, bool) or not isinstance(value, int) or value < 0:
             if not self._warned_idle_timeout:  # every prompt asks; say it once
                 self._warned_idle_timeout = True
-                print(f"dock: invalid [shell] idle_timeout {value!r}; using 300", file=sys.stderr)
+                self.notice(f"dock: invalid [shell] idle_timeout {value!r}; using 300")
             return 300
         return value
 

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import os
-import sys
 from collections.abc import Callable
 
 from src.manifest import Manifest
+from src.notice import default_notice
 
 ORDER = ("network", "fs:write:cwd", "fs:read:in")
 
@@ -64,31 +64,23 @@ def added(new: Manifest, old: Manifest | None) -> list[str]:
     return [_show(g) for g in _tagged(new) if g not in have]
 
 
-def _ask_stdin(question: str) -> str | None:
-    print(question, end="", file=sys.stderr, flush=True)
-    try:
-        answer = sys.stdin.readline()
-    except UnicodeDecodeError:  # an answer that is not text is not a yes
-        return None
-    return answer if answer else None
-
-
 class Approver:
-    def __init__(self, yes: bool, interactive: bool | None = None,
-                 ask: Callable[[str], str | None] | None = None):
+    def __init__(self, yes: bool, interactive: bool, ask: Callable[[str], str | None],
+                 notice: Callable[[str], None] | None = None):
         self.yes = yes
-        self.interactive = (sys.stdin.isatty() and sys.stderr.isatty()) if interactive is None else interactive  # the prompt is on stderr
-        self.ask = ask or _ask_stdin
+        self.interactive = interactive  # whether there is a terminal to ask on: the caller decides
+        self.ask = ask
+        self.notice = notice or default_notice
 
     def decide(self, line: str, question: str) -> str:
         """"yes", "no" (declined) or "refused" (no terminal to ask on). Ctrl-C propagates."""
         if self.yes:
-            print(line, file=sys.stderr)
+            self.notice(line)
             return "yes"
         if not self.interactive:
-            print(f"dock: {line}; rerun with --yes to approve", file=sys.stderr)
+            self.notice(f"dock: {line}; rerun with --yes to approve")
             return "refused"
-        print(line, file=sys.stderr)
+        self.notice(line)
         answer = self.ask(question)
         if answer is None:
             return "no"

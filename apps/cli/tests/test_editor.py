@@ -21,7 +21,15 @@ def buf(text="", cursor=None):
 
 
 class LineBufferOps(unittest.TestCase):
-    def test_backspace_and_delete(self):
+    def test_edit_operations(self):
+        with self.subTest("backspace and delete"):
+            self.backspace_and_delete()
+        with self.subTest("kill word"):
+            self.kill_word_takes_the_word_before_the_cursor()
+        with self.subTest("combining mark"):
+            self.a_combining_mark_moves_and_deletes_with_its_base()
+
+    def backspace_and_delete(self):
         b = buf("abc", 2)
         b.backspace()
         self.assertEqual((b.text, b.cursor), ("ac", 1))
@@ -33,14 +41,14 @@ class LineBufferOps(unittest.TestCase):
         b.backspace()
         self.assertEqual(b.text, "a")
 
-    def test_kill_word_takes_the_word_before_the_cursor(self):
+    def kill_word_takes_the_word_before_the_cursor(self):
         b = buf("plugin install  foo", 19)
         b.kill_word()
         self.assertEqual(b.text, "plugin install  ")
         b.kill_word()
         self.assertEqual(b.text, "plugin ")
 
-    def test_a_combining_mark_moves_and_deletes_with_its_base(self):
+    def a_combining_mark_moves_and_deletes_with_its_base(self):
         b = buf("éx")  # é as two code points, then x
         b.left()
         b.left()

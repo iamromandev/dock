@@ -2,6 +2,7 @@
 
 import io
 import os
+import shutil
 import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -13,7 +14,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_catalog as tc
-from src import approve, main
+from src import approve, main, stdio
 from src import store as store_mod
 from src.manifest import Manifest
 from src.shell import Shell
@@ -62,7 +63,7 @@ class Decide(unittest.TestCase):
                 raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
         with mock.patch("sys.stdin", Bad()), redirect_stderr(io.StringIO()):
-            self.assertIsNone(approve._ask_stdin("Q? "))
+            self.assertIsNone(stdio.ask_stdin("Q? "))
 
 
 class Scripted:
@@ -184,48 +185,64 @@ class TocTou(tc.TmpCase):
     def install(self, folder, ask, interactive=True):
         return run(main.cmd_plugin_install, self.store(), [str(folder)], interactive=interactive, ask=ask)
 
-    def test_staging_dir_is_removed_in_every_outcome(self):
-        folder = plugin(self.tmp, "p", ["network"])
-        cases = {
-            "success": lambda: self.install(folder, Scripted("y")),
-            "decline": lambda: self.install(folder, Scripted("n")),
-            "refusal": lambda: self.install(folder, Scripted(), interactive=False),
-        }
-        for name, fn in cases.items():
-            with self.subTest(name):
-                fn()
-                self.assertEqual(self.left(), [])
-                if name == "success":
-                    self.store().remove(PID)
-        with (
-            self.subTest("failure"),
-            mock.patch.object(store_mod.Store, "install", side_effect=OSError("disk")),
-        ):
-            with self.assertRaises(OSError):
-                self.install(folder, Scripted("y"))
-            self.assertEqual(self.left(), [])
-        with self.subTest("interrupt"), self.assertRaises(KeyboardInterrupt):
-            self.install(folder, Scripted(KeyboardInterrupt))
-        self.assertEqual(self.left(), [])
+    def reset(self):
+        """The state setUp makes, afresh: no plugin installed, no catalog, nothing staged."""
+        for child in self.tmp.iterdir():
+            if child != self.stage_root:
+                shutil.rmtree(child)
+        for child in self.stage_root.iterdir():
+            shutil.rmtree(child)
+        self.home.mkdir()
+        self.cat.mkdir()
+        self.store()
 
-    def test_update_staging_dir_is_removed_in_every_outcome(self):
-        self.catalog_config(self.cat)
-        self.store().install(plugin(self.tmp, "old", ["network"]))
-        newer(self.cat, "p", "0.2.0", ["network", "fs:write:cwd"])
-        for answer in ("n", KeyboardInterrupt):
-            with self.subTest(answer=answer):
-                try:
-                    run(main.cmd_plugin_update, self.store(), [], interactive=True, ask=Scripted(answer))
-                except KeyboardInterrupt:
-                    pass
+    def test_staging_dir_is_removed_in_every_outcome(self):
+        def success(folder):
+            self.install(folder, Scripted("y"))
+
+        def decline(folder):
+            self.install(folder, Scripted("n"))
+
+        def refusal(folder):
+            self.install(folder, Scripted(), interactive=False)
+
+        def failure(folder):
+            with mock.patch.object(store_mod.Store, "install", side_effect=OSError("disk")):
+                with self.assertRaises(OSError):
+                    self.install(folder, Scripted("y"))
+
+        def interrupt(folder):
+            with self.assertRaises(KeyboardInterrupt):
+                self.install(folder, Scripted(KeyboardInterrupt))
+
+        for case in (success, decline, refusal, failure, interrupt):
+            with self.subTest(case.__name__):
+                self.reset()
+                case(plugin(self.tmp, "p", ["network"]))
                 self.assertEqual(self.left(), [])
-        run(main.cmd_plugin_update, self.store(), [], interactive=False, ask=Scripted())
-        self.assertEqual(self.left(), [])
-        run(main.cmd_plugin_update, self.store(), ["--dry-run"], interactive=False, ask=Scripted())
-        self.assertEqual(self.left(), [])
-        run(main.cmd_plugin_update, self.store(), ["--yes"], interactive=False, ask=Scripted())
-        self.assertEqual(self.left(), [])
-        self.assertEqual(self.store().index()[PID]["version"], "0.2.0")
+
+        def update(*args, answer=None, interactive=False):
+            try:
+                run(main.cmd_plugin_update, self.store(), list(args), interactive=interactive, ask=Scripted(answer))
+            except KeyboardInterrupt:
+                pass
+
+        cases = {
+            "decline": lambda: update(answer="n", interactive=True),
+            "interrupt": lambda: update(answer=KeyboardInterrupt, interactive=True),
+            "refusal": lambda: update(),
+            "dry run": lambda: update("--dry-run"),
+            "yes": lambda: update("--yes"),
+        }
+        for name, case in cases.items():
+            with self.subTest(f"update: {name}"):
+                self.reset()
+                self.catalog_config(self.cat)
+                self.store().install(plugin(self.tmp, "old", ["network"]))
+                newer(self.cat, "p", "0.2.0", ["network", "fs:write:cwd"])
+                case()
+                self.assertEqual(self.left(), [])
+                self.assertEqual(self.store().index()[PID]["version"], "0.2.0" if name == "yes" else "0.1.0")
 
 
 class AlreadyInstalled(tc.TmpCase):

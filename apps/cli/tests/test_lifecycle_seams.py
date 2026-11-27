@@ -85,13 +85,7 @@ class SessionSeams(unittest.TestCase):
         self.made = []
 
     def session(self):
-        patch = mock.patch(
-            "src.lifecycle.make_ui",
-            side_effect=lambda plugin_id, verbose=False, term=None: self.make_ui(plugin_id),
-        )
-        patch.start()
-        self.addCleanup(patch.stop)
-        session = Session(self.store)
+        session = Session(self.store, self.make_ui)
         self.addCleanup(session.close)
         return session
 
@@ -142,13 +136,10 @@ class InvokeInputs(unittest.TestCase):
             return self.result
 
     def session_with(self, result):
-        session = Session(Store(Path(tempfile.mkdtemp(prefix="dock-seams-inputs-"))))
+        session = Session(Store(Path(tempfile.mkdtemp(prefix="dock-seams-inputs-"))), lambda _id: RecordingUI("p", []))
         manifest = mock.Mock(id="p", permissions=[])
         proc = self.FakeProc(result)
         session.commands["p"] = proc
-        patch = mock.patch("src.lifecycle.make_ui", side_effect=lambda *a, **k: RecordingUI("p", []))
-        patch.start()
-        self.addCleanup(patch.stop)
         return session, manifest, proc
 
     def test_plugin_error_propagates(self):
@@ -162,7 +153,7 @@ class InvokeBracketsTheUI(unittest.TestCase):
 
     def run_invoke(self, outcome):
         events = []
-        session = Session(Store(Path(tempfile.mkdtemp(prefix="dock-seams-ui-"))))
+        session = Session(Store(Path(tempfile.mkdtemp(prefix="dock-seams-ui-"))), lambda _id: RecordingUI("p", events))
 
         def fake_invoke(*args):
             events.append(("plugin", "invoke", None))
@@ -170,10 +161,7 @@ class InvokeBracketsTheUI(unittest.TestCase):
                 raise outcome
             return outcome
 
-        with (
-            mock.patch("src.lifecycle.make_ui", side_effect=lambda *a, **k: RecordingUI("p", events)),
-            mock.patch.object(Session, "_invoke", side_effect=fake_invoke),
-        ):
+        with mock.patch.object(Session, "_invoke", side_effect=fake_invoke):
             try:
                 code = session.invoke(mock.Mock(id="p"), "go", [])
             except BaseException as e:

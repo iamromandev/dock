@@ -220,11 +220,8 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
                     "form": self.form,
                 }
 
-        with (
-            mock.patch.object(process, "subprocess", Proxy()),
-            mock.patch("src.lifecycle.make_ui", side_effect=lambda *a, **k: UI()),
-        ):
-            session = Session(self.store)
+        with mock.patch.object(process, "subprocess", Proxy()):
+            session = Session(self.store, lambda _id: UI())
             try:
                 self.assertEqual(session.invoke(self.store.get("dev.dock.probe"), "echoargs", ["Ada"]), 0)
                 session.invoke(self.store.get("dev.dock.probe"), "code", ["0"])  # a second call: same process

@@ -7,43 +7,50 @@ newest first.
 
 from __future__ import annotations
 
+import itertools
 import os
 import time
+from collections.abc import Callable
 
 from src import API_VERSION, __version__, isolation
 from src.inputs import parse_for
 from src.manifest import Manifest
-from src.process import CANCELLED, Hub, PluginError, PluginProcess
+from src.process import CANCELLED, Cancelled, Hub, PluginError, PluginProcess
 from src.store import Store
-from src.ui import UI, make_ui
+from src.uiproto import UI
 
 INIT_TIMEOUT = 10
 CANCEL_GRACE = float(os.environ.get("DOCK_CANCEL_GRACE", 5))  # seconds a plugin gets to honour `cancel`
 
 
 class Session:
-    def __init__(self, store: Store, verbose: bool = False, term=None, work_dir=None):
+    def __init__(self, store: Store, ui_factory: Callable[[str], UI], *, verbose: bool = False, work_dir=None):
         self.store = store
+        self.ui_factory = ui_factory                 # plugin id -> who shows that plugin's messages
         self.work_dir = work_dir                     # a flow's work folder: mounted read-write into every plugin
         self.verbose = verbose
-        self.term = term                             # the Terminal in live mode: plugins' messages are drawn on it
         self.hub = Hub()                             # all plugins of the session share one inbox
         self.procs: list[PluginProcess] = []        # start order
         self.commands: dict[str, PluginProcess] = {}   # plugin id -> running command plugin
         self.last_used: dict[PluginProcess, float] = {}  # time.monotonic()
+        self._cancels = itertools.count(1)           # next() is atomic: cancel() needs no lock
+        self._issued = 0                             # the number of the latest cancel()
 
     def _ui(self, plugin_id: str) -> UI:
-        """Who shows this plugin's messages: the live renderer on our Terminal, or plain text."""
-        return make_ui(plugin_id, self.verbose, self.term)
+        """Who shows this plugin's messages: whatever the factory of the host makes."""
+        return self.ui_factory(plugin_id)
 
     # starting plugins ------------------------------------------------------
     def start(self, manifest: Manifest, ui: UI) -> PluginProcess:
         # may build an image; raises before anything starts
         launch = isolation.prepare(self.store, manifest, work_dir=self.work_dir)
+        if self.cancelled:  # cancel() came while the image was prepared: stop before a container exists
+            raise Cancelled
         proc = PluginProcess(manifest, self.store.log_path(manifest.id), ui.handlers(), launch, self.hub)
         proc.start()
         self.procs.append(proc)
         self.last_used[proc] = time.monotonic()
+        self.hub.waiting = True
         try:
             proc.request(
                 "initialize",
@@ -64,9 +71,34 @@ class Session:
                     pass
             self.stop_proc(proc)
             raise
+        finally:
+            self.hub.waiting = False
         return proc
 
     # stopping ------------------------------------------------------------------
+    def begin(self) -> None:
+        """A new operation (a command, a flow) starts: a cancel() from before it is stale and does not count."""
+        self.hub.floor = self._issued
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether cancel() was called since the operation began (begin()); a flow checks it between its steps."""
+        return self._issued > self.hub.floor
+
+    def cancel(self) -> None:
+        """Ask the running operation to stop, as Ctrl-C does: same messages, same exit code 130.
+
+        Safe from any thread and from a signal handler (no lock; the inbox is a SimpleQueue). A cancel counts for
+        the operation that began last (begin()); one from before it, or with nothing running, is dropped. It lands
+        in the invoke that waits, between a flow's steps (see `cancelled`), or before a container starts.
+
+        Limits: the image build (isolation.prepare) is not interrupted; the host stops once it returns. A UI handler
+        blocked on user input (prompt_user, form) is not interrupted either: an embedding host's UI must unblock its
+        own input when it cancels. A second cancel() during the grace period ends it early.
+        """
+        self._issued = n = next(self._cancels)
+        self.hub.inbox.put((None, "cancel", n))
+
     def cancel_all(self) -> None:
         for proc in self.procs:
             try:
@@ -106,13 +138,17 @@ class Session:
         the host sent); it gets the rest of the grace period. A plugin that exited can no longer
         answer and does not count. Returns True when nothing is owed.
         """
-        while True:
-            if not any(p.pending and p.alive() for p in self.procs):
-                return True
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            self.hub.pump(remaining)
+        was_waiting, self.hub.waiting = self.hub.waiting, True  # a second cancel() ends the grace period early
+        try:
+            while True:
+                if not any(p.pending and p.alive() for p in self.procs):
+                    return True
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self.hub.pump(remaining)
+        finally:
+            self.hub.waiting = was_waiting
 
     def _stop_unresponsive(self, ui: UI | None = None) -> None:
         """After cancel and its grace period: a plugin still owing a reply is stuck.
@@ -185,6 +221,10 @@ class Session:
             inputs = parse_for(manifest, command, args)
         proc = self.commands.get(manifest.id)
         try:
+            while self.hub.pump(0):  # a cancel() that came while nothing ran is not acted on here (waiting is False)
+                pass
+            if self.cancelled:  # ... but one of this operation (between a flow's steps) stops it before it starts
+                raise Cancelled
             if proc is not None and not proc.alive():
                 self.stop_proc(proc)
                 proc = None
@@ -211,12 +251,14 @@ class Session:
             if self.work_dir is not None:
                 params["work"] = str(self.work_dir)  # the flow's work folder, mounted read-write at this path
             invoke_id = proc.send_request("invoke", params)
+            self.hub.waiting = True
             try:
                 result = proc.wait_for(invoke_id, "invoke", timeout=None)
             except KeyboardInterrupt:
                 self._interrupted(ui)
                 return {"exit_code": 130}
             finally:
+                self.hub.waiting = False
                 proc.handlers = {}
                 if proc in self.procs:
                     self.last_used[proc] = time.monotonic()
@@ -233,6 +275,7 @@ class Session:
 
     def invoke(self, manifest: Manifest, command: str, args: list[str]) -> int:
         ui = self._ui(manifest.id)
+        self.begin()
         ui.begin()
         try:
             result = self._invoke(manifest, command, args, ui)
@@ -258,8 +301,9 @@ class Session:
             ui.end()
 
 
-def run(store: Store, manifest: Manifest, command: str, args: list[str], verbose: bool = False, term=None) -> int:
-    session = Session(store, verbose, term)
+def run(store: Store, manifest: Manifest, command: str, args: list[str], ui_factory: Callable[[str], UI],
+        verbose: bool = False) -> int:
+    session = Session(store, ui_factory, verbose=verbose)
     try:
         return session.invoke(manifest, command, args)
     finally:

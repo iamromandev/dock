@@ -5,39 +5,10 @@ from __future__ import annotations
 import getpass
 import os
 import sys
-from typing import Protocol
 
 from src import uimsg
 from src.areas import Areas, plain_lines
-
-
-class UI(Protocol):
-    """What a Session needs from whoever shows a plugin's messages and asks its questions (PlainUI)."""
-
-    def begin(self) -> None: ...
-
-    def end(self) -> None: ...
-
-    def output(self, p: dict) -> None: ...
-
-    def log(self, p: dict) -> None: ...
-
-    def bar(self, p: dict) -> None: ...
-
-    def table(self, p: dict) -> None: ...
-
-    def panel(self, p: dict) -> None: ...
-
-    def clear(self, p: dict) -> None: ...
-
-    def prompt_user(self, p: dict) -> dict: ...
-
-    def form(self, p: dict) -> dict: ...
-
-    def warn(self, message: str) -> None: ...
-
-    def handlers(self) -> dict: ...
-
+from src.uiproto import UI
 
 FORM_TRIES = 3  # answers a plain form takes per field before it gives up
 

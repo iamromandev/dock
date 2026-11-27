@@ -42,7 +42,7 @@ class DeclarationTests(unittest.TestCase):
             specs_from_toml("fetch", raw)
         self.assertEqual(str(cm.exception), f"command 'fetch': input '{name}': {reason}")
 
-    def test_bad_type_or_default_is_refused(self):
+    def test_bad_declaration_is_refused(self):  # type, default, flag and short
         cases = [
             ("unknown type", [{"name": "x", "type": "path"}], "unknown type 'path'"),
             ("missing type", [{"name": "x"}], "missing 'type'"),
@@ -92,12 +92,7 @@ class DeclarationTests(unittest.TestCase):
                 "bool inputs cannot be required",
             ),
         ]
-        for label, raw, reason in cases:
-            with self.subTest(label):
-                self.bad(raw, reason)
-
-    def test_bad_flag_or_short_is_refused(self):
-        cases = [
+        cases += [
             (
                 "duplicate flag",
                 [{"name": "a", "type": "int", "flag": "--x"}, {"name": "x", "type": "int", "flag": "--x"}],

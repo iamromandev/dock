@@ -13,7 +13,7 @@ from src.lifecycle import Session
 from src.manifest import ManifestError
 from src.store import Store
 from src.term import Terminal
-from src.ui import live_mode
+from src.ui import live_mode, make_ui
 from src.uimsg import sanitize
 
 PROMPT = "dock> "
@@ -198,12 +198,12 @@ def start(store: Store, verbose: bool) -> int:
         term = Terminal()
         term.install()
         try:
-            shell = Shell(store, Session(store, verbose, term), readline=readline, verbose=verbose)
+            shell = Shell(store, Session(store, lambda pid: make_ui(pid, verbose, term), verbose=verbose), readline=readline, verbose=verbose)
             shell.input_fn = LineEditor(term, _history(readline), shell.candidates).readline
             return shell.loop()
         finally:
             term.close()
-    shell = Shell(store, Session(store, verbose), readline=readline, verbose=verbose)
+    shell = Shell(store, Session(store, lambda pid: make_ui(pid, verbose), verbose=verbose), readline=readline, verbose=verbose)
     if readline is not None:
         readline.set_completer(shell.complete)
     return shell.loop()

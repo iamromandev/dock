@@ -306,11 +306,14 @@ def _failed(n: int, outputs: list[dict], reason: str, interrupted: bool = False)
     return FlowResult(False, n - 1, n, reason, outputs, interrupted)
 
 
-def run(f: Flow, params: dict, steps: StepRunner, work: Path, report: Callable[[str], None], store=None) -> FlowResult:
+def run(f: Flow, params: dict, steps: StepRunner, work: Path, report: Callable[[str], None], store=None,
+        cancelled: Callable[[], bool] | None = None) -> FlowResult:
     """Run the steps strictly in order; stops at the first one that fails, is cancelled or raises PluginError or ManifestError.
 
     `store` supplies the commands' declared inputs: each step's filled inputs are checked against them before the
     step starts. A command that declares no inputs gets None; without a store inputs are passed as they are.
+    `cancelled` is asked before each step starts: True ends the flow as an interrupt (Ctrl-C) does, so a cancel
+    that lands between two steps is not lost.
     """
     ctx: dict = {"params": params, "work": str(work), "steps": {}}
     outputs: list[dict] = []
@@ -331,6 +334,8 @@ def run(f: Flow, params: dict, steps: StepRunner, work: Path, report: Callable[[
         except (UsageError, ManifestError) as e:
             return _failed(n, outputs, str(e))
         report(f"[{n}/{total}] {_what(s)}")
+        if cancelled is not None and cancelled():
+            return _failed(n, outputs, "interrupted", True)
         try:
             result = steps(s.plugin, s.command, inputs)
         except KeyboardInterrupt:
