@@ -23,10 +23,19 @@ tasks:
     deps: ["sync"]
     inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
   test:
-    # Plain pytest for now; the Docker-backed tests arrive with their runtime check.
-    script: "uv run pytest"
+    # Needs Docker or podman, and stops at once without one. The images are built from tests/fixtures/ (an input),
+    # so a cached pass is never for a stale image.
+    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run pytest"
     deps: ["sync"]
-    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*", "$DOCK_TEST_RUNTIME"]
+
+  coverage:
+    # The test task under coverage (subprocesses included) with per-test contexts; writes coverage.json and coverage.txt.
+    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run coverage erase && uv run coverage run -m pytest -q && uv run coverage combine && uv run coverage json -o coverage.json && uv run coverage report > coverage.txt"
+    deps: ["sync"]
+    options:
+      cache: false
+
   clean:
     script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
     preset: "utility"

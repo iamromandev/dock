@@ -6,7 +6,7 @@ requires-python = "==3.15.2"
 dependencies = []
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "ruff==0.17.0", "ty==0.0.86"]
+dev = ["coverage==7.17.5", "pytest==9.1.1", "ruff==0.17.0", "ty==0.0.86"]
 
 [build-system]
 requires = ["hatchling"]
@@ -16,6 +16,7 @@ build-backend = "hatchling.build"
 packages = ["dock_host"]
 
 [tool.pytest.ini_options]
+pythonpath = ["tests"]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 
@@ -26,3 +27,26 @@ invalid-argument-type = "ignore"
 no-matching-overload = "ignore"
 unresolved-attribute = "ignore"
 unsupported-operator = "ignore"
+
+[tool.coverage.run]
+source = ["dock_host"]
+patch = ["subprocess"]
+parallel = true
+dynamic_context = "test_function"
+data_file = ".coverage"
+
+[tool.coverage.json]
+show_contexts = true
+
+[tool.ty.environment]
+extra-paths = ["tests"]
+
+# These fire only in tests (fakes, partial constructors, sys.path set up by the tests).
+[[tool.ty.overrides]]
+include = ["tests/**"]
+
+[tool.ty.overrides.rules]
+call-non-callable = "ignore"        # test fakes assigned over callables
+invalid-assignment = "ignore"       # fake processes assigned into typed registries
+missing-argument = "ignore"         # tests construct objects with partial arguments on purpose
+possibly-missing-submodule = "ignore"  # submodules imported elsewhere in the tests

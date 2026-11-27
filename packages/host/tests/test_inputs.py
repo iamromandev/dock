@@ -1,9 +1,6 @@
 """Typed command inputs: unit tests (declarations, parsing) and e2e. Run `make test`."""
 
-import os
-import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -189,32 +186,6 @@ container = {{ cmd = "python3", args = ["/plugin/main.py"] }}
 name = "fetch"
 inputs = [ {inputs} ]
 """
-
-
-class DockCase(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.home = tempfile.mkdtemp(prefix="dock-home-")
-        cls.env = {**os.environ, "DOCK_HOME": cls.home, "PYTHONPATH": str(ROOT)}
-        r = cls.dock("plugin", "install", str(ROOT / "tests" / "fixtures" / "probe"))
-        assert r.returncode == 0, r.stderr
-
-    @classmethod
-    def dock(cls, *args, stdin=""):
-        return subprocess.run(
-            [sys.executable, "-m", "src", *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=cls.env,
-            cwd=ROOT,
-            timeout=120,
-        )
-
-    def starts(self):
-        log = Path(self.home) / "logs" / "dev.dock.probe.log"
-        return log.read_text().count(" start ") if log.exists() else 0
 
 
 if __name__ == "__main__":

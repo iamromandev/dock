@@ -90,6 +90,7 @@ source = { editable = "../../packages/host" }
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "coverage", specifier = "==7.17.5" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = "==0.17.0" },
     { name = "ty", specifier = "==0.0.86" },

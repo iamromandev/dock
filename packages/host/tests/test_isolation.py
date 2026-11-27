@@ -306,7 +306,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 
 
 class DockIsolated(RecordingRuntimeCase):
-    """Real `python3 -m src` runs against the real runtime, recorded."""
+    """Fixture plugins built once in the real runtime, with a recording wrapper around it."""
 
     PLUGINS = (FIXTURES / "uiprobe", FIXTURES / "probe")
 
@@ -318,10 +318,6 @@ class DockIsolated(RecordingRuntimeCase):
         super().setUp()
         for path in self.PLUGINS:
             self.store.install(path)
-        self.work = self.tmp / "work dir"  # a space: paths must stay single arguments
-        self.work.mkdir()
-        self.env = {**os.environ, "DOCK_HOME": str(self.store.home), "PYTHONPATH": str(ROOT)}
-
     def plugin_copy(self, src: Path, plugin_id: str, edit=None) -> Path:
         """A copy of a fixture under its own id (so its image is the test's own), optionally edited first."""
         copies = self.tmp / "copies"
@@ -331,33 +327,6 @@ class DockIsolated(RecordingRuntimeCase):
         if edit:
             edit(copy)
         return copy
-
-    def dock(self, *args, stdin="", env=None):
-        return subprocess.run(
-            [sys.executable, "-m", "src", *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            env=env or self.env,
-            cwd=self.work,
-            timeout=180,
-            check=False,
-            **dockenv.SIGINT_DEFAULT,
-        )
-
-    def spawn(self, *args):
-        p = subprocess.Popen(
-            [sys.executable, "-m", "src", *args],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=self.env,
-            cwd=self.work,
-            **dockenv.SIGINT_DEFAULT,
-        )
-        self.addCleanup(p.kill)
-        return p
 
     def run_calls(self):
         return self.calls("run")

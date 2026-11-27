@@ -4,9 +4,7 @@ No test here needs a container runtime (the NoRuntime class proves dock never ca
 """
 
 import json
-import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -208,7 +206,7 @@ FAKE_RUNTIME = "#!/bin/sh\necho \"$@\" >> '{log}'\nexit 1\n"
 
 
 class CliCase(TmpCase):
-    """`python -m src` in a throwaway DOCK_HOME whose container runtime is a script that records its calls."""
+    """A throwaway DOCK_HOME whose container runtime is a script that records its calls."""
 
     def setUp(self):
         super().setUp()
@@ -217,13 +215,6 @@ class CliCase(TmpCase):
         self.runtime.write_text(FAKE_RUNTIME.format(log=self.log))
         self.runtime.chmod(0o755)
         self.config(f'[container]\nruntime = "{self.runtime}"\n')
-        self.env = {
-            **os.environ,
-            "DOCK_HOME": str(self.home),
-            "PYTHONPATH": str(ROOT),
-            "DOCK_NO_READLINE": "1",
-            "HOME": str(self.tmp),
-        }
         self.hello = greeter(self.cat)
         self.outside = greeter(
             self.tmp / "outside"
@@ -233,19 +224,6 @@ class CliCase(TmpCase):
     def catalog_config(self, *folders):
         dockenv.add_config(
             self.home, "[catalog]\npaths = [" + ", ".join(json.dumps(str(f)) for f in folders) + "]\n"
-        )
-
-    def dock(self, *args, stdin="", env=None):
-        return subprocess.run(
-            [sys.executable, "-m", "src", *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env or self.env,
-            cwd=self.tmp,
-            timeout=60,
-            **dockenv.SIGINT_DEFAULT,
         )
 
     def runtime_calls(self):

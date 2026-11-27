@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-import test_catalog as tc
+import catalogkit as tc
 from dock_host import approve
 from src import main, stdio
 from dock_host import store as store_mod

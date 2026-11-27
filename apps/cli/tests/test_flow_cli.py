@@ -21,7 +21,7 @@ from src.main import main
 from dock_host.inputs import InputSpec
 from dock_host.manifest import Command, Manifest, ManifestError
 from dock_host.process import PluginError
-from test_flow import GOOD, Recorder, make_store, manifest
+from flowkit import GOOD, Recorder, make_store, manifest
 
 
 class FlowCli(unittest.TestCase):
