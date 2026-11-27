@@ -67,7 +67,7 @@ class Handler(BaseHTTPRequestHandler):
         etag = q.get("etag", "strong")
         validators = []
         if etag != "none":
-            validators.append(("ETag", ('W/' if etag == "weak" else "") + f'"v{version}-{size}"'))
+            validators.append(("ETag", ("W/" if etag == "weak" else "") + f'"v{version}-{size}"'))
         if q.get("lm"):
             validators.append(("Last-Modified", formatdate(1_700_000_000 + version * 1000, usegmt=True)))
         have = dict(validators)
@@ -95,7 +95,11 @@ class Handler(BaseHTTPRequestHandler):
             end = int(q["drop_at"])
         if start and q.get("extra"):
             self.send_response(206)
-            for k, v in [("Content-Type", "application/octet-stream"), *extra, ("Transfer-Encoding", "chunked")]:
+            for k, v in [
+                ("Content-Type", "application/octet-stream"),
+                *extra,
+                ("Transfer-Encoding", "chunked"),
+            ]:
                 self.send_header(k, v)
             self.send_header("Connection", "close")
             self.end_headers()
@@ -115,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
         step = max(1, size // 40) if slow else CHUNK
         try:
             for i in range(start, end, step):
-                self.wfile.write(data[i:min(i + step, end)])
+                self.wfile.write(data[i : min(i + step, end)])
                 self.wfile.flush()
                 if slow:
                     time.sleep(slow / 40)
@@ -135,7 +139,9 @@ class Handler(BaseHTTPRequestHandler):
             self.body(json.dumps(LOG).encode())
             return
         REQUESTS.append(path)
-        LOG.append({"path": path, "range": self.headers.get("Range"), "if_range": self.headers.get("If-Range")})
+        LOG.append(
+            {"path": path, "range": self.headers.get("Range"), "if_range": self.headers.get("If-Range")}
+        )
         if path.startswith("/file/"):
             self.body(content(size))
         elif path == "/cd":
@@ -164,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
             self.head(200, [("Content-Type", "application/octet-stream")], size)
             try:
                 for i in range(0, size, step):
-                    self.wfile.write(data[i:i + step])
+                    self.wfile.write(data[i : i + step])
                     self.wfile.flush()
                     time.sleep(seconds / 20)
             except OSError:

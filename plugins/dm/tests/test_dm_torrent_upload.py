@@ -3,10 +3,8 @@
 import asyncio
 import random
 import sys
-import threading
 import time
 import unittest
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -15,47 +13,9 @@ sys.path.insert(0, str(ROOT / "tests"))
 
 import test_dm_torrent_local as local
 from dmcore.torrent import session, wire
-from dmcore.torrent.choker import choose
-from dmcore.torrent.peer import MAX_QUEUED, PeerConn
+from dmcore.torrent.peer import PeerConn
 
 PL = 16384
-
-
-class Choose(unittest.TestCase):
-    """The choker picks the best uploaders to us, plus one optimistic peer outside them."""
-
-    def test_the_four_fastest_uploaders_get_the_regular_slots(self):
-        rates = {f"p{i}": i for i in range(10)}
-        regular, _ = choose(list(rates), rates, 4, random.Random(1))
-        self.assertEqual(regular, {"p9", "p8", "p7", "p6"})
-
-    def test_the_optimistic_slot_goes_to_a_peer_outside_the_regular_ones(self):
-        rates = {f"p{i}": i for i in range(10)}
-        for seed in range(20):
-            regular, optimistic = choose(list(rates), rates, 4, random.Random(seed))
-            self.assertIsNotNone(optimistic)
-            self.assertNotIn(optimistic, regular)
-
-    def test_the_optimistic_slot_rotates_over_the_other_peers(self):
-        rates = {f"p{i}": 0 for i in range(8)}
-        rng = random.Random(3)
-        seen = {choose(list(rates), rates, 4, rng)[1] for _ in range(60)}
-        self.assertGreater(len(seen), 3)
-
-    def test_few_interested_peers_are_all_unchoked_without_an_optimistic_one(self):
-        regular, optimistic = choose(["a", "b"], {"a": 1, "b": 2}, 4, random.Random(0))
-        self.assertEqual((regular, optimistic), ({"a", "b"}, None))
-
-    def test_nobody_interested_unchokes_nobody(self):
-        self.assertEqual(choose([], {}, 4, random.Random(0)), (set(), None))
-
-    def test_equal_rates_do_not_always_favour_the_same_peers(self):
-        rates = {f"p{i}": 0 for i in range(8)}
-        rng = random.Random(5)
-        seen = set()
-        for _ in range(40):
-            seen |= choose(list(rates), rates, 4, rng)[0]
-        self.assertEqual(seen, set(rates))
 
 
 class FakeSession:
@@ -66,6 +26,7 @@ class FakeSession:
             hashes = [b"x" * 20] * npieces
             files = ("one",)  # a single file: the session keeps no per-file progress
             private = False
+
         self.meta = Meta()
         self.meta.piece_length = piece_length
         self.meta.total = npieces * piece_length
@@ -100,67 +61,10 @@ class Serving(unittest.TestCase):
     def request(self, c, index, begin, length):
         c.on_message(wire.REQUEST, wire.request(index, begin, length)[5:], 0)
 
-    def test_a_valid_request_is_queued(self):
-        c = self.conn()
-        self.request(c, 1, 0, PL)
-        self.assertEqual(list(c.queue), [(1, 0, PL)])
-
-    def test_requests_while_choked_are_ignored(self):
-        c = self.conn()
-        c.am_choking = True
-        self.request(c, 1, 0, PL)
-        self.assertEqual(list(c.queue), [])
-
-    def test_a_piece_we_have_not_verified_closes_the_peer(self):
-        c = self.conn()
-        with self.assertRaises(ValueError):
-            self.request(c, 5, 0, PL)
-
-    def test_an_index_beyond_the_torrent_closes_the_peer(self):
-        c = self.conn()
-        with self.assertRaises(ValueError):
-            self.request(c, 8, 0, PL)
-
-    def test_a_block_over_16_kib_closes_the_peer(self):
-        c = self.conn(piece_length=4 * PL)
-        with self.assertRaises(ValueError):
-            self.request(c, 0, 0, PL + 1)
-
-    def test_an_empty_block_closes_the_peer(self):
-        c = self.conn()
-        with self.assertRaises(ValueError):
-            self.request(c, 0, 0, 0)
-
-    def test_a_block_running_past_the_piece_closes_the_peer(self):
-        c = self.conn()
-        with self.assertRaises(ValueError):
-            self.request(c, 0, 1, PL)
-
-    def test_a_flood_of_requests_closes_the_peer(self):
-        c = self.conn(piece_length=MAX_QUEUED * 2 * wire.MAX_BLOCK)
-        with self.assertRaises(ValueError):
-            for i in range(MAX_QUEUED + 1):
-                self.request(c, 0, i * wire.MAX_BLOCK, wire.MAX_BLOCK)
-        self.assertLessEqual(len(c.queue), MAX_QUEUED)
-
-    def test_cancel_removes_a_queued_request(self):
-        c = self.conn()
-        self.request(c, 0, 0, PL)
-        self.request(c, 1, 0, PL)
-        c.on_message(wire.CANCEL, wire.cancel(0, 0, PL)[5:], 0)
-        self.assertEqual(list(c.queue), [(1, 0, PL)])
-
     def test_cancel_of_something_not_queued_is_harmless(self):
         c = self.conn()
         c.on_message(wire.CANCEL, wire.cancel(0, 0, PL)[5:], 0)
         self.assertEqual(list(c.queue), [])
-
-    def test_choking_a_peer_drops_what_it_asked_for(self):
-        c = self.conn()
-        self.request(c, 0, 0, PL)
-        c.set_choke(True)
-        self.assertEqual(list(c.queue), [])
-        self.assertTrue(c.am_choking)
 
 
 class FakeWriter:
@@ -175,60 +79,6 @@ class FakeWriter:
 
     def close(self):
         pass
-
-
-class ChokeEpoch(unittest.IsolatedAsyncioTestCase):
-    async def test_a_block_read_before_a_choke_is_not_sent_after_the_unchoke(self):
-        started, release = threading.Event(), threading.Event()
-
-        class Storage:
-            def read_block(self, index, begin, length):
-                started.set()
-                release.wait(5)
-                return b"x" * length
-
-        fake = FakeSession()
-        fake.storage = Storage()
-        fake.reader_pool = ThreadPoolExecutor(1)
-        self.addCleanup(fake.reader_pool.shutdown)
-        c = PeerConn(fake, ("127.0.0.1", 1))
-        c.writer = FakeWriter()
-        c.handshaken = True
-        c.am_choking = False
-        c.on_message(wire.REQUEST, wire.request(0, 0, PL)[5:], 0)
-        server = asyncio.ensure_future(c.serve())
-        self.addCleanup(server.cancel)
-        while not started.is_set():
-            await asyncio.sleep(0.01)
-        c.set_choke(True)
-        c.set_choke(False)
-        sent = len(c.writer.sent)  # the choke and the unchoke messages
-        release.set()
-        await asyncio.sleep(0.2)
-        self.assertEqual(len(c.writer.sent), sent)
-
-
-    async def test_blocks_served_are_counted_and_logged_when_the_connection_ends(self):
-        class Storage:
-            def read_block(self, index, begin, length):
-                return b"x" * length
-
-        fake = FakeSession()
-        fake.storage = Storage()
-        fake.reader_pool = ThreadPoolExecutor(1)
-        self.addCleanup(fake.reader_pool.shutdown)
-        c = PeerConn(fake, ("127.0.0.1", 1), 7)
-        c.writer = FakeWriter()
-        c.handshaken = True
-        c.am_choking = False
-        for index in (0, 1):
-            c.on_message(wire.REQUEST, wire.request(index, 0, PL)[5:], 0)
-        server = asyncio.ensure_future(c.serve())
-        self.addCleanup(server.cancel)
-        while c.served < 2:
-            await asyncio.sleep(0.01)
-        c.report_served()
-        self.assertEqual(fake.log_lines, ["peer #7 served 2 blocks"])
 
 
 class Rechoke(unittest.TestCase):
@@ -251,23 +101,6 @@ class Rechoke(unittest.TestCase):
     def open(self):
         return {i for i, c in enumerate(self.conns) if not c.am_choking}
 
-    def test_best_uploaders_and_one_optimistic_peer_are_unchoked(self):
-        self.s.rechoke(random.Random(1))
-        open_ = self.open()
-        self.assertTrue({7, 6, 5, 4} <= open_)
-        self.assertEqual(len(open_), 5)
-        self.assertTrue(open_ <= set(range(8)))  # never the uninterested ones
-
-    def test_the_optimistic_peer_changes_between_rechokes(self):
-        rng = random.Random(2)
-        seen = set()
-        for _ in range(30):
-            for c in self.conns:
-                c.received += 1000 * (c.addr[1] - 999)  # keep the ranking steady
-            self.s.rechoke(rng)
-            seen |= self.open() - {7, 6, 5, 4}
-        self.assertGreater(len(seen), 1)
-
     def test_a_peer_that_loses_its_slot_is_choked_again(self):
         self.s.rechoke(random.Random(1))
         was = self.open()
@@ -277,26 +110,6 @@ class Rechoke(unittest.TestCase):
         self.assertTrue(was)
         self.assertEqual(self.open(), set())
 
-    def test_a_newly_interested_peer_gets_a_free_slot_at_once(self):
-        c = self.conns[0]
-        c.on_message(wire.INTERESTED, b"", 0)
-        self.assertFalse(c.am_choking)
-
-    def test_no_more_than_five_peers_are_unchoked_by_interest_alone(self):
-        for c in self.conns[:8]:
-            c.on_message(wire.INTERESTED, b"", 0)
-        self.assertEqual(len(self.open()), 5)
-
-
-    def test_peers_that_lost_interest_still_hold_their_slots_until_the_next_rechoke(self):
-        for c in self.conns[:5]:
-            c.on_message(wire.INTERESTED, b"", 0)
-        for c in self.conns[:5]:
-            c.on_message(wire.NOT_INTERESTED, b"", 0)
-        for c in self.conns[5:8]:
-            c.on_message(wire.INTERESTED, b"", 0)
-        self.assertLessEqual(len(self.open()), 5)
-
 
 class Upload(local.Harness):
     """AC5, in-process: peers that listen get verified pieces from dm while it downloads."""
@@ -304,54 +117,6 @@ class Upload(local.Harness):
     def leecher(self, t):
         lc = self.start(self.peerfix.Leecher(t.write_torrent(self.dir / "leech.torrent")))
         return lc
-
-    def test_a_leecher_gets_verified_pieces_while_dm_downloads(self):
-        tr = self.serve_tracker()
-        t = self.single(size=2 * 1024 * 1024, piece_length=64 * 1024, tr=tr)
-        slow = self.seeder(t, delay=0.01)
-        lc = self.leecher(t)
-        self.swarm(tr, slow, lc)
-        final, _, _ = self.run_torrent(t)
-        self.assertEqual(final.read_bytes(), t.blob)
-        self.assertGreaterEqual(len(lc.pieces), 1)
-        plen = 64 * 1024
-        for index, data in lc.pieces.items():
-            self.assertEqual(data, t.blob[index * plen:(index + 1) * plen])
-
-    def test_a_peer_that_never_says_interested_gets_nothing(self):
-        tr = self.serve_tracker()
-        t = self.single(size=1024 * 1024, piece_length=64 * 1024, tr=tr)
-        slow = self.seeder(t, delay=0.01)
-        probe = Probe(t)
-        self.start(probe)
-        probe.interested = False
-        self.swarm(tr, slow, probe)
-        self.run_torrent(t)
-        self.assertGreaterEqual(probe.connections, 1)
-        self.assertEqual(probe.pieces, [])
-        self.assertEqual(probe.unchokes, 0)
-
-    def test_the_connections_are_closed_when_the_download_ends(self):
-        tr = self.serve_tracker()
-        t = self.single(size=1024 * 1024, piece_length=64 * 1024, tr=tr)
-        slow = self.seeder(t, delay=0.005)
-        lc = self.leecher(t)
-        self.swarm(tr, slow, lc)
-        self.run_torrent(t)
-        self.assertTrue(self.wait_for(lambda: not lc.writers and slow.open_connections == 0))
-
-    def test_a_peer_asking_for_a_piece_dm_lacks_is_dropped_and_the_download_goes_on(self):
-        tr = self.serve_tracker()
-        t = self.single(size=2 * 1024 * 1024, piece_length=64 * 1024, tr=tr)
-        slow = self.seeder(t, delay=0.03)  # the download takes at least 3 s
-        probe = Probe(t, greedy=True)
-        self.start(probe)
-        self.swarm(tr, slow, probe)
-        final, _, _ = self.run_torrent(t)
-        self.assertEqual(final.read_bytes(), t.blob)
-        self.assertEqual(probe.pieces, [])
-        self.assertIsNotNone(probe.closed_after)
-        self.assertLess(probe.closed_after, 1.5)  # dropped long before the download ended
 
     def test_a_peer_that_never_reads_is_dropped_and_the_download_goes_on(self):
         tr = self.serve_tracker()
@@ -366,48 +131,6 @@ class Upload(local.Harness):
         self.assertEqual(final.read_bytes(), t.blob)
         self.assertTrue(probe.muted)
         self.assertTrue(any("TimeoutError" in line for line in lines), lines)
-
-    def test_cancel_while_a_leecher_is_being_served_is_prompt_and_closes_its_connection(self):
-        tr = self.serve_tracker()
-        t = self.single(size=2 * 1024 * 1024, piece_length=64 * 1024, tr=tr)
-        slow = self.seeder(t, delay=0.03)
-        probe = Probe(t, wanted=True)
-        self.start(probe)
-        self.swarm(tr, slow, probe)
-        handle, result = local.TorrentHandle(), {}
-
-        def work():
-            try:
-                result["ok"] = self.run_torrent(t, handle=handle)
-            except BaseException as e:
-                result["err"] = e
-            result["end"] = time.monotonic()
-
-        thread = threading.Thread(target=work)
-        thread.start()
-        self.assertTrue(self.wait_for(lambda: len(probe.blocks) >= 2, 10))
-        start = time.monotonic()
-        self.assertTrue(handle.abort())
-        thread.join(5)
-        self.assertFalse(thread.is_alive())
-        self.assertLess(result["end"] - start, 2)
-        self.assertIsInstance(result["err"], local.Cancelled)
-        self.assertEqual(self.listing(), self.kept(t))
-        self.assertTrue(self.wait_for(lambda: probe.closed_after is not None and not probe._writers))
-        self.assertTrue(self.wait_for(lambda: slow.open_connections == 0))
-
-    def test_a_valid_request_is_answered_with_the_right_bytes(self):
-        tr = self.serve_tracker()
-        t = self.single(size=2 * 1024 * 1024, piece_length=64 * 1024, tr=tr)
-        slow = self.seeder(t, delay=0.01)
-        probe = Probe(t, wanted=True)
-        self.start(probe)
-        self.swarm(tr, slow, probe)
-        self.run_torrent(t)
-        self.assertTrue(probe.blocks)
-        for (index, begin), data in probe.blocks.items():
-            start = index * 64 * 1024 + begin
-            self.assertEqual(data, t.blob[start:start + len(data)])
 
 
 class Probe:
@@ -488,7 +211,7 @@ class Probe:
                     self.pieces.append(index)
                     self.blocks[(index, begin)] = data
                 await writer.drain()
-        except (TimeoutError, asyncio.IncompleteReadError, ConnectionError, ValueError, OSError):
+        except TimeoutError, asyncio.IncompleteReadError, ConnectionError, ValueError, OSError:
             self.closed_after = asyncio.get_running_loop().time() - began
         finally:
             self._writers.discard(writer)

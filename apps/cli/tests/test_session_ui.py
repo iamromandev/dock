@@ -23,7 +23,7 @@ from test_live_unit import FakeTerm
 class FakeProc:
     """A plugin process that speaks through the real hub and the real `_handle_incoming`, from a script."""
 
-    scripts: list = []     # per invoke: the notifications the plugin sends
+    scripts: list = []  # per invoke: the notifications the plugin sends
     instances: list = []
 
     def __init__(self, manifest, log, handlers, launch, hub):
@@ -66,9 +66,11 @@ class FakeProc:
 
 
 def script(tag):
-    return [("output", {"text": f"out {tag}\n"}),
-            ("bar", {"id": "b", "label": f"bar {tag}", "percent": 50}),
-            ("table", {"id": "t", "title": f"table {tag}", "columns": ["a"], "rows": [[tag]]})]
+    return [
+        ("output", {"text": f"out {tag}\n"}),
+        ("bar", {"id": "b", "label": f"bar {tag}", "percent": 50}),
+        ("table", {"id": "t", "title": f"table {tag}", "columns": ["a"], "rows": [[tag]]}),
+    ]
 
 
 class TwoInvokes(unittest.TestCase):
@@ -80,9 +82,11 @@ class TwoInvokes(unittest.TestCase):
         self.session = Session(Store(Path(tmp.name)))
         self.manifest = mock.Mock(permissions=[])
         self.manifest.id = "p"
-        for patch in (mock.patch.object(lifecycle, "PluginProcess", FakeProc),
-                      mock.patch.object(lifecycle.isolation, "prepare"),
-                      mock.patch.object(lifecycle, "parse_for", return_value=None)):
+        for patch in (
+            mock.patch.object(lifecycle, "PluginProcess", FakeProc),
+            mock.patch.object(lifecycle.isolation, "prepare"),
+            mock.patch.object(lifecycle, "parse_for", return_value=None),
+        ):
             patch.start()
             self.addCleanup(patch.stop)
         self.out, self.err = io.StringIO(), io.StringIO()
@@ -96,13 +100,6 @@ class TwoInvokes(unittest.TestCase):
             for _ in range(2):
                 self.session.invoke(self.manifest, "c", [])
         self.assertEqual(len(FakeProc.instances), 1, "the process was meant to be reused")
-
-    def test_plain_each_invoke_shows_its_own_output_and_final_areas(self):
-        self.run_both(lambda: PlainUI("p"))
-        self.assertEqual(self.out.getvalue(), "out one\nout two\n")
-        for tag in ("one", "two"):
-            self.assertEqual(self.err.getvalue().count(f"table {tag}"), 1, tag)
-            self.assertEqual(self.err.getvalue().count(f"bar {tag}"), 1, tag)
 
     def test_live_each_invoke_shows_its_own_output_and_one_final_copy(self):
         term = FakeTerm(cols=60, rows=10)

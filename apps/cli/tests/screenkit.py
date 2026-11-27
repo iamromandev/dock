@@ -66,7 +66,7 @@ class Screen:
                 if re.fullmatch(r"\x1b(\[[0-?]*[ -/]*)?", rest):  # may be completed by the next chunk
                     self._pending = rest
                     return
-                self.seqs.append(text[i:i + 2])
+                self.seqs.append(text[i : i + 2])
                 i += 2
                 continue
             i += 1
@@ -128,8 +128,11 @@ class Screen:
             self.row, self.col, self.wrap_pending = min(self.rows, row) - 1, min(self.cols, col) - 1, False
         elif final == "K":
             mode = nums[0] if nums else 0
-            lo, hi = {0: (self.col, len(self.grid[self.row])), 1: (0, self.col + 1),
-                      2: (0, len(self.grid[self.row]))}.get(mode, (0, 0))
+            lo, hi = {
+                0: (self.col, len(self.grid[self.row])),
+                1: (0, self.col + 1),
+                2: (0, len(self.grid[self.row])),
+            }.get(mode, (0, 0))
             for x in range(lo, hi):
                 self.grid[self.row][x] = " "
         elif final == "J":
