@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "invoke",
+  "params": {
+    "command": "run",
+    "cwd": "/tmp",
+    "inputs": {
+      "n": 1
+    },
+    "work": "/w",
+    "in_dir": "/in"
+  }
+}

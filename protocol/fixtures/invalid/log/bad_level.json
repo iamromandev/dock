@@ -1,0 +1,8 @@
+{
+  "jsonrpc": "2.0",
+  "method": "log",
+  "params": {
+    "level": "loud",
+    "message": "m"
+  }
+}

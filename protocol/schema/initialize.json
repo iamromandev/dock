@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/initialize.json",
+  "title": "initialize",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params",
+    "id"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "initialize"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "api_version",
+        "host",
+        "data_dir"
+      ],
+      "properties": {
+        "api_version": {
+          "type": "string"
+        },
+        "host": {
+          "type": "object",
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          }
+        },
+        "data_dir": {
+          "type": "string"
+        }
+      }
+    },
+    "id": {
+      "$ref": "common.json#/$defs/requestId"
+    }
+  }
+}

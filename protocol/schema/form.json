@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/form.json",
+  "title": "form",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params",
+    "id"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "form"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "fields"
+      ],
+      "properties": {
+        "title": {
+          "$ref": "common.json#/$defs/text"
+        },
+        "fields": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "label",
+              "type"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "text",
+                  "confirm",
+                  "choice"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "text"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "default": {
+                      "type": "string"
+                    },
+                    "secret": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "confirm"
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "default": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              },
+              {
+                "if": {
+                  "properties": {
+                    "type": {
+                      "const": "choice"
+                    }
+                  }
+                },
+                "then": {
+                  "required": [
+                    "choices"
+                  ],
+                  "properties": {
+                    "choices": {
+                      "type": "array",
+                      "maxItems": 256,
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "default": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "id": {
+      "$ref": "common.json#/$defs/requestId"
+    }
+  }
+}

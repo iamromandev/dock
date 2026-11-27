@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/bar.json",
+  "title": "bar",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "bar"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "id",
+        "percent"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "label": {
+          "$ref": "common.json#/$defs/text"
+        },
+        "percent": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "message": {
+          "$ref": "common.json#/$defs/text"
+        },
+        "done": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "not": {
+    "required": [
+      "id"
+    ]
+  }
+}

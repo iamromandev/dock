@@ -1,0 +1,10 @@
+{
+  "jsonrpc": "2.0",
+  "method": "bar",
+  "params": {
+    "label": "l",
+    "percent": null,
+    "message": "m",
+    "done": true
+  }
+}

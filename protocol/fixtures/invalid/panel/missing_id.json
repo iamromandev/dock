@@ -1,0 +1,17 @@
+{
+  "jsonrpc": "2.0",
+  "method": "panel",
+  "params": {
+    "title": "P",
+    "items": [
+      [
+        "k",
+        "v"
+      ],
+      [
+        "n",
+        3
+      ]
+    ]
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/invoke.json",
+  "title": "invoke",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params",
+    "id"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "invoke"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "command",
+        "args",
+        "cwd"
+      ],
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object"
+        },
+        "work": {
+          "type": "string"
+        },
+        "in_dir": {
+          "type": "string"
+        }
+      }
+    },
+    "id": {
+      "$ref": "common.json#/$defs/requestId"
+    }
+  }
+}

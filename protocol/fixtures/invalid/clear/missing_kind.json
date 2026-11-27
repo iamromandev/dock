@@ -1,0 +1,7 @@
+{
+  "jsonrpc": "2.0",
+  "method": "clear",
+  "params": {
+    "id": "b"
+  }
+}

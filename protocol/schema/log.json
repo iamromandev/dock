@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/log.json",
+  "title": "log",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "log"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "level",
+        "message"
+      ],
+      "properties": {
+        "level": {
+          "enum": [
+            "debug",
+            "info",
+            "warn",
+            "error"
+          ]
+        },
+        "message": {
+          "$ref": "common.json#/$defs/text"
+        }
+      }
+    }
+  },
+  "not": {
+    "required": [
+      "id"
+    ]
+  }
+}

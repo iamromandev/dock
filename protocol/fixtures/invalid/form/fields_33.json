@@ -1,0 +1,174 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "form",
+  "params": {
+    "fields": [
+      {
+        "name": "f0",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f1",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f2",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f3",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f4",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f5",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f6",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f7",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f8",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f9",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f10",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f11",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f12",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f13",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f14",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f15",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f16",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f17",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f18",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f19",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f20",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f21",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f22",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f23",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f24",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f25",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f26",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f27",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f28",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f29",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f30",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f31",
+        "label": "L",
+        "type": "text"
+      },
+      {
+        "name": "f32",
+        "label": "L",
+        "type": "text"
+      }
+    ]
+  }
+}

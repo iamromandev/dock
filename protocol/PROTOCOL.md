@@ -93,7 +93,7 @@ A manifest that uses a removed feature fails the install: `provides` and `requir
 |---------------|-----------------------------------------------|-----------------------|-------|
 | `initialize`  | `{api_version, host:{name,version}, data_dir}` | `{name, ...}`         | Always first. `data_dir` is a private, persistent folder for the plugin. |
 | `invoke`      | `{command, args: [string], cwd, inputs?, work?}`| `{exit_code: int, ...}` | Run one command. The result may carry extra fields next to `exit_code`; `exit_code` stays required, and a host that does not know a field ignores it. The result may carry an optional `outputs` object of JSON values (for example `{"files": ["/w/a.zip"]}`), used by hosts that chain commands (flows) to pass one command's results to the next; a host that does not know it ignores it, and this is still protocol v2. A cancelled call always ends with `-32800`. `args` are the raw CLI args after the command name; the plugin may parse them, or use `inputs` (see Typed inputs). Resolve relative paths in `args` against `cwd` (the user's directory), not the plugin's own. |
-| `shutdown`    | `{}`                                          | `{}`                  | Plugin should exit after replying. Host kills it after a timeout. |
+| `shutdown`    | `{}`                                          | `{}`                  | Plugin must exit at once after replying, with code 0, without waiting for stdin to close, and must write nothing more to stdout. Host kills it after a timeout (the CLI waits 3 s; the conformance checker allows 5 s). |
 
 ## Host → plugin notifications
 

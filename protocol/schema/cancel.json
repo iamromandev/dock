@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/cancel.json",
+  "title": "cancel",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "cancel"
+    },
+    "params": {
+      "type": "object",
+      "required": [],
+      "properties": {}
+    }
+  },
+  "not": {
+    "required": [
+      "id"
+    ]
+  }
+}

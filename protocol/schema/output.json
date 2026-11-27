@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/output.json",
+  "title": "output",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "output"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "text"
+      ],
+      "properties": {
+        "text": {
+          "$ref": "common.json#/$defs/text"
+        }
+      }
+    }
+  },
+  "not": {
+    "required": [
+      "id"
+    ]
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/panel.json",
+  "title": "panel",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "panel"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "id",
+        "items"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "title": {
+          "$ref": "common.json#/$defs/text"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": {
+              "$ref": "common.json#/$defs/scalar"
+            }
+          }
+        }
+      }
+    }
+  },
+  "not": {
+    "required": [
+      "id"
+    ]
+  }
+}

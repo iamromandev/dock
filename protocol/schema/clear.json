@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/clear.json",
+  "title": "clear",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "clear"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "bar",
+            "table",
+            "panel"
+          ]
+        }
+      }
+    }
+  },
+  "not": {
+    "required": [
+      "id"
+    ]
+  }
+}

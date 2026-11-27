@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "api_version": "2",
+    "data_dir": "/tmp/data"
+  }
+}

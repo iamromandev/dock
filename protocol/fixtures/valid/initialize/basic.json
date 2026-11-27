@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "api_version": "2",
+    "host": {
+      "name": "dock",
+      "version": "1"
+    },
+    "data_dir": "/tmp/data"
+  }
+}
