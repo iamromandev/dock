@@ -29,11 +29,11 @@ class TerminalWithoutATty(unittest.TestCase):
         except BlockingIOError:
             return ""
 
-    def test_size_falls_back_to_80_by_24_when_the_output_is_no_terminal(self):
-        self.assertEqual(self.term.size(), (80, 24))
-
-    def test_write_to_a_closed_terminal_is_not_an_error(self):
-        Terminal(fd_in=self.null, fd_out=self.null).write("hello")  # a read-only fd: every write fails
+    def test_size_falls_back_and_a_write_to_a_closed_terminal_is_not_an_error(self):
+        with self.subTest("size"):
+            self.assertEqual(self.term.size(), (80, 24))  # the output is no terminal
+        with self.subTest("write"):
+            Terminal(fd_in=self.null, fd_out=self.null).write("hello")  # a read-only fd: every write fails
 
     def test_modes_do_nothing_and_do_not_fail_without_a_terminal(self):
         self.term.install()

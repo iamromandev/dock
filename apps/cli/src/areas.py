@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from src import uimsg
+from dock_host import uimsg
+
 from src.textwidth import width
 
 BAR_CELLS = 20

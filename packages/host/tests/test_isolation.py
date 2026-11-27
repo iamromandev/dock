@@ -18,9 +18,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src import isolation
-from src.manifest import Manifest, ManifestError
-from src.store import Store
+from dock_host import isolation
+from dock_host.manifest import Manifest, ManifestError
+from dock_host.store import Store
 
 BASE = """\
 id = "dev.dock.sample"
@@ -167,8 +167,8 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
     """AC19 / NFR1: the one `Popen` in src/process.py is only ever given a `<runtime> run` command line."""
 
     def test_every_plugin_argv_given_to_popen_is_the_runtime_then_run(self):
-        from src import process
-        from src.lifecycle import Session
+        from dock_host import process
+        from dock_host.lifecycle import Session
 
         dockenv.prebuild_plugins(ROOT / "tests" / "fixtures" / "probe")
         self.store.install(ROOT / "tests" / "fixtures" / "probe")
@@ -180,7 +180,7 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
             seen.append(list(argv))
             return real_popen(argv, *args, **kw)
 
-        class Proxy:  # src.process's view of `subprocess`, with only Popen watched
+        class Proxy:  # dock_host.process's view of `subprocess`, with only Popen watched
             Popen = staticmethod(spy)
 
             def __getattr__(self, name):
@@ -220,11 +220,8 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
                     "form": self.form,
                 }
 
-        with (
-            mock.patch.object(process, "subprocess", Proxy()),
-            mock.patch("src.lifecycle.make_ui", side_effect=lambda *a, **k: UI()),
-        ):
-            session = Session(self.store)
+        with mock.patch.object(process, "subprocess", Proxy()):
+            session = Session(self.store, lambda _id: UI())
             try:
                 self.assertEqual(session.invoke(self.store.get("dev.dock.probe"), "echoargs", ["Ada"]), 0)
                 session.invoke(self.store.get("dev.dock.probe"), "code", ["0"])  # a second call: same process
@@ -309,7 +306,7 @@ FIXTURES = ROOT / "tests" / "fixtures"
 
 
 class DockIsolated(RecordingRuntimeCase):
-    """Real `python3 -m src` runs against the real runtime, recorded."""
+    """Fixture plugins built once in the real runtime, with a recording wrapper around it."""
 
     PLUGINS = (FIXTURES / "uiprobe", FIXTURES / "probe")
 
@@ -321,10 +318,6 @@ class DockIsolated(RecordingRuntimeCase):
         super().setUp()
         for path in self.PLUGINS:
             self.store.install(path)
-        self.work = self.tmp / "work dir"  # a space: paths must stay single arguments
-        self.work.mkdir()
-        self.env = {**os.environ, "DOCK_HOME": str(self.store.home), "PYTHONPATH": str(ROOT)}
-
     def plugin_copy(self, src: Path, plugin_id: str, edit=None) -> Path:
         """A copy of a fixture under its own id (so its image is the test's own), optionally edited first."""
         copies = self.tmp / "copies"
@@ -334,33 +327,6 @@ class DockIsolated(RecordingRuntimeCase):
         if edit:
             edit(copy)
         return copy
-
-    def dock(self, *args, stdin="", env=None):
-        return subprocess.run(
-            [sys.executable, "-m", "src", *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            env=env or self.env,
-            cwd=self.work,
-            timeout=180,
-            check=False,
-            **dockenv.SIGINT_DEFAULT,
-        )
-
-    def spawn(self, *args):
-        p = subprocess.Popen(
-            [sys.executable, "-m", "src", *args],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=self.env,
-            cwd=self.work,
-            **dockenv.SIGINT_DEFAULT,
-        )
-        self.addCleanup(p.kill)
-        return p
 
     def run_calls(self):
         return self.calls("run")

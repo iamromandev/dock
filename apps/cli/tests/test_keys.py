@@ -24,11 +24,9 @@ class ReadKey(unittest.TestCase):
             out.append(key)
         return out
 
-    def test_invalid_utf8_is_dropped_not_fatal(self):
-        self.assertEqual(self.keys(b"\xffa\xc3"), ["a"])
-
-    def test_unknown_sequences_are_dropped_and_reading_goes_on(self):
-        self.assertEqual(self.keys(b"\x1b[99~x\x1b[200~y\x1b[?1;2cz"), ["x", "y", "z"])
+    def test_bad_input_is_dropped_and_reading_goes_on(self):
+        self.assertEqual(self.keys(b"\xffa\xc3"), ["a"])  # invalid utf-8 is not fatal
+        self.assertEqual(self.keys(b"\x1b[99~x\x1b[200~y\x1b[?1;2cz"), ["x", "y", "z"])  # unknown sequences
 
 
 if __name__ == "__main__":

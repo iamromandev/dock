@@ -8,8 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src import API_VERSION
-from src.inputs import InputSpec, specs_from_toml
+from dock_host import API_VERSION
+from dock_host.inputs import InputSpec, specs_from_toml
 
 
 class ManifestError(Exception):

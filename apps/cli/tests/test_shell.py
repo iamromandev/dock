@@ -17,9 +17,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src.lifecycle import Session
-from src.store import Store
-from src.ui import PlainUI
+from dock_host.store import Store
 
 PROMPT = "dock> "
 
@@ -216,7 +214,7 @@ class ShellE2E(unittest.TestCase):
     def _shell_obj(self):
         sys.path.insert(0, str(ROOT))
         from src.shell import Shell
-        from src.store import Store
+        from dock_host.store import Store
 
         return Shell(Store(Path(self.home)), None)
 
@@ -262,40 +260,6 @@ class ShellE2E(unittest.TestCase):
     # ---- exit paths, built-ins ----------------------------------
 
     # ---- idle reaping ---------------------------------------------------------------
-
-
-class SessionUnit(unittest.TestCase):
-    """Session behaviour that needs no subprocess of the test to observe."""
-
-    @classmethod
-    def setUpClass(cls):
-        dockenv.prebuild_plugins(PROBE)
-
-    def setUp(self):
-        self.home = dockenv.make_home("dock-session-", PROBE)
-        self.store = Store(self.home)
-        self.session = Session(self.store)
-        self.addCleanup(self.session.close)
-
-    def test_drain_pending(self):
-        manifest = self.store.get("dev.dock.probe")
-        with self.subTest("returns once nothing is pending"):
-            self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
-            proc = self.session.start(manifest, PlainUI(manifest.id))
-            proc.pending.add(99)  # a reply that never comes
-            started = time.monotonic()
-            self.assertFalse(self.session.drain_pending(started + 0.3))
-            self.assertGreaterEqual(time.monotonic() - started, 0.3)
-            proc.pending.clear()
-            self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
-        with self.subTest("collects a reply that arrives before the deadline"):
-            proc = self.session.start(manifest, PlainUI(manifest.id))
-            proc.pending.add(99)
-            threading.Timer(
-                0.2, lambda: self.session.hub.inbox.put((proc, "msg", {"id": 99, "result": {}}))
-            ).start()
-            self.assertTrue(self.session.drain_pending(time.monotonic() + 5))
-            self.assertEqual(proc.pending, set())
 
 
 class ShellUnit(unittest.TestCase):

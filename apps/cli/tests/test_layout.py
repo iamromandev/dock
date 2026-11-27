@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from src import uimsg
+from dock_host import uimsg
 from src.areas import Area
 from src.live import layout
 from src.textwidth import width

@@ -13,8 +13,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from src import isolation, term
-from src.manifest import Manifest
+from dock_host import isolation, threads
+from dock_host.manifest import Manifest
 
 
 class PluginError(Exception):
@@ -24,6 +24,10 @@ class PluginError(Exception):
 
 
 CANCELLED = -32800
+
+
+class Cancelled(KeyboardInterrupt):
+    """`Session.cancel()` reached a host that is waiting: it ends the wait exactly as Ctrl-C does."""
 
 
 LOG_TEXT_MAX = 120
@@ -48,8 +52,12 @@ class Hub:
     """
 
     def __init__(self):
-        self.inbox: queue.Queue = queue.Queue()  # (process, kind, message)
+        # (process, kind, message); process is None for "cancel", whose message is its number (Session.cancel).
+        # A SimpleQueue: put() is safe from any thread and from a signal handler.
+        self.inbox: queue.SimpleQueue = queue.SimpleQueue()
+        self.floor = 0                           # cancels numbered up to this one are from before the operation: stale
         self.replies: dict = {}                  # (process, id) -> reply that arrived while waiting on something else
+        self.waiting = False                     # the host is waiting on a plugin: a cancel request counts only then
 
     def pump(self, timeout: float | None) -> bool:
         """Take one message from the inbox and act on it; False if none came within `timeout`."""
@@ -57,6 +65,10 @@ class Hub:
             proc, kind, msg = self.inbox.get(timeout=timeout)
         except queue.Empty:
             return False
+        if kind == "cancel":  # Session.cancel(), from any thread: the same as Ctrl-C while waiting, else nothing
+            if self.waiting and msg > self.floor:
+                raise Cancelled
+            return True
         if kind == "eof":
             proc.exited = True
         elif proc.forgotten:
@@ -126,8 +138,8 @@ class PluginProcess:
         except BaseException:
             self._log.close()  # no process, so no stop() will ever close it
             raise
-        self._reader = term.thread(self._read_loop)
-        self._writer = term.thread(self._write_loop)
+        self._reader = threads.thread(self._read_loop)
+        self._writer = threads.thread(self._write_loop)
 
     def alive(self) -> bool:
         return not self.exited and self.proc is not None and self.proc.poll() is None

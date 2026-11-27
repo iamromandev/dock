@@ -11,7 +11,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src import main, shell
-from src.store import Store
+from dock_host.store import Store
+from src.ui import PlainUI
 
 
 class FakeTerminal:
@@ -103,7 +104,7 @@ class ShellStart(unittest.TestCase):
         self.assertEqual(self.start(False, True), 0)
         self.assertEqual(FakeTerminal.instances, [])
         [sh] = self.shells
-        self.assertIsNone(sh.session.term)
+        self.assertIsInstance(sh.session.ui_factory("p"), PlainUI)
         self.assertIs(sh.input_fn, input)
 
 

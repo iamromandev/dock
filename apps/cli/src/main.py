@@ -11,12 +11,15 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from src import __version__, approve, catalog, isolation, lifecycle, paths, uimsg
-from src.inputs import UsageError, parse_for
-from src.manifest import Manifest, ManifestError
-from src.store import Store, staged
+from dock_host import __version__, approve, catalog, isolation, lifecycle, uimsg
+from dock_host.inputs import UsageError, parse_for
+from dock_host.manifest import Manifest, ManifestError
+from dock_host.store import Store, staged
+
+from src import paths
+from src.stdio import ask_stdin, tty
 from src.term import Terminal
-from src.ui import live_mode
+from src.ui import live_mode, make_ui
 
 SERVE_REMOVED = "dock: serve was removed; run commands with 'dock <command>' or 'dock shell'"
 
@@ -123,6 +126,11 @@ def installed_manifest(store: Store, plugin_id: str) -> Manifest | None:
         return None
 
 
+def _approver(yes: bool, interactive: bool | None, ask: Callable[[str], str | None] | None,
+              store: Store) -> approve.Approver:
+    return approve.Approver(yes, tty() if interactive is None else interactive, ask or ask_stdin, store.notice)
+
+
 def cmd_plugin_install(store: Store, args: list[str], stop: Callable[[str], object] | None = None,
                        interactive: bool | None = None, ask: Callable[[str], str | None] | None = None) -> int:
     """Install a folder or catalog plugin; ask first when it asks for permissions or env it is not yet granted."""
@@ -148,7 +156,7 @@ def cmd_plugin_install(store: Store, args: list[str], stop: Callable[[str], obje
                 line = f"{new.id} {index[new.id]['version']} → {new.version} adds: {', '.join(add)}"
             else:
                 line = f"{new.id} {new.version} asks for: {', '.join(add)}"
-            decision = approve.Approver(yes, interactive, ask).decide(line, "Install it? [y/N] ")
+            decision = _approver(yes, interactive, ask, store).decide(line, "Install it? [y/N] ")
             if decision == "no":
                 print("not installed")
                 return 1
@@ -173,7 +181,7 @@ def cmd_plugin_update(store: Store, args: list[str], stop: Callable[[str], objec
     if not ids and not store.index():
         print("no plugins installed")
         return 0
-    approver = approve.Approver(yes, interactive, ask)
+    approver = _approver(yes, interactive, ask, store)
     failed = changed = False
     for c in catalog.check_updates(store, ids):
         if c.status == "update":
@@ -332,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
         if term is not None:
             term.install()
         try:
-            return lifecycle.run(store, manifest, command, argv[1:], verbose=verbose, term=term)
+            return lifecycle.run(store, manifest, command, argv[1:], lambda pid: make_ui(pid, verbose, term), verbose=verbose)
         finally:
             if term is not None:
                 term.close()

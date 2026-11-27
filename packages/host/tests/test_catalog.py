@@ -4,9 +4,7 @@ No test here needs a container runtime (the NoRuntime class proves dock never ca
 """
 
 import json
-import os
 import shutil
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -18,9 +16,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src import catalog
-from src.manifest import ManifestError
-from src.store import Store
+from dock_host import catalog
+from dock_host.manifest import ManifestError
+from dock_host.store import Store
 
 REAL_BUILTIN_DIR = catalog.builtin_dir  # before any test patches it
 
@@ -208,7 +206,7 @@ FAKE_RUNTIME = "#!/bin/sh\necho \"$@\" >> '{log}'\nexit 1\n"
 
 
 class CliCase(TmpCase):
-    """`python -m src` in a throwaway DOCK_HOME whose container runtime is a script that records its calls."""
+    """A throwaway DOCK_HOME whose container runtime is a script that records its calls."""
 
     def setUp(self):
         super().setUp()
@@ -217,13 +215,6 @@ class CliCase(TmpCase):
         self.runtime.write_text(FAKE_RUNTIME.format(log=self.log))
         self.runtime.chmod(0o755)
         self.config(f'[container]\nruntime = "{self.runtime}"\n')
-        self.env = {
-            **os.environ,
-            "DOCK_HOME": str(self.home),
-            "PYTHONPATH": str(ROOT),
-            "DOCK_NO_READLINE": "1",
-            "HOME": str(self.tmp),
-        }
         self.hello = greeter(self.cat)
         self.outside = greeter(
             self.tmp / "outside"
@@ -233,19 +224,6 @@ class CliCase(TmpCase):
     def catalog_config(self, *folders):
         dockenv.add_config(
             self.home, "[catalog]\npaths = [" + ", ".join(json.dumps(str(f)) for f in folders) + "]\n"
-        )
-
-    def dock(self, *args, stdin="", env=None):
-        return subprocess.run(
-            [sys.executable, "-m", "src", *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=env or self.env,
-            cwd=self.tmp,
-            timeout=60,
-            **dockenv.SIGINT_DEFAULT,
         )
 
     def runtime_calls(self):
@@ -296,11 +274,11 @@ class BuiltIn(TmpCase):
 
     def test_builtin_dir_needs_the_checkout_marker(self):  # catches: trusting any parents[3]/plugins
         (self.tmp / "other" / "plugins").mkdir(parents=True)
-        here = self.tmp / "other" / "apps" / "cli" / "src" / "catalog.py"
+        here = self.tmp / "other" / "packages" / "host" / "dock_host" / "catalog.py"
         here.parent.mkdir(parents=True)
         here.write_text("")
         self.assertEqual(REAL_BUILTIN_DIR(here), self.tmp / "other" / "plugins")
-        lone = self.tmp / "lone" / "a" / "b" / "src" / "catalog.py"
+        lone = self.tmp / "lone" / "a" / "b" / "dock_host" / "catalog.py"
         (self.tmp / "lone" / "plugins").mkdir(parents=True)
         lone.parent.mkdir(parents=True)
         lone.write_text("")

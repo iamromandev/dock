@@ -14,11 +14,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src import isolation, paths
+from src import paths
 from src import main as main_mod
-from src.manifest import ManifestError
-from src.store import Store
-import test_catalog as tc
+from dock_host.manifest import ManifestError
+from dock_host.store import Store
+import catalogkit as tc
 
 
 class PathsCase(unittest.TestCase):
@@ -58,7 +58,12 @@ class Config(PathsCase):
 
 
 class InFolder(PathsCase):
-    def test_plugin_list_works_with_a_stale_config_in_and_an_fs_read_in_plugin_names_it(self):
+    def test_config_in_is_named_as_its_source(self):
+        # bug: the label the host names in its "in folder" errors (isolation.in_folder) silently changes
+        self.conf(f'[paths]\nin = "{self.user}/nope"\n')
+        self.assertEqual(paths.resolve(self.store, None, None).in_source, "[paths] in")
+
+    def test_plugin_list_works_with_a_stale_config_in(self):
         self.conf(f'[paths]\nin = "{self.user}/nope"\n')
         with (
             mock.patch.dict(os.environ, {"DOCK_HOME": str(self.home)}),
@@ -66,16 +71,6 @@ class InFolder(PathsCase):
             mock.patch("sys.stderr", new_callable=io.StringIO) as err,
         ):
             self.assertEqual(main_mod.main(["plugin", "list"]), 0, err.getvalue())
-        import dataclasses
-        from src.manifest import Manifest
-
-        m = dataclasses.replace(
-            Manifest.load(tc.make_plugin(self.user, "rd", "dev.t.rd")), permissions=["fs:read:in"]
-        )
-        store = mock.Mock(dirs=paths.resolve(self.store, None, None, cwd=self.user), home=self.home)
-        with self.assertRaises(ManifestError) as cm:
-            isolation.in_folder(store, m, str(self.user))
-        self.assertIn("[paths] in", str(cm.exception))
 
 
 class MainWiring(PathsCase):

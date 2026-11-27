@@ -10,10 +10,11 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
+from dock_host.uimsg import sanitize
+
 from src import keys
 from src.term import Terminal
 from src.textwidth import cut, width
-from src.uimsg import sanitize
 
 
 def _w(c: str) -> int:

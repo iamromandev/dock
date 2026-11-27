@@ -6,15 +6,16 @@ import os
 import shlex
 import sys
 
-from src import __version__, isolation
+from dock_host import __version__, isolation
+from dock_host.inputs import UsageError
+from dock_host.lifecycle import Session
+from dock_host.manifest import ManifestError
+from dock_host.store import Store
+from dock_host.uimsg import sanitize
+
 from src.editor import LineEditor
-from src.inputs import UsageError
-from src.lifecycle import Session
-from src.manifest import ManifestError
-from src.store import Store
 from src.term import Terminal
-from src.ui import live_mode
-from src.uimsg import sanitize
+from src.ui import live_mode, make_ui
 
 PROMPT = "dock> "
 BUILTINS = ["help", "version", "plugin", "search", "status", "exit", "quit"]
@@ -198,12 +199,12 @@ def start(store: Store, verbose: bool) -> int:
         term = Terminal()
         term.install()
         try:
-            shell = Shell(store, Session(store, verbose, term), readline=readline, verbose=verbose)
+            shell = Shell(store, Session(store, lambda pid: make_ui(pid, verbose, term), verbose=verbose), readline=readline, verbose=verbose)
             shell.input_fn = LineEditor(term, _history(readline), shell.candidates).readline
             return shell.loop()
         finally:
             term.close()
-    shell = Shell(store, Session(store, verbose), readline=readline, verbose=verbose)
+    shell = Shell(store, Session(store, lambda pid: make_ui(pid, verbose), verbose=verbose), readline=readline, verbose=verbose)
     if readline is not None:
         readline.set_completer(shell.complete)
     return shell.loop()

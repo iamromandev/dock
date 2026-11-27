@@ -14,13 +14,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from src import catalog, flow_cli, paths
+from dock_host import catalog, flow
+from src import flow_cli, paths
 from src.main import main
 
-from src.inputs import InputSpec
-from src.manifest import Command, Manifest, ManifestError
-from src.process import PluginError
-from test_flow import GOOD, Recorder, make_store, manifest
+from dock_host.inputs import InputSpec
+from dock_host.manifest import Command, Manifest, ManifestError
+from dock_host.process import PluginError
+from flowkit import GOOD, Recorder, make_store, manifest
 
 
 class FlowCli(unittest.TestCase):
@@ -101,8 +102,13 @@ class FlowCli(unittest.TestCase):
         made = []
 
         class FakeSession:
-            def __init__(self, store, verbose=False, term=None, work_dir=None):
+            def __init__(self, store, ui_factory, *, verbose=False, work_dir=None):
                 made.append(work_dir)
+
+            cancelled = False
+
+            def begin(self):
+                pass
 
             def invoke_inputs(self, manifest, command, inputs):
                 return {"exit_code": 0, "outputs": {"files": ["f"]}}
@@ -164,6 +170,23 @@ class FlowCli(unittest.TestCase):
                 self.assertEqual(code, 130)
                 self.assertIn("flow interrupted at step 1", err)
                 self.assertNotIn("flow failed", err)
+        with self.subTest("cancel between steps"):  # bug: a cancel() between two steps is lost and the rest runs
+            f = flow_cli._load(self.file)
+            cancelled, calls = [], []
+
+            def step_one_then_cancel(plugin_id, command, inputs):
+                calls.append(command)
+                cancelled.append(True)  # Session.cancel() arrives as step 1 returns
+                return {"exit_code": 0, "outputs": {"files": ["/w/a.zip"]}}
+
+            def run(runner, **kw):
+                return flow.run(f, {"url": "u"}, runner, self.dir, lambda line: None, **kw)
+
+            got = run(step_one_then_cancel, cancelled=lambda: bool(cancelled))
+            ctrl_c = run(Recorder({"exit_code": 0, "outputs": {"files": ["/w/a.zip"]}}, KeyboardInterrupt()))
+            self.assertEqual(calls, ["dm"])  # the second step never ran
+            self.assertEqual(got, ctrl_c)
+            self.assertTrue(got.interrupted)
 
     def test_unreadable_or_invalid_file_is_an_error(self):
         code, _, err, _ = self.go(["check", str(self.dir / "missing.toml")])
@@ -397,7 +420,7 @@ class RealStoreInstall(unittest.TestCase):
     """dock do with a real Store, real staging and a real plugin folder copied from plugins/dm."""
 
     def setUp(self):
-        from src.store import Store
+        from dock_host.store import Store
 
         self.dir = Path(tempfile.mkdtemp(prefix="dock-real-")).resolve()
         self.addCleanup(__import__("shutil").rmtree, self.dir, ignore_errors=True)

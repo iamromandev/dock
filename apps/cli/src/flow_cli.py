@@ -11,12 +11,16 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from src import approve, catalog, flow, isolation, paths, uimsg
-from src.inputs import InputSpec, UsageError, check_values
-from src.lifecycle import Session
-from src.manifest import Manifest, ManifestError
-from src.process import PluginError
-from src.store import Store, staged
+from dock_host import approve, catalog, flow, isolation, uimsg
+from dock_host.inputs import InputSpec, UsageError, check_values
+from dock_host.lifecycle import Session
+from dock_host.manifest import Manifest, ManifestError
+from dock_host.process import PluginError
+from dock_host.store import Store, staged
+
+from src import paths
+from src.stdio import ask_stdin
+from src.ui import make_ui
 
 BRAIN_ID = "dev.dock.brain"
 
@@ -88,7 +92,7 @@ def _confirm(f: flow.Flow, source: Path, cwd: Path, yes: bool, interactive: bool
     if not interactive:
         _err("dock: flow: needs a terminal to ask on; rerun with --yes to approve")
         return False
-    ask = ask or approve._ask_stdin
+    ask = ask or ask_stdin
     while True:
         answer = ask("Run this flow? [y/N/s] ")
         word = answer.strip().lower() if answer is not None else ""
@@ -177,7 +181,8 @@ def _open(store: Store, runner: flow.StepRunner | None, verbose: bool, work: Pat
     if runner is not None:
         return runner, None
     isolation.sweep(store)
-    session = Session(store, verbose, work_dir=work)
+    session = Session(store, lambda pid: make_ui(pid, verbose), verbose=verbose, work_dir=work)
+    session.begin()  # one operation for the whole flow: a cancel() before it is stale, one after it stops the flow
     return _session_runner(store, session), session
 
 
@@ -192,7 +197,7 @@ def _run(f: flow.Flow, params: dict, store: Store, runner: flow.StepRunner | Non
     session: Session | None = None
     try:
         runner, session = _open(store, runner, verbose, work)
-        return _execute(f, params, store, runner, work, keep)
+        return _execute(f, params, store, runner, work, keep, session)
     except KeyboardInterrupt:
         _err(f"work folder kept: {uimsg.sanitize(str(work))}")
         return 130
@@ -201,9 +206,11 @@ def _run(f: flow.Flow, params: dict, store: Store, runner: flow.StepRunner | Non
             session.close()
 
 
-def _execute(f: flow.Flow, params: dict, store: Store, runner: flow.StepRunner, work: Path, keep: bool) -> int:
+def _execute(f: flow.Flow, params: dict, store: Store, runner: flow.StepRunner, work: Path, keep: bool,
+             session: Session | None = None) -> int:
     shown = uimsg.sanitize(str(work))
-    result = flow.run(f, params, runner, work, lambda line: _err(uimsg.sanitize(line)), store)
+    result = flow.run(f, params, runner, work, lambda line: _err(uimsg.sanitize(line)), store,
+                      (lambda: session.cancelled) if session is not None else None)
     if result.ok and not keep:
         shutil.rmtree(work, ignore_errors=True)
     elif not result.ok:
@@ -430,7 +437,7 @@ def cmd_do(store: Store, args: list[str], runner: flow.StepRunner | None = None,
             if not _install_missing(missing, copies, store):
                 shutil.rmtree(work, ignore_errors=True)
                 return 1
-        return _execute(f, {}, store, runner, work, keep)
+        return _execute(f, {}, store, runner, work, keep, session)
     except KeyboardInterrupt:
         _err(f"work folder kept: {shown}")
         return 130

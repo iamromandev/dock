@@ -8,10 +8,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src import flow
-from src.flow import Flow, FlowError, Step
-from src.inputs import InputSpec
-from src.manifest import Command, ContainerRun, Manifest, ManifestError
+from dock_host import flow
+from dock_host.flow import Flow, FlowError, Step
+from dock_host.inputs import InputSpec
+from dock_host.manifest import Command, ContainerRun, Manifest, ManifestError
 
 GOOD = """
 [params.url]

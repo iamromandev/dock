@@ -1,9 +1,6 @@
 """Typed command inputs: unit tests (declarations, parsing) and e2e. Run `make test`."""
 
-import os
-import subprocess
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -11,7 +8,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from src.inputs import InputSpec, UsageError, check_values, parse_args, specs_from_toml
+from dock_host.inputs import InputSpec, UsageError, check_values, parse_args, specs_from_toml
 
 FETCH = [
     {"name": "url", "type": "string", "required": True},
@@ -42,7 +39,7 @@ class DeclarationTests(unittest.TestCase):
             specs_from_toml("fetch", raw)
         self.assertEqual(str(cm.exception), f"command 'fetch': input '{name}': {reason}")
 
-    def test_bad_type_or_default_is_refused(self):
+    def test_bad_declaration_is_refused(self):  # type, default, flag and short
         cases = [
             ("unknown type", [{"name": "x", "type": "path"}], "unknown type 'path'"),
             ("missing type", [{"name": "x"}], "missing 'type'"),
@@ -92,12 +89,7 @@ class DeclarationTests(unittest.TestCase):
                 "bool inputs cannot be required",
             ),
         ]
-        for label, raw, reason in cases:
-            with self.subTest(label):
-                self.bad(raw, reason)
-
-    def test_bad_flag_or_short_is_refused(self):
-        cases = [
+        cases += [
             (
                 "duplicate flag",
                 [{"name": "a", "type": "int", "flag": "--x"}, {"name": "x", "type": "int", "flag": "--x"}],
@@ -194,32 +186,6 @@ container = {{ cmd = "python3", args = ["/plugin/main.py"] }}
 name = "fetch"
 inputs = [ {inputs} ]
 """
-
-
-class DockCase(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.home = tempfile.mkdtemp(prefix="dock-home-")
-        cls.env = {**os.environ, "DOCK_HOME": cls.home, "PYTHONPATH": str(ROOT)}
-        r = cls.dock("plugin", "install", str(ROOT / "tests" / "fixtures" / "probe"))
-        assert r.returncode == 0, r.stderr
-
-    @classmethod
-    def dock(cls, *args, stdin=""):
-        return subprocess.run(
-            [sys.executable, "-m", "src", *args],
-            input=stdin,
-            capture_output=True,
-            text=True,
-            check=False,
-            env=cls.env,
-            cwd=ROOT,
-            timeout=120,
-        )
-
-    def starts(self):
-        log = Path(self.home) / "logs" / "dev.dock.probe.log"
-        return log.read_text().count(" start ") if log.exists() else 0
 
 
 if __name__ == "__main__":

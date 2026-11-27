@@ -18,8 +18,8 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from src import API_VERSION
-from src.manifest import Manifest, ManifestError
+from dock_host import API_VERSION
+from dock_host.manifest import Manifest, ManifestError
 
 LABEL = "dev.dock.owner"            # value: <hostname>:<pid> of the dock process that owns the container
 ENV_ALLOW = ("LANG", "TZ")  # the only host variables a container sees (never PATH: the image has its own)
@@ -220,7 +220,7 @@ def ensure_image(cfg: Config, store, m: Manifest, force: bool = False) -> None:
             return
 
     log_path = store.log_path(m.id)
-    print(f"dock: building image {tag} …", file=sys.stderr, flush=True)
+    store.notice(f"dock: building image {tag} …")
     with open(log_path, "a", encoding="utf-8") as log:
         log.write(f"\n--- {time.strftime('%Y-%m-%d %H:%M:%S')} build {tag}\n")
         log.flush()
@@ -253,12 +253,12 @@ def forget_image(store, m: Manifest) -> None:
     try:
         runtime = resolve_runtime(config(store), store)
     except ManifestError as e:
-        print(stale.format(why=str(e).replace("\n", " ")), file=sys.stderr)
+        store.notice(stale.format(why=str(e).replace("\n", " ")))
         return
     try:
         subprocess.run([runtime, "image", "rm", "-f", tag], capture_output=True, timeout=REMOVE_TIMEOUT, check=False)
     except (OSError, subprocess.TimeoutExpired) as e:
-        print(stale.format(why=f"{runtime_label(runtime)} did not answer: {e}"), file=sys.stderr)
+        store.notice(stale.format(why=f"{runtime_label(runtime)} did not answer: {e}"))
 
 
 def runtime_label(runtime: str) -> str:

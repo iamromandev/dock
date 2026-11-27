@@ -3,7 +3,7 @@
   [catalog] paths = ["~/plugins", "/opt/dock-plugins"]
 
 Only plugin.toml files are read (through Manifest.load); nothing is built, started or copied. This module takes
-the Store as an argument and never imports src.store (which imports this module).
+the Store as an argument and never imports dock_host.store (which imports this module).
 """
 
 from __future__ import annotations
@@ -11,19 +11,19 @@ from __future__ import annotations
 import difflib
 import os
 import re
-import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.manifest import Manifest, ManifestError
+from dock_host.manifest import Manifest, ManifestError
 
 CONFIG_KEYS = ("paths",)
 _NAME = "catalog"
 
 
-def _warn(msg: str) -> None:
-    print(f"dock: {msg}", file=sys.stderr)
+def _warner(store) -> Callable[[str], None]:
+    """The default warning: the store's notice, with the `dock: ` prefix."""
+    return lambda msg: store.notice(f"dock: {msg}")
 
 
 def paths(store) -> list[Path]:
@@ -73,21 +73,22 @@ def _candidates(entry: Path) -> list[Path]:
 def builtin_dir(here: Path | None = None) -> Path | None:
     """<repo>/plugins of the checkout dock runs from; None when there is none (a packaged install).
 
-    The checkout is recognised by apps/cli/src/catalog.py being this very file, so an unrelated
+    The checkout is recognised by packages/host/dock_host/catalog.py being this very file, so an unrelated
     <three folders up>/plugins is not trusted. `here` is this file's path (tests give another)."""
     here = here or Path(__file__).resolve()
     repo = here.parents[3]
-    marker = repo / "apps" / "cli" / "src" / "catalog.py"
+    marker = repo / "packages" / "host" / "dock_host" / "catalog.py"
     if not marker.is_file() or marker.resolve() != here:
         return None
     folder = repo / "plugins"
     return folder if folder.is_dir() else None
 
 
-def load(store, warn: Callable[[str], None] = _warn) -> list[Available]:
+def load(store, warn: Callable[[str], None] | None = None) -> list[Available]:
     """Every readable plugin of the catalog, in scan order; one warning per entry or plugin that is skipped.
 
     The [catalog] paths come first, then the built-in plugins folder (silently skipped when missing)."""
+    warn = warn or _warner(store)
     found: list[Available] = []
     seen: set[Path] = set()
     entries = paths(store)
@@ -141,7 +142,7 @@ def _matches(words: list[str], name: str, summary: str, keywords) -> bool:
     return all(any(w in f for f in fields) for w in words)
 
 
-def search(store, words: list[str], warn: Callable[[str], None] = _warn) -> list[Match]:
+def search(store, words: list[str], warn: Callable[[str], None] | None = None) -> list[Match]:
     """Commands of installed and catalog plugins for which every word is in the name, summary or a keyword."""
     words = [w.lower() for w in words]
     index = store.index()
@@ -176,7 +177,7 @@ def _install_target(a: Available, by_id: dict[str, list[Available]]) -> str:
     return a.manifest.id if len(by_id[a.manifest.id]) == 1 else str(a.folder)
 
 
-def hint(store, command: str, warn: Callable[[str], None] = _warn) -> str | None:
+def hint(store, command: str, warn: Callable[[str], None] | None = None) -> str | None:
     """The 'unknown command' message naming the catalog plugins that have `command`; None when none has it."""
     available = load(store, warn)
     by_id: dict[str, list[Available]] = {}
@@ -204,7 +205,7 @@ def hint(store, command: str, warn: Callable[[str], None] = _warn) -> str | None
     return f"unknown command '{command}'. Not installed, in the catalog: {each}"
 
 
-def find(store, plugin_id: str, warn: Callable[[str], None] = _warn) -> Available | None:
+def find(store, plugin_id: str, warn: Callable[[str], None] | None = None) -> Available | None:
     """The one catalog plugin with this id; None when there is none; ManifestError when several folders have it."""
     owners = sorted((a for a in load(store, warn) if a.manifest.id == plugin_id), key=lambda a: str(a.folder))
     if len(owners) > 1:
@@ -237,10 +238,11 @@ class Check:
     message: str | None = None  # the warning (skip) or error text
 
 
-def check_updates(store, ids: list[str], warn: Callable[[str], None] = _warn) -> list[Check]:
+def check_updates(store, ids: list[str], warn: Callable[[str], None] | None = None) -> list[Check]:
     """Compare installed plugins (all, or `ids`) with the catalog; sorted by id, nothing is written."""
     if not paths(store):
         raise ManifestError(f"no catalog folders configured ([catalog] paths in {store.home / 'config.toml'})")
+    warn = warn or _warner(store)
     index = store.index()
     named = bool(ids)
     wanted = sorted(set(ids)) if named else sorted(index)

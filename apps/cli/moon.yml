@@ -2,6 +2,7 @@ id: "cli"
 language: "python"
 layer: "application"
 tags: ["host"]
+dependsOn: ["host"]
 
 fileGroups:
   sources: ["src/**/*"]
@@ -36,13 +37,13 @@ tasks:
     script: "uv run ruff check . && uv run ty check ."
     deps: ["sync"]
     # ty resolves the CLI tests' imports through plugins/dm and its tests (pyproject extra-paths), so dm is an input.
-    inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*"]
+    inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*", "/packages/host/**/*"]
   test:
     # Needs Docker or podman, and stops at once without one. The images are built from plugins/ and
     # tests/fixtures/, both inputs, so a cached pass is never for a stale image.
     script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run pytest"
     deps: ["sync"]
-    inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*", "$DOCK_TEST_RUNTIME", "$DOCK_LIVE_DHT"]
+    inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*", "$DOCK_TEST_RUNTIME", "$DOCK_LIVE_DHT", "/packages/host/**/*"]
 
   coverage:
     # The test task under coverage (subprocesses included) with per-test contexts; writes coverage.json and coverage.txt.
