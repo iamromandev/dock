@@ -47,8 +47,10 @@ def runtime() -> str | None:
 def _reaches_daemon(rt: str) -> bool:
     if rt not in _reachable:
         try:
-            _reachable[rt] = subprocess.run([rt, "info"], capture_output=True, timeout=60, check=False).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
+            _reachable[rt] = (
+                subprocess.run([rt, "info"], capture_output=True, timeout=60, check=False).returncode == 0
+            )
+        except OSError, subprocess.TimeoutExpired:
             _reachable[rt] = False
     return _reachable[rt]
 
@@ -93,10 +95,6 @@ def container_exists(name: str) -> bool:
     return bool(r.stdout.strip())
 
 
-def image_exists(tag: str) -> bool:
-    return run_runtime("image", "inspect", tag).returncode == 0
-
-
 def calls_in(log: Path) -> list[list[str]]:
     """The argv lists a recording runtime saw (without the runtime itself)."""
     if not Path(log).exists():
@@ -115,8 +113,13 @@ def _rt(rt: str | None) -> str:
 
 def container_running(cid: str, rt: str | None = None) -> bool:
     """Is a container with this id (a prefix is enough: Docker's hostname is the short id) running?"""
-    r = subprocess.run([_rt(rt), "ps", "-q", "--no-trunc", "--filter", f"id={cid}"],
-                       capture_output=True, text=True, timeout=60, check=False)
+    r = subprocess.run(
+        [_rt(rt), "ps", "-q", "--no-trunc", "--filter", f"id={cid}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
     return bool(r.stdout.strip())
 
 
@@ -129,10 +132,6 @@ def wait_container_gone(cid: str, timeout: float = 15.0, rt: str | None = None) 
     return True
 
 
-def kill_container(cid: str, rt: str | None = None) -> None:
-    subprocess.run([_rt(rt), "kill", cid], capture_output=True, timeout=60, check=False)
-
-
 def prebuild(home: Path, plugin_ids: list[str]) -> None:
     """`dock plugin build <id>` for each installed plugin, once per process and image: tests then never wait for a build."""
     env = {**os.environ, "DOCK_HOME": str(home), "PYTHONPATH": str(ROOT)}
@@ -142,8 +141,15 @@ def prebuild(home: Path, plugin_ids: list[str]) -> None:
         key = (require_runtime(), tag)
         if key in _built:
             continue
-        r = subprocess.run([sys.executable, "-m", "src", "plugin", "build", plugin_id], env=env, cwd=ROOT,
-                           capture_output=True, text=True, timeout=BUILD_TIMEOUT, check=False)
+        r = subprocess.run(
+            [sys.executable, "-m", "src", "plugin", "build", plugin_id],
+            env=env,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=BUILD_TIMEOUT,
+            check=False,
+        )
         if r.returncode != 0:
             raise RuntimeError(f"plugin build {plugin_id} failed: {r.stderr}{r.stdout}")
         _built.add(key)
@@ -153,22 +159,6 @@ def add_config(home: Path, text: str) -> None:
     """Add settings to a home's config.toml without losing the runtime that `write_config` put there."""
     with open(Path(home) / "config.toml", "a") as f:
         f.write("\n" + text)
-
-
-def wait_clients_gone(home: Path, timeout: float = 15.0) -> bool:
-    """Wait until no `<runtime> run` client of this DOCK_HOME is left on the host.
-
-    A killed container ends its client a moment later; until then dock still counts the plugin as running.
-    """
-    marker = str(home)
-    end = time.monotonic() + timeout
-    while True:
-        out = subprocess.run(["ps", "-axo", "args="], capture_output=True, text=True, check=False).stdout
-        if not any(marker in line and " run " in line for line in out.splitlines()):
-            return True
-        if time.monotonic() >= end:
-            return False
-        time.sleep(0.1)
 
 
 def make_home(prefix: str, *plugin_dirs: Path) -> Path:
@@ -188,7 +178,9 @@ def make_home(prefix: str, *plugin_dirs: Path) -> Path:
     for path in plugin_dirs:
         store.install(path)
     rt = runtime()
-    if rt:  # a class that starts a plugin has called require_runtime() already, which fails clearly without one
+    if (
+        rt
+    ):  # a class that starts a plugin has called require_runtime() already, which fails clearly without one
         write_config(home, rt)
     return home
 

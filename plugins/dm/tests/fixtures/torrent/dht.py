@@ -53,10 +53,32 @@ except ImportError:  # run straight from the repository
     from dmcore.torrent.dht.table import RoutingTable
 
 K = 8
-MODES = ("silent", "oversize", "garbage", "deep", "flood", "self", "bad-addrs", "many-nodes", "many-values",
-         "dup-replies", "spoof", "wrong-tid", "late", "empty", "private")
-PRIVATE = ["10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "240.0.0.1",
-           "198.18.0.1"]
+MODES = (
+    "silent",
+    "oversize",
+    "garbage",
+    "deep",
+    "flood",
+    "self",
+    "bad-addrs",
+    "many-nodes",
+    "many-values",
+    "dup-replies",
+    "spoof",
+    "wrong-tid",
+    "late",
+    "empty",
+    "private",
+)
+PRIVATE = [
+    "10.0.0.1",
+    "172.16.0.1",
+    "192.168.1.1",
+    "169.254.169.254",
+    "100.64.0.1",
+    "240.0.0.1",
+    "198.18.0.1",
+]
 
 
 def compact_node(node_id, addr):
@@ -89,20 +111,33 @@ class _Node(asyncio.DatagramProtocol):
         try:
             msg, _ = bencode.decode(data)
             kind = msg[b"y"]
-        except (bencode.BencodeError, KeyError, TypeError):
+        except bencode.BencodeError, KeyError, TypeError:
             return
         if kind != b"q":
             net.dm_replies.append({"node": self.index, "src": addr})
             return
         args = msg.get(b"a") if isinstance(msg.get(b"a"), dict) else {}
         method = msg.get(b"q", b"").decode("latin-1")
-        net.queries.append({"node": self.index, "method": method, "ro": msg.get(b"ro"), "src": addr,
-                            "tid": msg.get(b"t"), "args": args, "time": time.monotonic()})
+        net.queries.append(
+            {
+                "node": self.index,
+                "method": method,
+                "ro": msg.get(b"ro"),
+                "src": addr,
+                "tid": msg.get(b"t"),
+                "args": args,
+                "time": time.monotonic(),
+            }
+        )
         if net.probe and addr not in self.probed:
             self.probed.add(addr)
             announce = {"info_hash": self.id, "port": 1, "token": b"x"}
-            for m, a in (("ping", {}), ("find_node", {"target": self.id}),
-                         ("get_peers", {"info_hash": self.id}), ("announce_peer", announce)):
+            for m, a in (
+                ("ping", {}),
+                ("find_node", {"target": self.id}),
+                ("get_peers", {"info_hash": self.id}),
+                ("announce_peer", announce),
+            ):
                 body = {"id": self.id, **a}
                 self.transport.sendto(bencode.encode({"t": b"pb", "y": b"q", "q": m, "a": body}), addr)
         body = self.answer(method, args, addr)
@@ -154,21 +189,33 @@ class _Node(asyncio.DatagramProtocol):
             body = {"id": self.id, "nodes": compact_node(self.id, self.net.addrs[self.index])}
         elif mode == "bad-addrs":
             rnd = self.net.rng
-            bad = [("0.0.0.0", 6881), ("255.255.255.255", 6881), ("224.0.0.1", 6881), ("1.2.3.4", 0),
-                   ("0.5.5.5", 80)]
+            bad = [
+                ("0.0.0.0", 6881),
+                ("255.255.255.255", 6881),
+                ("224.0.0.1", 6881),
+                ("1.2.3.4", 0),
+                ("0.5.5.5", 80),
+            ]
             body = {"id": self.id, "nodes": b"".join(compact_node(rnd.randbytes(20), a) for a in bad)}
         elif mode == "empty":
             body = {"id": self.id}
         elif mode == "private":
             rnd = self.net.rng
-            body = {"id": self.id, "token": b"x",
-                    "nodes": b"".join(compact_node(rnd.randbytes(20), (ip, 6881)) for ip in PRIVATE),
-                    "values": [compact_peer((ip, 51413)) for ip in PRIVATE]}
+            body = {
+                "id": self.id,
+                "token": b"x",
+                "nodes": b"".join(compact_node(rnd.randbytes(20), (ip, 6881)) for ip in PRIVATE),
+                "values": [compact_peer((ip, 51413)) for ip in PRIVATE],
+            }
         elif mode == "many-nodes":
             rnd = self.net.rng
-            body = {"id": self.id, "nodes": b"".join(
-                compact_node(rnd.randbytes(20), ("127.0.0.1", rnd.randrange(20000, 60000)))
-                for _ in range(55))}
+            body = {
+                "id": self.id,
+                "nodes": b"".join(
+                    compact_node(rnd.randbytes(20), ("127.0.0.1", rnd.randrange(20000, 60000)))
+                    for _ in range(55)
+                ),
+            }
         message = {"t": tid, "y": "r", "r": body}
         if mode == "oversize":
             message["zz"] = b"x" * 3000
@@ -184,23 +231,26 @@ class _Node(asyncio.DatagramProtocol):
         if mode == "spoof":
             self.alt.sendto(data, addr)
         elif mode == "late":
-            self.net.timers.append(asyncio.get_running_loop().call_later(
-                self.net.late_delay, self.transport.sendto, data, addr))
+            self.net.timers.append(
+                asyncio.get_running_loop().call_later(self.net.late_delay, self.transport.sendto, data, addr)
+            )
         elif mode == "dup-replies":
             for _ in range(50):
                 self.transport.sendto(data, addr)
         elif mode == "flood":
             self.transport.sendto(data, addr)
             for _ in range(300):
-                self.transport.sendto(bencode.encode({"t": self.net.rng.randbytes(4), "y": "r",
-                                                      "r": {"id": self.id}}), addr)
+                self.transport.sendto(
+                    bencode.encode({"t": self.net.rng.randbytes(4), "y": "r", "r": {"id": self.id}}), addr
+                )
         else:
             self.transport.sendto(data, addr)
 
 
 class DhtNetwork:
-    def __init__(self, n=50, modes=None, info_hash=None, peers=(), probe=False, late_delay=0.5, seed=1,
-                 verbose=False):
+    def __init__(
+        self, n=50, modes=None, info_hash=None, peers=(), probe=False, late_delay=0.5, seed=1, verbose=False
+    ):
         self.rng = random.Random(seed)
         self.secret = self.rng.randbytes(8)
         self.probe = probe
@@ -229,7 +279,8 @@ class DhtNetwork:
             node = _Node(self, i, self.rng.randbytes(20), self.modes.get(i))
             port = port_base + i if port_base else 0
             transport, _ = await loop.create_datagram_endpoint(
-                lambda node=node: node, local_addr=(host, port))
+                lambda node=node: node, local_addr=(host, port)
+            )
             alt, _ = await loop.create_datagram_endpoint(asyncio.DatagramProtocol, local_addr=(host, 0))
             node.alt = alt
             self._transports += [transport, alt]
@@ -278,9 +329,12 @@ class DhtNetwork:
             if big:
                 body["nodes"] = b"".join(
                     compact_node(self.rng.randbytes(20), ("8.%d.%d.1" % (j, i % 250 + 1), 6881))
-                    for j in range(16))
-                body["values"] = [compact_peer(("9.%d.%d.%d" % (j // 250, j % 250 + 1, i % 250 + 1), 51413))
-                                  for j in range(100)]
+                    for j in range(16)
+                )
+                body["values"] = [
+                    compact_peer(("9.%d.%d.%d" % (j // 250, j % 250 + 1, i % 250 + 1), 51413))
+                    for j in range(100)
+                ]
                 body["token"] = b"t" * 8
             data = bencode.encode({"t": self.rng.randbytes(8), "y": "r", "r": body})
             self._transports[i % len(self._transports)].sendto(data, addr)

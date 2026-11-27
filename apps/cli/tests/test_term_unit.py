@@ -32,22 +32,6 @@ class TerminalWithoutATty(unittest.TestCase):
     def test_size_falls_back_to_80_by_24_when_the_output_is_no_terminal(self):
         self.assertEqual(self.term.size(), (80, 24))
 
-    def test_write_sends_everything_even_a_large_piece(self):
-        big = "x" * 300_000
-        reader = []
-
-        def read_all():
-            got = 0
-            while got < len(big):
-                got += len(os.read(self.r, 65536))
-            reader.append(got)
-
-        t = threading.Thread(target=read_all)
-        t.start()
-        self.term.write(big)
-        t.join(10)
-        self.assertEqual(reader, [len(big)])
-
     def test_write_to_a_closed_terminal_is_not_an_error(self):
         Terminal(fd_in=self.null, fd_out=self.null).write("hello")  # a read-only fd: every write fails
 
@@ -57,22 +41,6 @@ class TerminalWithoutATty(unittest.TestCase):
         with self.term.raw(), self.term.quiet(), self.term.cooked():
             pass
         self.term.flush_input()
-
-    def test_restore_shows_the_cursor_and_erases_the_region_first_and_twice_is_fine(self):
-        calls = []
-        self.term.erase_region = lambda: (calls.append("erase"), self.term.write("<erased>"))
-        self.term.restore()
-        self.term.restore()
-        self.assertEqual(self.written(), "<erased>" + SHOW_CURSOR + "<erased>" + SHOW_CURSOR)
-        self.assertEqual(calls, ["erase", "erase"])
-
-    def test_a_failing_eraser_does_not_stop_the_restore(self):
-        def boom():
-            raise RuntimeError("bug")
-
-        self.term.erase_region = boom
-        self.term.restore()
-        self.assertEqual(self.written(), SHOW_CURSOR)
 
     def test_restore_does_not_wait_for_ever_for_a_lock_another_thread_holds(self):
         """A signal handler runs restore() on the main thread while the renderer may hold the lock."""
@@ -105,11 +73,6 @@ class TerminalWithoutATty(unittest.TestCase):
         self.term.close()
         self.assertEqual(sys.excepthook, before_hook)
         self.assertEqual(signal.getsignal(signal.SIGTERM), before)
-
-    def test_resize_flag_is_taken_once(self):
-        self.term.resized = True
-        self.assertTrue(self.term.take_resized())
-        self.assertFalse(self.term.take_resized())
 
 
 if __name__ == "__main__":

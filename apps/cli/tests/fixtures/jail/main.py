@@ -32,17 +32,19 @@ def invoke(command, args, cwd, in_dir):
         try:
             with open(os.path.join(in_dir, args[0]), encoding="utf-8") as f:
                 output(f.read())
-        except (OSError, TypeError):
+        except OSError, TypeError:
             output("unreadable")
     elif command == "writein":  # tries to overwrite, create and delete in the in folder; prints what worked
         done = []
-        for what, act in (("overwrite", lambda: open(os.path.join(in_dir, args[0]), "w").close()),
-                          ("create", lambda: open(os.path.join(in_dir, "new.txt"), "w").close()),
-                          ("delete", lambda: os.remove(os.path.join(in_dir, args[0])))):
+        for what, act in (
+            ("overwrite", lambda: open(os.path.join(in_dir, args[0]), "w").close()),
+            ("create", lambda: open(os.path.join(in_dir, "new.txt"), "w").close()),
+            ("delete", lambda: os.remove(os.path.join(in_dir, args[0]))),
+        ):
             try:
                 act()
                 done.append(what)
-            except (OSError, TypeError):
+            except OSError, TypeError:
                 pass
         output("denied" if not done else "allowed:" + ",".join(done))
     elif command == "writecwd":  # creates a file in the cwd; prints whether it worked
@@ -67,7 +69,9 @@ for line in sys.stdin:
     if method == "initialize":
         send({"id": msg_id, "result": {"name": "jail"}})
     elif method == "invoke":
-        code = invoke(params["command"], list(params.get("args", [])), params.get("cwd", "."), params.get("in_dir"))
+        code = invoke(
+            params["command"], list(params.get("args", [])), params.get("cwd", "."), params.get("in_dir")
+        )
         send({"id": msg_id, "result": {"exit_code": code}})
     elif method == "shutdown":
         send({"id": msg_id, "result": {}})

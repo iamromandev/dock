@@ -38,7 +38,9 @@ except ImportError:  # run straight from the repository
 
 BLOCK = wire.MAX_BLOCK
 HUGE = 64 * 1024 * 1024  # a metadata_size no honest torrent has
-JUNK = 10 * 1024 * 1024 - 2 * BLOCK  # just under the biggest metadata dm accepts, leaving room for an honest two blocks
+JUNK = (
+    10 * 1024 * 1024 - 2 * BLOCK
+)  # just under the biggest metadata dm accepts, leaving room for an honest two blocks
 _ANSWERING = ("honest", "corrupt", "short", "extra", "junk", "sybil")  # modes that answer metadata requests
 
 
@@ -80,9 +82,23 @@ def _hs_info_hash(head):
 
 
 class Seeder:
-    def __init__(self, corrupt=None, unrequested=False, never_unchoke=False, delay=0.0, metadata="honest",
-                 ext_body=None, ext_noise=0, metadata_delay=0.0, sybil_size=BLOCK * 2, ext_delay=0.0,
-                 pex_peers=None, pex_mode="normal", pex_id=1, pex_advertise=True):
+    def __init__(
+        self,
+        corrupt=None,
+        unrequested=False,
+        never_unchoke=False,
+        delay=0.0,
+        metadata="honest",
+        ext_body=None,
+        ext_noise=0,
+        metadata_delay=0.0,
+        sybil_size=BLOCK * 2,
+        ext_delay=0.0,
+        pex_peers=None,
+        pex_mode="normal",
+        pex_id=1,
+        pex_advertise=True,
+    ):
         # pex_peers: [(host, port)] sent to dm in one ut_pex after the extension handshake (None: we do not
         # speak ut_pex). pex_mode: "normal", "twice" (the same message again at once), "flood" (1000 addresses
         # made up from pex_peers' host), "garbage" (not bencode), "early" (before the handshake, then a valid one after it),
@@ -182,7 +198,7 @@ class Seeder:
         """The bytes we answer a request for `piece` with (empty: no such block), per mode."""
         if self.metadata in ("junk", "sybil"):  # a full-size set of the right block lengths and no meaning
             return b"j" * max(0, min(BLOCK, size - piece * BLOCK))
-        block = content.info[piece * BLOCK:(piece + 1) * BLOCK]
+        block = content.info[piece * BLOCK : (piece + 1) * BLOCK]
         if self.metadata == "corrupt" and block:
             block = bytes([block[0] ^ 0xFF]) + block[1:]
         if self.metadata == "short" and block:  # one byte missing: not the length the size implies
@@ -217,8 +233,14 @@ class Seeder:
                     if self.pex_mode == "early":
                         writer.write(self.pex_message())
                 size = self.announced_size(content)
-                writer.write(wire.extended(0, self.ext_body if self.ext_body is not None else bencode.encode(
-                    {"m": ids, "metadata_size": size, "v": "test seeder"})))
+                writer.write(
+                    wire.extended(
+                        0,
+                        self.ext_body
+                        if self.ext_body is not None
+                        else bencode.encode({"m": ids, "metadata_size": size, "v": "test seeder"}),
+                    )
+                )
                 if self.ext_noise:
                     writer.write(wire.extended(99, b"\x00" * self.ext_noise))
                 if self.pex_peers is not None:
@@ -241,7 +263,9 @@ class Seeder:
                     if payload[0] == 0:
                         their_ut = metadata.parse_ext_handshake(payload[1:]).ut_metadata
                         self.dm_ids.append(bencode.decode(payload[1:])[0].get(b"m"))
-                    elif payload[0] in (self.pex_id, 4) and self.pex_peers is not None:  # a ut_pex id: dm must never use it
+                    elif (
+                        payload[0] in (self.pex_id, 4) and self.pex_peers is not None
+                    ):  # a ut_pex id: dm must never use it
                         self.pex_received += 1
                     elif payload[0] == 2 and self.metadata != "none":
                         kind, piece, _, _ = metadata.parse_metadata_msg(payload[1:])
@@ -252,8 +276,11 @@ class Seeder:
                         if self.metadata_delay:
                             await asyncio.sleep(self.metadata_delay)
                         if self.metadata in _ANSWERING and their_ut:
-                            writer.write(metadata.data_msg(their_ut, piece, size, block)
-                                         if block else metadata.reject_msg(their_ut, piece))
+                            writer.write(
+                                metadata.data_msg(their_ut, piece, size, block)
+                                if block
+                                else metadata.reject_msg(their_ut, piece)
+                            )
                             if self.metadata == "extra" and block:  # blocks nobody asked for
                                 writer.write(metadata.data_msg(their_ut, piece, size, block))
                                 writer.write(metadata.data_msg(their_ut, 99, size, block))
@@ -277,7 +304,7 @@ class Seeder:
                         data = bytes([data[0] ^ 0xFF]) + data[1:]
                     writer.write(wire.piece(index, begin, data))
                     await writer.drain()
-        except (TimeoutError, ConnectionError, asyncio.IncompleteReadError, ValueError, OSError):
+        except TimeoutError, ConnectionError, asyncio.IncompleteReadError, ValueError, OSError:
             pass
         finally:
             self.open_connections -= 1
@@ -368,7 +395,7 @@ class MetadataProbe:
                             self.blocks[piece] = data
         except asyncio.IncompleteReadError:
             self.eof = True
-        except (TimeoutError, ConnectionError, ValueError, OSError):
+        except TimeoutError, ConnectionError, ValueError, OSError:
             pass
         finally:
             self.writers.discard(writer)
@@ -396,8 +423,12 @@ class Leecher:
     async def announce(self):
         for tier in self.meta.trackers:
             try:
-                await tracker.announce(tier[0], tracker.Announce(
-                    self.meta.info_hash, self.peer_id, self.port, 0, 0, self.meta.total, "started"))
+                await tracker.announce(
+                    tier[0],
+                    tracker.Announce(
+                        self.meta.info_hash, self.peer_id, self.port, 0, 0, self.meta.total, "started"
+                    ),
+                )
                 break
             except tracker.TrackerError:
                 continue
@@ -478,7 +509,14 @@ class Leecher:
                             if hashlib.sha1(blob).digest() == meta.hashes[index]:
                                 self.pieces[index] = blob
                 await ask()
-        except (TimeoutError, ConnectionError, asyncio.IncompleteReadError, ValueError, OSError, asyncio.CancelledError):
+        except (
+            TimeoutError,
+            ConnectionError,
+            asyncio.IncompleteReadError,
+            ValueError,
+            OSError,
+            asyncio.CancelledError,
+        ):
             pass
         finally:
             self.writers.discard(writer)

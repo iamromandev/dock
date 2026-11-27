@@ -64,9 +64,19 @@ class Tracker:
         return sorted(p for p in self.swarm.get(info_hash, ()) if p != me)
 
     def _record(self, proto, info_hash, peer_id, ip, port, left, event, extra=None):
-        self.announces.append({"proto": proto, "info_hash": info_hash, "peer_id": peer_id, "ip": ip,
-                               "port": port, "left": left, "event": event, "time": time.monotonic(),
-                               **(extra or {})})
+        self.announces.append(
+            {
+                "proto": proto,
+                "info_hash": info_hash,
+                "peer_id": peer_id,
+                "ip": ip,
+                "port": port,
+                "left": left,
+                "event": event,
+                "time": time.monotonic(),
+                **(extra or {}),
+            }
+        )
         peers = self.swarm.setdefault(info_hash, set())
         if event == "stopped":
             peers.discard((ip, port))
@@ -93,7 +103,7 @@ class Tracker:
                 await asyncio.sleep(self.delay.get(params.get("event", b"").decode(), 0))
             writer.write(f"HTTP/1.0 {status}\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
             await writer.drain()
-        except (TimeoutError, ConnectionError, asyncio.IncompleteReadError, ValueError, IndexError):
+        except TimeoutError, ConnectionError, asyncio.IncompleteReadError, ValueError, IndexError:
             pass
         finally:
             writer.close()
@@ -103,14 +113,23 @@ class Tracker:
         port = int(params.get("port", b"0") or 0)
         event = params.get("event", b"").decode()
         left = int(params.get("left", b"0") or 0)
-        self._record("http", info_hash, params.get("peer_id", b""), ip, port, left, event,
-                     {"query": query, "compact": params.get("compact", b"") == b"1"})
+        self._record(
+            "http",
+            info_hash,
+            params.get("peer_id", b""),
+            ip,
+            port,
+            left,
+            event,
+            {"query": query, "compact": params.get("compact", b"") == b"1"},
+        )
         if self.mode == "fail":
             return bencode.encode({"failure reason": self.reason})
         peers = self._peers_for(info_hash, (ip, port))
         if self.mode == "dict":
-            plist = [{"ip": host.encode(), "port": p, "peer id": b"-XX0000-" + b"0" * 12}
-                     for host, p in peers]
+            plist = [
+                {"ip": host.encode(), "port": p, "peer id": b"-XX0000-" + b"0" * 12} for host, p in peers
+            ]
         else:
             plist = b"".join(socket.inet_aton(host) + struct.pack(">H", p) for host, p in peers)
         return bencode.encode({"interval": self.interval, "peers": plist})
@@ -132,8 +151,11 @@ class Tracker:
             self._transport.sendto(struct.pack(">IIQ", 0, txid, cid), addr)
         elif action == 1 and conn in self._conn_ids and len(data) >= 98:
             info_hash, peer_id = data[16:36], data[36:56]
-            left, event, port = struct.unpack(">Q", data[64:72])[0], struct.unpack(">I", data[80:84])[0], \
-                struct.unpack(">H", data[96:98])[0]
+            left, event, port = (
+                struct.unpack(">Q", data[64:72])[0],
+                struct.unpack(">I", data[80:84])[0],
+                struct.unpack(">H", data[96:98])[0],
+            )
             event = EVENTS.get(event, "")
             self._record("udp", info_hash, peer_id, addr[0], port, left, event)
             if self.mode == "fail":
@@ -156,7 +178,8 @@ class Tracker:
                 outer.datagram_received(data, addr)
 
         self._transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-            Proto, local_addr=(host, udp_port))
+            Proto, local_addr=(host, udp_port)
+        )
         self.udp_port = self._transport.get_extra_info("sockname")[1]
         return self
 

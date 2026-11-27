@@ -41,8 +41,13 @@ def basic():
     for i in range(1, 101):
         notify("bar", id="a", label="first", percent=i, message=f"{i} of 100", done=i == 100)
         notify("bar", id="b", label="second", percent=i / 2)
-        notify("table", id="t", title="peers", columns=["peer", "down"],
-               rows=[["1.2.3.4", i], ["5.6.7.8", 2 * i]])
+        notify(
+            "table",
+            id="t",
+            title="peers",
+            columns=["peer", "down"],
+            rows=[["1.2.3.4", i], ["5.6.7.8", 2 * i]],
+        )
         notify("panel", id="p", title="stats", items=[["speed", f"{i} MB/s"], ["peers", 2]])
         time.sleep(0.005)  # spread over ~0.5 s, so the host draws several frames
     output("basic done")
@@ -71,7 +76,15 @@ def invalid():
 
 
 def hostile():
-    evil = ["\x1b[31mred\x1b[0m", "\x1b]0;pwned\x07", "\x9b2J", "\x07bell", "back\x08space", "nul\x00", "\x1bc"]
+    evil = [
+        "\x1b[31mred\x1b[0m",
+        "\x1b]0;pwned\x07",
+        "\x9b2J",
+        "\x07bell",
+        "back\x08space",
+        "nul\x00",
+        "\x1bc",
+    ]
     for i, e in enumerate(evil):
         notify("output", text=f"out {e}\n")
         notify("log", level="info", message=f"log {e}")
@@ -94,12 +107,23 @@ def slow():
 
 
 def ask():
-    reply = request("form-1", "form", title="Settings", fields=[
-        {"name": "name", "label": "Your name", "type": "text", "default": "Ada"},
-        {"name": "token", "label": "Token", "type": "text", "secret": True},
-        {"name": "ok", "label": "Overwrite?", "type": "confirm", "default": False},
-        {"name": "mirror", "label": "Mirror", "type": "choice", "choices": ["eu", "us", "asia"], "default": "eu"},
-    ])
+    reply = request(
+        "form-1",
+        "form",
+        title="Settings",
+        fields=[
+            {"name": "name", "label": "Your name", "type": "text", "default": "Ada"},
+            {"name": "token", "label": "Token", "type": "text", "secret": True},
+            {"name": "ok", "label": "Overwrite?", "type": "confirm", "default": False},
+            {
+                "name": "mirror",
+                "label": "Mirror",
+                "type": "choice",
+                "choices": ["eu", "us", "asia"],
+                "default": "eu",
+            },
+        ],
+    )
     if "error" in reply:
         output(f"error {reply['error']['code']}")
         return 1

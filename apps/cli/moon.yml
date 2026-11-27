@@ -46,8 +46,7 @@ tasks:
 
   coverage:
     # The test task under coverage (subprocesses included) with per-test contexts; writes coverage.json and coverage.txt.
-    # One test is deselected: its CPU-share budget fails under coverage overhead (it passes without).
-    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run coverage erase && uv run coverage run -m pytest -q --deselect tests/test_live_pty.py::LivePty::test_10000_updates_a_second_cost_at_most_30_redraws_a_second_and_a_quarter_of_a_core && uv run coverage combine && uv run coverage json -o coverage.json && uv run coverage report > coverage.txt"
+    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run coverage erase && uv run coverage run -m pytest -q && uv run coverage combine && uv run coverage json -o coverage.json && uv run coverage report > coverage.txt"
     deps: ["sync"]
     options:
       cache: false

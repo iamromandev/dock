@@ -31,8 +31,7 @@ tasks:
 
   coverage:
     # Test run under coverage (subprocesses included) with per-test contexts; writes coverage.json and coverage.txt.
-    # One test is deselected: its tracemalloc memory bound fails under coverage's own allocations (it passes without).
-    script: "uv run coverage erase && uv run coverage run -m pytest -q --deselect tests/test_dm_magnet_local.py::HostileMetadata::test_a_full_size_junk_set_is_refused_within_the_memory_bound && uv run coverage combine && uv run coverage json -o coverage.json && uv run coverage report > coverage.txt"
+    script: "uv run coverage erase && uv run coverage run -m pytest -q && uv run coverage combine && uv run coverage json -o coverage.json && uv run coverage report > coverage.txt"
     deps: ["install"]
     options:
       cache: false

@@ -51,15 +51,23 @@ class Torrent:
         return write_files(root, self)
 
 
-def make_torrent(files, piece_length: int = 16384, announce: str | None = None, name: str = "t",
-                 multi: bool | None = None, announce_list=None, extra_info: dict | None = None) -> Torrent:
+def make_torrent(
+    files,
+    piece_length: int = 16384,
+    announce: str | None = None,
+    name: str = "t",
+    multi: bool | None = None,
+    announce_list=None,
+    extra_info: dict | None = None,
+) -> Torrent:
     """files: [(relative path, bytes)]. One file and multi=False/None: a single-file torrent named `name`."""
     files = tuple((p, bytes(d)) for p, d in files)
     if multi is None:
         multi = len(files) != 1
     blob = b"".join(d for _, d in files)
-    pieces = b"".join(hashlib.sha1(blob[i:i + piece_length]).digest()
-                      for i in range(0, len(blob), piece_length))
+    pieces = b"".join(
+        hashlib.sha1(blob[i : i + piece_length]).digest() for i in range(0, len(blob), piece_length)
+    )
     info: dict = {"name": name, "piece length": piece_length, "pieces": pieces}
     if multi:
         info["files"] = [{"length": len(d), "path": p.split("/")} for p, d in files]
@@ -83,38 +91,6 @@ def magnet_for(t: Torrent, trackers=(), peers=(), name: str | None = None) -> st
     parts += [f"tr={quote(u, safe='')}" for u in trackers]
     parts += [f"x.pe={quote(f'{h}:{p}' if ':' not in h else f'[{h}]:{p}', safe='')}" for h, p in peers]
     return "magnet:?" + "&".join(parts)
-
-
-def make_big_torrent(root, name: str, size: int, piece_length: int, announce: str | None = None):
-    """A single-file torrent of `size` random bytes, written to root/<name> in a stream (not held in memory).
-
-    Returns (Torrent, path of the payload). The Torrent's `files` is empty: read the payload from the path.
-    """
-    import os
-
-    path = Path(root) / name
-    pieces = []
-    with open(path, "wb") as f:
-        left = size
-        while left:
-            block = os.urandom(min(piece_length, left))
-            pieces.append(hashlib.sha1(block).digest())
-            f.write(block)
-            left -= len(block)
-    info = {"name": name, "piece length": piece_length, "pieces": b"".join(pieces), "length": size}
-    top: dict = {"info": info}
-    if announce:
-        top["announce"] = announce
-    data = bencode.encode(top)
-    return Torrent(data, hashlib.sha1(bencode.encode(info)).digest(), name, (), piece_length, False), path
-
-
-def file_digest(path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while block := f.read(1 << 20):
-            h.update(block)
-    return h.hexdigest()
 
 
 def write_files(root, t: Torrent) -> Path:
@@ -172,11 +148,3 @@ def load_fixture(name: str):
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
-
-
-def free_port() -> int:
-    import socket
-
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
