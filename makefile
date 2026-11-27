@@ -10,7 +10,8 @@ UV := uv
 .PHONY: install-hooks install check check-ci test clean help \
 	cli-sync cli-install cli-uninstall cli-check cli-check-ci cli-test cli-run cli-clean \
 	dm-install dm-check dm-check-ci dm-test dm-clean \
-	brain-install brain-check brain-check-ci brain-test brain-clean
+	brain-install brain-check brain-check-ci brain-test brain-clean \
+	image-install image-check image-check-ci image-test image-clean
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -19,7 +20,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install brain:install
+	$(MOON) run cli:sync dm:install brain:install image:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -89,6 +90,22 @@ brain-test: # Run the brain's tests (a local stand-in model server; no Docker or
 
 brain-clean: # Remove the brain's Python caches
 	$(MOON) run brain:clean
+
+## image - delegates to plugins/image/moon.yml
+image-install: # Install the image plugin's dev tools
+	$(MOON) run image:install
+
+image-check: # Lint + typecheck the image plugin (fixes what ruff can)
+	$(MOON) run image:check
+
+image-check-ci: # Lint + typecheck the image plugin without fixing anything. For CI.
+	$(MOON) run image:check-ci
+
+image-test: # Run the image plugin's tests (a local stand-in server; no Docker or GPU needed)
+	$(MOON) run image:test
+
+image-clean: # Remove the image plugin's Python caches
+	$(MOON) run image:clean
 
 # help
 help:

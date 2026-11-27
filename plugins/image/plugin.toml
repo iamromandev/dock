@@ -1,0 +1,25 @@
+id = "dev.dock.image"
+version = "0.2.2"
+api_version = "2"
+description = "Generate an image from a text prompt with a local Z-Image-Turbo server, into the current folder"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["network", "fs:write:cwd"]
+env = ["DOCK_IMAGE_URL", "DOCK_IMAGE_MODEL"]
+
+[[commands]]
+name = "image"
+summary = "Generate an image (picture, photo, drawing, art) from a text prompt into the current folder: image <prompt> [-o name.png] [--width N] [--height N] (256-2048, rounded to 16) [--steps N] [--seed N] [--model z-image-turbo]"
+keywords = ["image", "picture", "photo", "draw", "generate", "art"]
+inputs = [
+  { name = "prompt", type = "string", required = true },
+  { name = "output", type = "string", flag = "--output", short = "-o" },
+  { name = "width", type = "int", flag = "--width" },
+  { name = "height", type = "int", flag = "--height" },
+  { name = "steps", type = "int", flag = "--steps" },
+  { name = "seed", type = "int", flag = "--seed" },
+  { name = "model", type = "string", flag = "--model" },
+]

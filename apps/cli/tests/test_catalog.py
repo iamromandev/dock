@@ -656,3 +656,19 @@ class BuiltIn(TmpCase):
             found = catalog.load(self.store())
             self.assertLess(time.perf_counter() - start, 0.5)
         self.assertEqual([a.manifest.id for a in found], ["dev.dock.dm"])
+
+
+class BrainCatalogShowsImage(TmpCase):
+    def test_the_image_plugin_is_in_the_brains_catalog_with_its_summary_and_inputs(self):
+        from src import flow_cli
+        store = self.store()
+        store.install(ROOT.parent.parent / "plugins" / "image")
+        work = self.tmp / "work"
+        work.mkdir()
+        data = json.loads(flow_cli.write_catalog(store, work).read_text(encoding="utf-8"))
+        plugin = next(p for p in data["plugins"] if p["id"] == "dev.dock.image")
+        command = plugin["commands"][0]
+        self.assertEqual(command["name"], "image")
+        self.assertIn("picture", command["summary"])
+        self.assertIn({"name": "prompt", "type": "string", "required": True}, command["inputs"])
+        self.assertIn({"name": "width", "type": "int", "required": False}, command["inputs"])
