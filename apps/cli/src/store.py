@@ -101,6 +101,7 @@ class Store:
         self.index_path = self.home / "index.json"
         self.history_path = self.home / "history"
         self._warned_idle_timeout = False
+        self.dirs = None  # paths.Dirs, set by main() once the in/out folders are resolved
         for d in (self.plugin_dir, self.data_root, self.logs_dir):
             d.mkdir(parents=True, exist_ok=True)
 

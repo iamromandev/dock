@@ -161,7 +161,7 @@ class InvokeInputs(unittest.TestCase):
 
     def session_with(self, result):
         session = Session(Store(Path(tempfile.mkdtemp(prefix="dock-seams-inputs-"))))
-        manifest = mock.Mock(id="p")
+        manifest = mock.Mock(id="p", permissions=[])
         proc = self.FakeProc(result)
         session.commands["p"] = proc
         patch = mock.patch("src.lifecycle.make_ui", side_effect=lambda *a, **k: RecordingUI("p", []))
@@ -184,6 +184,17 @@ class InvokeInputs(unittest.TestCase):
         session.work_dir = Path("/some/work")
         session.invoke_inputs(manifest, "go", {"n": 1})
         self.assertEqual(proc.sent[1][1]["work"], "/some/work")
+
+    def test_in_dir_is_sent_only_to_a_plugin_with_fs_read_in(self):
+        session, manifest, proc = self.session_with({"exit_code": 0})
+        manifest.permissions = ["network"]
+        session.invoke_inputs(manifest, "go", {})
+        self.assertNotIn("in_dir", proc.sent[0][1])
+        manifest.permissions = ["fs:read:in"]
+        with mock.patch.object(isolation, "in_folder", return_value=Path("/the/in")) as in_folder:
+            session.invoke_inputs(manifest, "go", {})
+        self.assertEqual(proc.sent[1][1]["in_dir"], "/the/in")
+        self.assertEqual(in_folder.call_args.args, (session.store, manifest, os.getcwd()))
 
     def test_none_inputs_omit_the_inputs_key_and_send_no_args(self):
         from src.manifest import Command

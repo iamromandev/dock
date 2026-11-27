@@ -1,4 +1,4 @@
-"""planner plugin for dock: turns a request into a flow with a local Ollama model (stdlib only).
+"""brain plugin for dock: turns a request into a flow with a local Ollama model (stdlib only).
 JSON-RPC 2.0, one JSON object per line on stdin/stdout. See protocol/PROTOCOL.md.
 """
 
@@ -80,6 +80,7 @@ Rules:
   Files the user asked for go to the current folder: leave out folder and file name inputs (such as `dir` or
   `output`) unless the request names one.
 - The `label` is optional.
+- A plugin with "installed": false may be used; dock installs it after the user approves the flow.
 
 Catalog:
 """
@@ -108,8 +109,8 @@ def read_catalog(path):
 
 def ask_model(prompt, catalog, result):
     """Runs in a thread: puts ("flow", obj) or ("error", text) into `result`."""
-    base = (os.environ.get("DOCK_PLANNER_URL") or DEFAULT_URL).rstrip("/")
-    model = os.environ.get("DOCK_PLANNER_MODEL") or DEFAULT_MODEL
+    base = (os.environ.get("DOCK_BRAIN_URL") or DEFAULT_URL).rstrip("/")
+    model = os.environ.get("DOCK_BRAIN_MODEL") or DEFAULT_MODEL
     body = {
         "model": model,
         "stream": False,
@@ -173,7 +174,7 @@ def handle(msg):
         return False
     try:
         if method == "initialize":
-            result = {"name": "planner"}
+            result = {"name": "brain"}
         elif method == "invoke":
             if params.get("command") != "plan":
                 raise Failure(f"unknown command {params.get('command')}", -32601)

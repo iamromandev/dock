@@ -1,4 +1,4 @@
-id: "planner"
+id: "brain"
 language: "python"
 layer: "application"
 tags: ["plugin"]

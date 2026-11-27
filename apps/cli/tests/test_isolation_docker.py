@@ -58,7 +58,9 @@ class RealDocker(unittest.TestCase):
             **os.environ, "DOCK_HOME": str(cls.store.home), "PYTHONPATH": str(ROOT),
             "DOCK_TEST_HOST_SECRET": cls.HOST_SECRET, "DOCK_TEST_DECLARED": "test-model",
         }
-        plugins = [FIXTURES / "jail", cls.jail_copy("jailcwd", ["fs:write:cwd"])]
+        plugins = [FIXTURES / "jail", cls.jail_copy("jailcwd", ["fs:write:cwd"]),
+                   cls.jail_copy("jailin", ["fs:read:in"]),
+                   cls.jail_copy("jailboth", ["fs:write:cwd", "fs:read:in"])]
         if NETWORK_CONTROL:
             plugins.append(cls.jail_copy("jailnet", ["network"]))
         for path in plugins:
@@ -137,6 +139,45 @@ class RealDocker(unittest.TestCase):
             self.assertEqual(self.jail("readcwd", "secret.txt"), "unreadable")
         with self.subTest("with fs:write:cwd"):
             self.assertEqual(self.jail("readcwd", "secret.txt", plugin="jailcwd"), "top secret")
+
+    # NFR1: the in folder is readable, never writable
+    def test_the_in_folder_is_read_only_for_a_plugin_with_fs_read_in(self):
+        inbox = Path(tempfile.mkdtemp(prefix="dock-in-", dir=self.tmp))
+        (inbox / "data.txt").write_text("input data")
+        with self.subTest("without fs:read:in the folder is not there"):
+            r = self.dock("--in", str(inbox), "dev.dock.jail:readin", "data.txt")
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "unreadable"), r.stderr)
+            self.assertIn("--in ignored", r.stderr)
+        with self.subTest("with fs:read:in it can be read"):
+            r = self.dock("--in", str(inbox), "dev.dock.jailin:readin", "data.txt")
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "input data"), r.stderr)
+        with self.subTest("but not overwritten, extended or emptied"):
+            r = self.dock("--in", str(inbox), "dev.dock.jailin:writein", "data.txt")
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "denied"), r.stderr)
+            self.assertEqual((inbox / "data.txt").read_text(), "input data")
+            self.assertEqual(sorted(p.name for p in inbox.iterdir()), ["data.txt"])
+
+    def test_nested_in_and_out_folders_keep_their_own_mode(self):
+        outer = Path(tempfile.mkdtemp(prefix="dock-nest-", dir=self.tmp))
+        inner = outer / "inner"
+        inner.mkdir()
+        (outer / "data.txt").write_text("outer data")
+        (inner / "data.txt").write_text("inner data")
+        with self.subTest("in inside out: in is read-only, the rest of out is writable"):
+            r = self.dock("--out", str(outer), "--in", str(inner), "dev.dock.jailboth:writein", "data.txt")
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "denied"), r.stderr)
+            self.assertEqual(sorted(p.name for p in inner.iterdir()), ["data.txt"])
+            r = self.dock("--out", str(outer), "--in", str(inner), "dev.dock.jailboth:writecwd", "w.txt")
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "written"), r.stderr)
+            self.assertTrue((outer / "w.txt").exists())
+        with self.subTest("out inside in: out is writable, the rest of in is read-only"):
+            r = self.dock("--out", str(inner), "--in", str(outer), "dev.dock.jailboth:writecwd", "w2.txt")
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "written"), r.stderr)
+            self.assertTrue((inner / "w2.txt").exists())
+            r = self.dock("--out", str(inner), "--in", str(outer), "dev.dock.jailboth:writein", "data.txt")
+            self.assertEqual((r.returncode, r.stdout.strip()), (0, "denied"), r.stderr)
+            self.assertEqual((outer / "data.txt").read_text(), "outer data")
+            self.assertFalse((outer / "new.txt").exists())
 
     # NFR1: environment
     def test_host_variable_outside_the_allowlist_is_not_visible(self):

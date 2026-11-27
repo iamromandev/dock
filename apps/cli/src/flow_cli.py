@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import secrets
 import shutil
@@ -10,14 +11,14 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from src import approve, flow, isolation, uimsg
+from src import approve, catalog, flow, isolation, paths, uimsg
 from src.inputs import InputSpec, UsageError, check_values
 from src.lifecycle import Session
-from src.manifest import ManifestError
+from src.manifest import Manifest, ManifestError
 from src.process import PluginError
-from src.store import Store
+from src.store import Store, staged
 
-PLANNER_ID = "dev.dock.planner"
+BRAIN_ID = "dev.dock.brain"
 
 USAGE = """\
 usage: dock flow run [--yes] [--keep] <file> [name=value...]
@@ -127,7 +128,7 @@ def cmd_flow(store: Store, args: list[str], runner: flow.StepRunner | None = Non
     if not rest or (sub == "check" and len(rest) != 1):
         print(USAGE, file=sys.stderr, end="")
         return 2
-    path = Path(rest[0])
+    path = paths.start_of(store) / rest[0]  # against the folder dock started in, not the out folder
     try:
         f = _load(path)
     except (flow.FlowError, OSError) as e:
@@ -150,7 +151,8 @@ def cmd_flow(store: Store, args: list[str], runner: flow.StepRunner | None = Non
         _show(lines, sys.stdout)
         return 0
     _show(lines)
-    cwd = cwd or Path.cwd()
+    paths.warn_if_in_unused(store, [store.get(pid) for pid in dict.fromkeys(s.plugin for s in f.steps)])
+    cwd = cwd or paths.start_of(store)  # a saved plan goes next to where dock was started
     try:
         if not _confirm(f, path, cwd, yes, interactive, ask):
             return 1
@@ -224,52 +226,118 @@ def _catalog_command(c) -> dict:
     return {"name": c.name, "summary": c.summary, "inputs": inputs}
 
 
-def write_catalog(store: Store, work: Path) -> Path:
-    """<work>/catalog.json: what the planner may use, every installed plugin but the planner itself."""
-    plugins = []
-    for pid in sorted(store.index()):
-        if pid == PLANNER_ID:
-            continue
-        m = store.get(pid)
-        plugins.append({"id": m.id, "description": m.description, "permissions": list(m.permissions),
-                        "commands": [_catalog_command(c) for c in m.commands]})
+class _Lookup:
+    """A store for flow.check and flow.render: installed plugins first, then the available (not installed) ones."""
+
+    def __init__(self, store: Store, available: dict[str, Manifest]):
+        self.store = store
+        self.available = available
+        self.dirs = store.dirs  # flow.render names the out folder in the Permissions block
+
+    def get(self, plugin_id: str) -> Manifest:
+        try:
+            return self.store.get(plugin_id)
+        except ManifestError:
+            if plugin_id in self.available:
+                return self.available[plugin_id]
+            raise
+
+
+def _catalog_entry(m: Manifest, installed: bool) -> dict:
+    return {"id": m.id, "description": m.description, "permissions": list(m.permissions), "installed": installed,
+            "commands": [_catalog_command(c) for c in m.commands]}
+
+
+def write_catalog(store: Store, work: Path, available: dict[str, Manifest] | None = None) -> Path:
+    """<work>/catalog.json: what the brain may use. Installed plugins, then available ones (not installed), no brain."""
+    index = store.index()
+    plugins = [_catalog_entry(store.get(pid), True) for pid in sorted(index) if pid != BRAIN_ID]
+    for pid in sorted(available or {}):
+        if pid != BRAIN_ID and pid not in index:
+            plugins.append(_catalog_entry((available or {})[pid], False))
     path = work / "catalog.json"
     path.write_text(json.dumps({"plugins": plugins}, indent=1), encoding="utf-8")
     return path
 
 
-def _plan(store: Store, runner: flow.StepRunner, prompt: str, catalog: Path) -> flow.Flow:
-    """Ask the planner for a flow and check it; raises FlowError with the reason when it cannot be used."""
+def _plan(store, runner: flow.StepRunner, prompt: str, catalog: Path) -> flow.Flow:
+    """Ask the brain for a flow and check it; raises FlowError with the reason when it cannot be used.
+
+    `store` is a Store or a _Lookup (so steps may use available plugins)."""
     try:
-        result = runner(PLANNER_ID, "plan", {"prompt": prompt, "catalog": str(catalog)})
+        result = runner(BRAIN_ID, "plan", {"prompt": prompt, "catalog": str(catalog)})
     except (PluginError, ManifestError) as e:
         raise flow.FlowError(None, str(e)) from e
     code = result.get("exit_code", 0)
     if code != 0:
-        raise flow.FlowError(None, f"the planner failed (exit code {code})")
+        raise flow.FlowError(None, f"the brain failed (exit code {code})")
     if "flow" not in result:
-        raise flow.FlowError(None, "the planner gave no flow")
+        raise flow.FlowError(None, "the brain gave no flow")
     f = flow.from_json(result["flow"])
     if any(p["required"] for p in f.params.values()):
         raise flow.FlowError(None, "the flow declares required params, and a planned flow has none to give")
-    if any(step.plugin == PLANNER_ID for step in f.steps):
-        raise flow.FlowError(None, "a step may not use the planner")
+    if any(step.plugin == BRAIN_ID for step in f.steps):
+        raise flow.FlowError(None, "a step may not use the brain")
     errors = flow.check(f, store, {})
     if errors:
         raise flow.FlowError(None, "; ".join(str(e) for e in errors))
     return f
 
 
-def _stop_planner(session: Session | None) -> None:
+def _missing(f: flow.Flow, store: Store) -> list[str]:
+    """Plugin ids the flow uses that are not installed, in step order, once each."""
+    index = store.index()
+    return [pid for pid in dict.fromkeys(s.plugin for s in f.steps) if pid not in index]
+
+
+def _show_missing(missing: list[str], manifests: dict[str, Manifest], will_install: bool, dirs=None) -> None:
+    """The not-installed block; it promises an install only when a y will really do one."""
+    _err("Not installed (installed if you answer y):" if will_install else "Not installed:")
+    for pid in missing:
+        m = manifests[pid]
+        _err(f"  {uimsg.sanitize(pid)} {uimsg.sanitize(m.version)}: "
+             f"{', '.join(uimsg.sanitize(g) for g in approve.grants(m, dirs)) or 'none'}")
+
+
+def _stage_missing(stack: contextlib.ExitStack, missing: list[str],
+                   offered: dict[str, catalog.Available]) -> dict[str, tuple[Path, Manifest]]:
+    """A private copy of each missing plugin's catalog folder, kept until `stack` closes, with its manifest.
+
+    What is shown, approved and installed is read from these copies, so a later change to the catalog folder
+    cannot add anything. Raises ManifestError when a copy is not the plugin the scan found."""
+    result: dict[str, tuple[Path, Manifest]] = {}
+    for pid in missing:
+        source = offered[pid].folder
+        folder = stack.enter_context(staged(source))
+        m = Manifest.load(folder)
+        if m.id != pid:
+            raise ManifestError(f"{source} now holds {m.id}, not {pid}; nothing was installed")
+        result[pid] = (folder, m)
+    return result
+
+
+def _install_missing(missing: list[str], folders: dict[str, tuple[Path, Manifest]], store: Store) -> bool:
+    """Install each staged copy (already approved with the flow); False after the first failure."""
+    for pid in missing:
+        try:
+            m = store.install(folders[pid][0])
+        except (ManifestError, OSError) as e:
+            _err(f"dock: do: cannot install {uimsg.sanitize(pid)}: {uimsg.sanitize(str(e))}")
+            return False
+        _err(f"installed {uimsg.sanitize(m.id)} {uimsg.sanitize(m.version)}")
+    return True
+
+
+def _stop_brain(session: Session | None) -> None:
     if session is not None:
-        session.stop_plugin(PLANNER_ID)
+        session.stop_plugin(BRAIN_ID)
 
 
 def cmd_do(store: Store, args: list[str], runner: flow.StepRunner | None = None, interactive: bool | None = None,
            ask: Callable[[str], str | None] | None = None, cwd: Path | None = None, verbose: bool = False) -> int:
-    """`dock do "<request>"`: the planner makes a flow, which is shown, approved and run like `dock flow run`.
+    """`dock do "<request>"`: the brain makes a flow, which is shown, approved and run like `dock flow run`.
 
-    `runner` replaces the real Session for the planner and the steps alike (tests)."""
+    `runner` replaces the real Session for the brain and the steps alike (tests)."""
     opts, tail = args[:], []
     if "--" in args:
         i = args.index("--")
@@ -286,13 +354,36 @@ def cmd_do(store: Store, args: list[str], runner: flow.StepRunner | None = None,
         print(DO_USAGE, file=sys.stderr, end="")
         return 2
     try:
-        store.get(PLANNER_ID)
+        store.get(BRAIN_ID)
     except ManifestError:
-        _err("dock: do: the planner plugin is not installed; run: dock plugin install plugins/planner")
+        _err("dock: do: the brain plugin is not installed; run: dock plugin install plugins/brain")
         return 1
+    if interactive is None:
+        interactive = sys.stdin.isatty() and sys.stderr.isatty()
     try:
+        installed = store.index()
+        offered: dict[str, catalog.Available] = {}
+        try:
+            found = catalog.load(store)
+        except (OSError, ManifestError) as e:  # the catalog is optional: a broken one costs only the extras
+            _err(f"dock: do: catalog skipped: {uimsg.sanitize(str(e))}")
+            found = []
+        repeated: set[str] = set()
+        for a in found:
+            pid = a.manifest.id
+            if pid in installed:
+                continue
+            if pid in offered:
+                if pid not in repeated:
+                    repeated.add(pid)
+                    _err(f"dock: do: {uimsg.sanitize(pid)} is in several catalog folders; "
+                         f"using {uimsg.sanitize(str(offered[pid].folder))}")
+                continue
+            offered[pid] = a
+        manifests = {pid: a.manifest for pid, a in offered.items()}
+        lookup = _Lookup(store, manifests)
         work = _new_work_folder(store)
-        catalog = write_catalog(store, work)
+        catalog_file = write_catalog(store, work, manifests)
     except (OSError, ManifestError) as e:
         _err(f"dock: do: cannot prepare the work folder: {uimsg.sanitize(str(e))}")
         return 1
@@ -302,17 +393,43 @@ def cmd_do(store: Store, args: list[str], runner: flow.StepRunner | None = None,
     try:
         runner, session = _open(store, runner, verbose, work)
         try:
-            f = _plan(store, runner, rest[0], catalog)
+            f = _plan(lookup, runner, rest[0], catalog_file)
         except flow.FlowError as e:
-            _stop_planner(session)
+            _stop_brain(session)
             shutil.rmtree(work, ignore_errors=True)  # no step ran: it only held catalog.json
-            _err(f"dock: do: planner could not make a flow: {uimsg.sanitize(str(e))}")
+            _err(f"dock: do: brain could not make a flow: {uimsg.sanitize(str(e))}")
             return 1
-        _stop_planner(session)  # it has network and the work mount: not while the steps run
-        _show(flow.render(f, store))
-        if not _confirm(f, Path("plan.flow.toml"), cwd or Path.cwd(), yes, interactive, ask):
-            shutil.rmtree(work, ignore_errors=True)
-            return 1
+        _stop_brain(session)  # it has network and the work mount: not while the steps run
+        missing = _missing(f, store)
+        with contextlib.ExitStack() as stack:  # the staged copies live until the install is done
+            try:
+                copies = _stage_missing(stack, missing, offered)
+            except (OSError, ManifestError) as e:
+                shutil.rmtree(work, ignore_errors=True)
+                _err(f"dock: do: cannot stage the plugins: {uimsg.sanitize(str(e))}")
+                return 1
+            staged_lookup = _Lookup(store, {pid: m for pid, (_, m) in copies.items()})
+            errors = flow.check(f, staged_lookup, {})  # the copies are what will run: check them
+            if errors:
+                shutil.rmtree(work, ignore_errors=True)
+                _err(f"dock: do: the plugins changed since the plan: {uimsg.sanitize('; '.join(str(e) for e in errors))}")
+                return 1
+            _show(flow.render(f, staged_lookup, set(missing)))
+            paths.warn_if_in_unused(store, [staged_lookup.get(pid) for pid in dict.fromkeys(s.plugin for s in f.steps)])
+            will_install = interactive and not yes
+            if missing:
+                _show_missing(missing, {pid: m for pid, (_, m) in copies.items()}, will_install, store.dirs)
+                if not will_install:  # nothing is installed without an interactive y
+                    for pid in missing:
+                        _err(f"dock: do: {uimsg.sanitize(pid)} is not installed; run: dock plugin install {uimsg.sanitize(pid)}")
+                    shutil.rmtree(work, ignore_errors=True)
+                    return 1
+            if not _confirm(f, Path("plan.flow.toml"), cwd or paths.start_of(store), yes, interactive, ask):
+                shutil.rmtree(work, ignore_errors=True)
+                return 1
+            if not _install_missing(missing, copies, store):
+                shutil.rmtree(work, ignore_errors=True)
+                return 1
         return _execute(f, {}, store, runner, work, keep)
     except KeyboardInterrupt:
         _err(f"work folder kept: {shown}")

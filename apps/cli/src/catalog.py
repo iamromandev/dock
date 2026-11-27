@@ -30,7 +30,7 @@ def paths(store) -> list[Path]:
     """The folders of [catalog] paths, `~` expanded; [] without a [catalog] table. Fails closed like [container]."""
     path = store.home / "config.toml"
     data = store.config()
-    if "paths" in data:
+    if "paths" in data and not isinstance(data["paths"], dict):  # a [paths] table is the in/out folders
         raise ManifestError(f"{path}: 'paths' is at the top level; catalog settings belong in a [catalog] table")
     for key in data:
         if key != _NAME and difflib.get_close_matches(key.lower(), [_NAME], n=1, cutoff=0.75):
@@ -70,11 +70,32 @@ def _candidates(entry: Path) -> list[Path]:
     return sorted(d for d in entry.iterdir() if d.is_dir() and (d / "plugin.toml").is_file())
 
 
+def builtin_dir(here: Path | None = None) -> Path | None:
+    """<repo>/plugins of the checkout dock runs from; None when there is none (a packaged install).
+
+    The checkout is recognised by apps/cli/src/catalog.py being this very file, so an unrelated
+    <three folders up>/plugins is not trusted. `here` is this file's path (tests give another)."""
+    here = here or Path(__file__).resolve()
+    repo = here.parents[3]
+    marker = repo / "apps" / "cli" / "src" / "catalog.py"
+    if not marker.is_file() or marker.resolve() != here:
+        return None
+    folder = repo / "plugins"
+    return folder if folder.is_dir() else None
+
+
 def load(store, warn: Callable[[str], None] = _warn) -> list[Available]:
-    """Every readable plugin of the catalog, in scan order; one warning per entry or plugin that is skipped."""
+    """Every readable plugin of the catalog, in scan order; one warning per entry or plugin that is skipped.
+
+    The [catalog] paths come first, then the built-in plugins folder (silently skipped when missing)."""
     found: list[Available] = []
     seen: set[Path] = set()
-    for entry in paths(store):
+    entries = paths(store)
+    builtin = builtin_dir()
+    if builtin is not None and builtin.is_dir():
+        entries.append(builtin)
+    for entry in entries:
+        is_builtin = entry == builtin
         if not entry.exists():
             warn(f"catalog folder {entry} not found, skipped")
             continue
@@ -91,7 +112,10 @@ def load(store, warn: Callable[[str], None] = _warn) -> list[Available]:
                 continue
             seen.add(real)
             try:
-                found.append(Available(Manifest.load(real), real))
+                m = Manifest.load(real)
+                if is_builtin and any(a.manifest.id == m.id for a in found):
+                    continue  # a [catalog] copy of the same id wins
+                found.append(Available(m, real))
             except (ManifestError, OSError) as e:  # ManifestError includes NotAContainerPlugin
                 warn(f"catalog plugin {real} skipped: {e}")
     return found
@@ -258,10 +282,11 @@ def check_updates(store, ids: list[str], warn: Callable[[str], None] = _warn) ->
     return result
 
 
-def install_source(store, arg: str) -> Path:
-    """The folder `plugin install <arg>` reads: `arg` itself when it is an existing folder, else the catalog's."""
-    if Path(arg).is_dir():
-        return Path(arg)
+def install_source(store, arg: str, base: Path | None = None) -> Path:
+    """The folder `plugin install <arg>` reads: `arg` itself (against `base`) when it is an existing folder, else the catalog's."""
+    here = Path(base) / arg if base is not None else Path(arg)
+    if here.is_dir():
+        return here
     found = find(store, arg)
     if found is None:
         raise ManifestError(f"no plugin folder or catalog plugin named '{arg}'")

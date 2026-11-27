@@ -17,7 +17,7 @@ with `<runtime> run -i --rm` in a container, and nothing else. Removed:
 - provision and unprovision, with their crash recovery (`[lifecycle].provision`, the `state/` markers);
 - `ended_by_cancel` and the progress transfer fields (`done`, `total`, `speed`, `name`, `phase`, `uploaded`, `peers`);
   progress is `{percent, message}`;
-- the bundled `chat`, `llm`, `download` and `image` plugins. Only `dm` (and the `planner` that `dock do` uses) is left.
+- the bundled `chat`, `llm`, `download` and `image` plugins. Only `dm` (and the `brain` that `dock do` uses) is left.
 
 A plugin whose `[run]` is not exactly `container = { ... }`, or that uses a removed key, fails at install with a
 message that names the problem. A `config.toml` with an `[isolation]`, `[wasm]`, `[http]` or `[providers]` table fails
@@ -164,7 +164,15 @@ paths = ["~/projects/github/dock/plugin", "/opt/dock-plugins"]
 Each entry is an absolute path or starts with `~` (a relative path is an error, as is any other key in `[catalog]`).
 An entry that holds a `plugin.toml` is one plugin; otherwise each immediate subfolder with a `plugin.toml` is one
 plugin (deeper folders are not searched). A missing entry, or a plugin whose manifest does not load, is skipped with
-a warning. Without `[catalog]` the catalog is empty.
+a warning. After the `[catalog]` paths, dock also reads the `plugins/` folder of the checkout it runs from (the
+built-in plugins; skipped silently when there is none, as in a packaged install), so `search`, hints and
+`dock plugin install <id>` find them with no config. When an id is in both, the `[catalog]` copy wins.
+
+`dock do "<request>"` gives the brain both the installed plugins and these available ones (each marked
+`"installed": true/false`). If the planned flow uses a plugin that is not installed, dock prints a
+`Not installed (installed if you answer y):` block (id, version and grants) before `Run this flow?`; answering `y`
+installs them and runs the flow. `n`, end of input or no terminal installs nothing. `dock do --yes` never installs: with a
+missing plugin it prints `dock plugin install <id>` for each and exits 1. `dock flow run` never installs.
 
 A command may list `keywords` in its `[[commands]]` entry (a list of non-empty strings) so people can find it:
 
@@ -211,12 +219,45 @@ date` for a named current plugin. A named id that is not installed or not in the
 processed in id order and one failure does not stop the others. Exit 0 when all went well, 1 when any failed, 2 for an
 unknown option.
 
+### Choosing the folders: `--out`, `--in` and `[paths]`
+
+```
+dock [-v] [--in DIR] [--out DIR] <command> ...      e.g.  dock --out ~/out shell
+```
+
+Options go **before** the command; one after it (such as `dock dm --out x`) belongs to the plugin. `--out DIR`
+replaces the current folder for plugins with `fs:write:cwd`: dock creates it (with parents), mounts it read-write and
+runs the plugin there, and a `dock shell` or `dock do` started with it uses it throughout. The same settings can live in
+`$DOCK_HOME/config.toml`; a flag beats the file, the file beats the current folder:
+
+```toml
+[paths]
+in  = "~/inbox"     # mounted read-only for plugins with fs:read:in
+out = "~/dock-out"
+```
+
+Values must be absolute or start with `~`; an unknown key, a non-string, a relative path or `in`/`out` outside `[paths]`
+is an error naming the file. The out folder gets the same refusals as the current folder (the filesystem root, your home
+directory, anything above it, the dock home), naming `--out` or `[paths] out`. When it is set, permission prompts show
+`fs:write:cwd → ~/dock-out`. With neither a flag nor `[paths]`, nothing changes.
+
+`--in DIR` is the folder plugins with the `fs:read:in` permission can read: it is mounted **read-only** at the same
+path and the plugin is told it in `invoke.in_dir`. Without `--in` it is the out folder. It must exist and gets the same
+refusals as `--out`. Run-time prompts show `fs:read:in → ~/inbox (read-only)`. The one exception: when the in folder is
+the out folder and the plugin also has `fs:write:cwd`, the folder is mounted read-write and the prompt says
+`fs:read:in → ~/o (same folder as fs:write:cwd, read-write)`. A `[paths] in` is checked when a plugin with `fs:read:in`
+launches, not at startup, so a stale one fails only those plugins (the message names `[paths] in`). If `--in` is given
+and no plugin in the run declares `fs:read:in`, dock says `dock: --in ignored: no plugin in this run reads it` once on
+stderr and goes on (not in `dock shell`, which stays silent; a `[paths] in` default never warns). The read-only mount
+is recursive only on Docker 25 or newer with Linux kernel 5.12 or newer; on older systems a mount inside the in folder
+may stay writable.
+
 ### Permission prompts
 
-A plugin's `[capabilities]` can ask for `permissions` (only `network` and `fs:write:cwd` exist; any other entry, or a
+A plugin's `[capabilities]` can ask for `permissions` (only `network`, `fs:write:cwd` and `fs:read:in` exist; any other entry, or a
 value that is not a list of strings, makes the manifest invalid and the install fail) and `env` (host variables passed into
 its container). `dock plugin install [--yes] <path|id>` and `dock plugin update` (also in the shell) ask before they
-grant them. The request is listed on stderr, in this order: `network`, `fs:write:cwd`, then
+grant them. The request is listed on stderr, in this order: `network`, `fs:write:cwd`, `fs:read:in`, then
 `env <NAME>` per variable:
 
 ```
@@ -575,7 +616,7 @@ Things to know:
 
    `[run]` must hold exactly `container`; any other key fails the install. The image `dock/<id>:<version>` is
    built from the Dockerfile, so `id` and `version` may only hold letters, digits, `.`, `_` and `-`.
-   Permissions are `network` and `fs:write:cwd`, under `[capabilities] permissions`; both are enforced by the
+   Permissions are `network`, `fs:write:cwd` and `fs:read:in`, under `[capabilities] permissions`; both are enforced by the
    container (see "How plugins run").
 
    A command can declare typed inputs; dock then parses and checks the args
@@ -596,7 +637,7 @@ Things to know:
    unless given, so it takes neither `default` nor `required`.
 
 2. A program that answers `initialize`, `invoke` and `shutdown` on stdio
-   (follow `plugins/planner/main.py` at the repository root, in any language).
+   (follow `plugins/brain/main.py` at the repository root, in any language).
 3. `dock plugin install ./thing`. The image is built on the first run, or with `dock plugin build you.thing`.
 4. A container sees only a fixed environment. To receive host variables, list their
    names: `[capabilities] env = ["MY_API_KEY"]` (see "How plugins run").

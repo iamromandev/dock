@@ -6,11 +6,12 @@ plugin index and forwarded, args untouched, to the plugin that owns it.
 
 from __future__ import annotations
 
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from src import __version__, approve, catalog, isolation, lifecycle, uimsg
+from src import __version__, approve, catalog, isolation, lifecycle, paths, uimsg
 from src.inputs import UsageError, parse_for
 from src.manifest import Manifest, ManifestError
 from src.store import Store, staged
@@ -39,10 +40,14 @@ built-in:
                             run a flow: several plugins' commands, in order
   flow check <file>         check a flow and show what it would do
   do [--yes] [--keep] [--] "<request>"
-                            plan a flow from a request with a local model, then run it (needs the planner plugin)
+                            plan a flow from a request with a local model, then run it (needs the brain plugin)
 
-options (before the command):
+options (before the command, e.g. `dock --out ~/o shell`):
   -v, --verbose             show plugin debug logs
+  --out DIR                 the folder plugins with fs:write:cwd work in (default: the current folder;
+                            or [paths] out in config.toml)
+  --in DIR                  the folder plugins with fs:read:in read, read-only (default: the out folder;
+                            or [paths] in); ignored when no plugin in the run reads it
 """
 
 
@@ -131,7 +136,7 @@ def cmd_plugin_install(store: Store, args: list[str], stop: Callable[[str], obje
     if len(rest) != 1:
         print(BUILTIN_HELP, file=sys.stderr)
         return 2
-    source = catalog.install_source(store, rest[0])
+    source = catalog.install_source(store, rest[0], paths.start_of(store))
     with staged(source) as folder:  # what is shown and approved is what gets installed
         new = Manifest.load(folder)
         index = store.index()
@@ -242,7 +247,7 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
         if installed:
             m = store.get(args[1])
         else:  # a folder, or the id of a catalog plugin: read its plugin.toml, nothing is installed
-            m = Manifest.load(catalog.install_source(store, args[1]))
+            m = Manifest.load(catalog.install_source(store, args[1], paths.start_of(store)))
         print(f"id:          {m.id}\nversion:     {m.version}\nprotocol:    v{m.api_version}")
         print(f"description: {m.description}")
         print(f"commands:    {', '.join(c.name for c in m.commands) or '-'}")
@@ -263,11 +268,35 @@ def cmd_plugin(store: Store, args: list[str]) -> int:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     verbose = False
-    while argv and argv[0] in ("-v", "--verbose"):
-        verbose = True
-        argv.pop(0)
-
+    flag_in = flag_out = None
     store = Store()
+    try:
+        while argv:  # -v, --in and --out in any order, up to the subcommand
+            if argv[0] in ("-v", "--verbose"):
+                verbose = True
+                argv.pop(0)
+                continue
+            got_in, got_out, rest = paths.take_flags(argv)
+            if rest == argv:
+                break
+            for flag, new, old in (("--in", got_in, flag_in), ("--out", got_out, flag_out)):
+                if new is not None and old is not None:
+                    raise ManifestError(f"{flag} given more than once")
+            flag_in, flag_out, argv = got_in or flag_in, got_out or flag_out, rest
+        if argv[:1] and argv[0] in ("help", "-h", "--help", "version", "--version"):
+            dirs = None  # these need no folders, so a bad [paths] must not block them
+        else:
+            dirs = paths.resolve(store, flag_in, flag_out)
+    except ManifestError as e:
+        print(f"dock: {e}", file=sys.stderr)
+        return 1
+    if dirs is not None and dirs.out_source != "current folder":
+        try:
+            os.chdir(dirs.out_dir)  # every later os.getcwd()/Path.cwd() (the mounted folder) is the out folder
+        except OSError as e:
+            print(f"dock: {dirs.out_source} {dirs.out_dir}: cannot enter it: {e.strerror or e}", file=sys.stderr)
+            return 1
+    store.dirs = dirs
     command = ""
     try:
         if argv[:1] == ["shell"] or (not argv and sys.stdin.isatty()):
@@ -297,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
 
         manifest, command = store.resolve(argv[0])
         parse_for(manifest, command, argv[1:])  # a bad invocation must start no process
+        paths.warn_if_in_unused(store, [manifest])
         isolation.sweep(store)
         term = Terminal() if live_mode() else None  # live areas are drawn on it; given back on every way out
         if term is not None:

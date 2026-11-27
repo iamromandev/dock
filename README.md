@@ -18,7 +18,7 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │  ├─ dm/            the downloader (moon project `dm`)
 │  │  ├─ tests/      dm's in-process tests (pytest, no container runtime) and the torrent fixtures
 │  │  └─ moon.yml    install, check, check-ci, test, clean
-│  └─ planner/       plans a flow from a request with a local model (moon project `planner`)
+│  └─ brain/       plans a flow from a request with a local model (moon project `brain`)
 └─ protocol/         PROTOCOL.md, the plugin protocol every host and plugin follows
 ```
 
@@ -50,7 +50,7 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 | `make dm-check-ci`   | The same without fixing anything                                   |
 | `make dm-test`       | Run dm's in-process tests (no Docker or podman needed)             |
 | `make dm-clean`      | Remove dm's Python caches                                          |
-| `make planner-install`, `planner-check`, `planner-check-ci`, `planner-test`, `planner-clean` | The same for the planner (its tests need no Docker or model) |
+| `make brain-install`, `brain-check`, `brain-check-ci`, `brain-test`, `brain-clean` | The same for the brain (its tests need no Docker or model) |
 | `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
 | `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project (`install` runs `cli:sync` for the CLI) |
 | `make help`          | List the targets                                                   |
@@ -89,13 +89,13 @@ inputs = { file = "{steps.1.files[0]}" }
 `dock do "<request>"` asks a local model to plan a flow from your request, shows it, and runs it after you approve
 (`y`, `N`, or `s` to save it as `plan.flow.toml`), the same way as `dock flow run`. Flags: `--yes`, `--keep`. A request that starts with `-` goes after `--`: `dock do -- "-5 degrees"`.
 
-- Install the planner once: `dock plugin install plugins/planner`.
+- Install the brain once: `dock plugin install plugins/brain`.
 - It needs a local [Ollama](https://ollama.com) with a model pulled (default `qwen2.5:7b`).
-- `DOCK_PLANNER_URL` sets the endpoint (default `http://host.docker.internal:11434`) and `DOCK_PLANNER_MODEL` the
+- `DOCK_BRAIN_URL` sets the endpoint (default `http://host.docker.internal:11434`) and `DOCK_BRAIN_MODEL` the
   model. Both are read from your environment.
-- On Linux, or with podman, `host.docker.internal` may not resolve inside the container: set `DOCK_PLANNER_URL` to an
+- On Linux, or with podman, `host.docker.internal` may not resolve inside the container: set `DOCK_BRAIN_URL` to an
   address that does (for example the host's LAN address).
-- The planner sees only the catalog of your installed plugins (ids, descriptions, commands, inputs), never your files.
+- The brain sees only the catalog of your installed plugins (ids, descriptions, commands, inputs), never your files.
 
 ## Docs
 

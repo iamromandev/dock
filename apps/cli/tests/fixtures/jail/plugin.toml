@@ -20,5 +20,17 @@ name = "readcwd"
 summary = "Read a file in the user's cwd: readcwd <name>; prints its text or unreadable"
 
 [[commands]]
+name = "readin"
+summary = "Read a file in the in folder: readin <name>; prints its text or unreadable"
+
+[[commands]]
+name = "writein"
+summary = "Try to overwrite, create and delete in the in folder: writein <name>; prints denied or allowed:<what>"
+
+[[commands]]
+name = "writecwd"
+summary = "Create a file in the user's cwd: writecwd <name>; prints written or denied"
+
+[[commands]]
 name = "env"
 summary = "Show an environment variable: env <NAME>; prints set:<value> or unset"

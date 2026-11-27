@@ -1,5 +1,5 @@
-id = "dev.dock.planner"
-version = "0.1.1"
+id = "dev.dock.brain"
+version = "0.1.2"
 api_version = "2"
 description = "Plan a flow of other plugins' commands from a request, with a local Ollama model"
 
@@ -8,7 +8,7 @@ container = { cmd = "python3", args = ["/plugin/main.py"] }
 
 [capabilities]
 permissions = ["network"]
-env = ["DOCK_PLANNER_URL", "DOCK_PLANNER_MODEL"]
+env = ["DOCK_BRAIN_URL", "DOCK_BRAIN_MODEL"]
 
 [[commands]]
 name = "plan"

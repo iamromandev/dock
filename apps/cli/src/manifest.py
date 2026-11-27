@@ -46,7 +46,7 @@ class Command:
 _PLUGIN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # one path component: it names folders under the store
 _COMMAND_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # typed at a prompt, completed, listed: no ':' (plugin:command)
 _TAG_PART =re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]*")
-KNOWN_PERMISSIONS = ("network", "fs:write:cwd")
+KNOWN_PERMISSIONS = ("network", "fs:write:cwd", "fs:read:in")
 ENV_NAME = re.compile(r"[A-Z_][A-Z0-9_]*")
 RESERVED_ENV = {"HOME", "PATH", "LANG", "TZ", "DOCK_PLUGIN_ID", "DOCK_API_VERSION"}  # dock sets these itself
 

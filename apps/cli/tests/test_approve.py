@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / "tests"))
 import dockenv
 import test_catalog as tc
 import test_update as tu
-from src import approve, main
+from src import approve, main, paths
 from src import store as store_mod
 from src.manifest import Manifest
 from src.shell import Shell
@@ -61,6 +61,74 @@ class Grants(tc.TmpCase):
     def test_duplicates_are_dropped(self):
         m = dataclasses.replace(manifest(self.tmp), permissions=["network", "network", "z:z", "z:z"], env=["A", "A"])
         self.assertEqual(approve.grants(m), ["network", "z:z", "env A"])
+
+
+class GrantsWithDirs(tc.TmpCase):
+    """With the out folder known, fs:write:cwd says which folder it is."""
+
+    def dirs(self, out):
+        return paths.Dirs(None, out, "--out", "--out")
+
+    def test_fs_write_cwd_shows_the_out_folder_and_home_is_abbreviated(self):
+        m = manifest(self.tmp, ["network", "fs:write:cwd"])
+        self.assertEqual(approve.grants(m, self.dirs(Path("/srv/o"))), ["network", "fs:write:cwd → /srv/o"])
+        with mock.patch.dict("os.environ", {"HOME": "/Users/u"}):
+            self.assertEqual(approve.grants(m, self.dirs(Path("/Users/u/o"))), ["network", "fs:write:cwd → ~/o"])
+
+    def test_fs_read_in_shows_the_in_folder_read_only_and_install_shows_it_plain(self):
+        m = manifest(self.tmp, ["fs:write:cwd", "fs:read:in"])
+        d = paths.Dirs(Path("/srv/in"), Path("/srv/o"), "--in", "--out")
+        self.assertEqual(approve.grants(m, d), ["fs:write:cwd → /srv/o", "fs:read:in → /srv/in (read-only)"])
+        self.assertEqual(approve.added(m, None), ["fs:write:cwd", "fs:read:in"])
+        d = paths.Dirs(Path("/srv/\x1b[31m"), Path("/srv/o"), "--in", "--out")
+        self.assertEqual(approve.grants(manifest(self.tmp, ["fs:read:in"]), d), ["fs:read:in → /srv/\\x1b[31m (read-only)"])
+
+    def test_fs_read_in_in_the_out_folder_of_fs_write_cwd_says_it_is_read_write(self):
+        # catches: "(read-only)" shown for a folder that is mounted read-write
+        m = manifest(self.tmp, ["fs:write:cwd", "fs:read:in"])
+        with mock.patch.dict("os.environ", {"HOME": "/Users/u"}):
+            same = paths.Dirs(Path("/Users/u/o"), Path("/Users/u/o"), "--in", "--out")
+            self.assertEqual(approve.grants(m, same), ["fs:write:cwd → ~/o",
+                                                       "fs:read:in → ~/o (same folder as fs:write:cwd, read-write)"])
+            reader = manifest(self.tmp, ["fs:read:in"])  # without fs:write:cwd it is still read-only
+            self.assertEqual(approve.grants(reader, same), ["fs:read:in → ~/o (read-only)"])
+
+    def test_fs_read_in_without_flags_names_the_current_folder_read_only(self):
+        # catches: a run-time prompt that shows plain fs:read:in with no --in/--out
+        d = paths.Dirs(None, Path("/srv/cwd"), "current folder", "current folder")
+        self.assertEqual(approve.grants(manifest(self.tmp, ["fs:read:in"]), d), ["fs:read:in → /srv/cwd (read-only)"])
+        both = manifest(self.tmp, ["fs:write:cwd", "fs:read:in"])
+        self.assertEqual(approve.grants(both, d), ["fs:write:cwd", "fs:read:in → /srv/cwd (same folder as fs:write:cwd, read-write)"])
+
+    def test_fs_read_in_without_an_in_folder_names_the_out_folder_when_moved(self):
+        m = manifest(self.tmp, ["fs:read:in"])
+        self.assertEqual(approve.grants(m, self.dirs(Path("/srv/o"))), ["fs:read:in → /srv/o (read-only)"])
+        self.assertEqual(approve.grants(m), ["fs:read:in"])
+
+    def test_install_and_update_lines_never_name_the_folder(self):
+        m = manifest(self.tmp, ["network", "fs:write:cwd"])
+        self.assertEqual(approve.added(m, None), ["network", "fs:write:cwd"])
+
+    def test_a_root_or_empty_home_does_not_abbreviate_every_path(self):
+        m = manifest(self.tmp, ["fs:write:cwd"])
+        for home in ("/", ""):
+            with self.subTest(home=home), mock.patch.dict("os.environ", {"HOME": home}):
+                self.assertEqual(approve.grants(m, self.dirs(Path("/srv/o"))), ["fs:write:cwd → /srv/o"])
+
+    def test_only_the_folder_is_escaped_not_the_arrow(self):
+        m = manifest(self.tmp, ["fs:write:cwd"])
+        self.assertEqual(approve.grants(m, self.dirs(Path("/srv/\x1b[31m"))), ["fs:write:cwd → /srv/\\x1b[31m"])
+
+    def test_without_dirs_the_text_is_unchanged(self):
+        m = manifest(self.tmp, ["fs:write:cwd"])
+        current = paths.Dirs(None, Path("/srv/o"), "current folder", "current folder")
+        self.assertEqual(approve.grants(m, current), ["fs:write:cwd"])  # no --out, no [paths]: nothing to name
+        self.assertEqual(approve.grants(m), ["fs:write:cwd"])
+        self.assertEqual(approve.added(m, None), ["fs:write:cwd"])
+
+    def test_a_grant_the_plugin_already_has_is_not_added_because_of_the_folder(self):
+        m = manifest(self.tmp, ["fs:write:cwd"])
+        self.assertEqual(approve.added(m, m), [])
 
 
 class Added(tc.TmpCase):
@@ -695,7 +763,7 @@ class Validation(tc.CliCase):
 
     def test_message_names_the_known_permissions(self):
         r = self.dock("plugin", "install", "--yes", str(self.raw('permissions = ["root"]\n')))
-        self.assertIn("unknown permission 'root' (known: network, fs:write:cwd)", r.stderr)
+        self.assertIn("unknown permission 'root' (known: network, fs:write:cwd, fs:read:in)", r.stderr)
 
     def test_control_characters_are_shown_escaped_in_the_error(self):
         r = self.dock("plugin", "install", "--yes", str(self.raw('permissions = ["a\\u001bb"]\n')))

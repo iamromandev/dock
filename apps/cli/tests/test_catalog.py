@@ -23,6 +23,8 @@ from src import catalog
 from src.manifest import Manifest, ManifestError
 from src.store import Store
 
+REAL_BUILTIN_DIR = catalog.builtin_dir  # before any test patches it
+
 
 def make_plugin(parent, name, plugin_id, version="0.1.0", commands=(("hello", "Greet someone", ["greet"]),),
                 keywords_raw=None):
@@ -57,6 +59,9 @@ class TmpCase(unittest.TestCase):
         self.home.mkdir()
         self.cat = self.tmp / "cat"
         self.cat.mkdir()
+        patcher = mock.patch.object(catalog, "builtin_dir", return_value=None)  # the repo's plugins are not these tests' catalog
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def config(self, text):
         (self.home / "config.toml").write_text(text)
@@ -592,3 +597,62 @@ class NoRuntime(CliCase):
                 r = self.dock(*args)
                 self.assertEqual(r.returncode, 0, (args, r.stderr))
             self.assertIn("dev.dock.greeter has it (not installed)", self.dock("hello").stderr)
+
+
+class BuiltIn(TmpCase):
+    """The <repo>/plugins folder is a catalog source with no config; [catalog] paths come first."""
+
+    def setUp(self):
+        super().setUp()
+        self.builtin = self.tmp / "builtin"
+        make_plugin(self.builtin, "g", "dev.t.g", "0.1.0", commands=(("hi", "Say hi", ["greet"]),))
+        patcher = mock.patch.object(catalog, "builtin_dir", return_value=self.builtin)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_load_finds_builtins_with_no_config(self):  # catches: builtin scan not wired into load()
+        self.assertEqual([a.manifest.id for a in catalog.load(self.store())], ["dev.t.g"])
+
+    def test_no_builtin_folder_is_skipped_silently(self):  # catches: a packaged install warning on every command
+        for value in (None, self.tmp / "gone"):
+            with self.subTest(value=value), mock.patch.object(catalog, "builtin_dir", return_value=value):
+                warnings = []
+                self.assertEqual(catalog.load(self.store(), warnings.append), [])
+                self.assertEqual(warnings, [])
+
+    def test_a_catalog_path_copy_wins_over_the_builtin_of_the_same_id(self):  # catches: builtin shadowing paths
+        make_plugin(self.cat, "g", "dev.t.g", "0.9.0")
+        self.catalog_config(self.cat)
+        found = catalog.find(self.store(), "dev.t.g")
+        self.assertEqual(found.manifest.version, "0.9.0")
+
+    def test_search_marks_a_builtin_not_installed_with_the_install_hint(self):  # catches: search ignoring builtins
+        found = catalog.search(self.store(), ["greet"])
+        self.assertEqual([(m.plugin, m.installed, m.install) for m in found],
+                         [("dev.t.g", False, "dock plugin install dev.t.g")])
+
+    def test_builtin_dir_is_the_repo_plugins_folder(self):  # catches: a wrong parents[] index
+        self.assertEqual(REAL_BUILTIN_DIR(), ROOT.parent.parent / "plugins")
+
+    def test_builtin_dir_needs_the_checkout_marker(self):  # catches: trusting any parents[3]/plugins
+        (self.tmp / "other" / "plugins").mkdir(parents=True)
+        here = self.tmp / "other" / "apps" / "cli" / "src" / "catalog.py"
+        here.parent.mkdir(parents=True)
+        here.write_text("")
+        self.assertEqual(REAL_BUILTIN_DIR(here), self.tmp / "other" / "plugins")
+        lone = self.tmp / "lone" / "a" / "b" / "src" / "catalog.py"
+        (self.tmp / "lone" / "plugins").mkdir(parents=True)
+        lone.parent.mkdir(parents=True)
+        lone.write_text("")
+        self.assertIsNone(REAL_BUILTIN_DIR(lone))
+
+    def test_scanning_a_copy_of_the_real_plugins_folder_is_fast(self):  # catches: a slow scan (NFR1)
+        copy = self.tmp / "plugins-copy"
+        shutil.copytree(ROOT.parent.parent / "plugins" / "dm", copy / "dm",
+                        ignore=shutil.ignore_patterns(".venv", "__pycache__", "node_modules", ".git"))
+        with mock.patch.object(catalog, "builtin_dir", return_value=copy):
+            catalog.load(self.store())  # warm the file cache
+            start = time.perf_counter()
+            found = catalog.load(self.store())
+            self.assertLess(time.perf_counter() - start, 0.5)
+        self.assertEqual([a.manifest.id for a in found], ["dev.dock.dm"])

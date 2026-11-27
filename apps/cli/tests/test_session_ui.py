@@ -78,7 +78,7 @@ class TwoInvokes(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         self.session = Session(Store(Path(tmp.name)))
-        self.manifest = mock.Mock()
+        self.manifest = mock.Mock(permissions=[])
         self.manifest.id = "p"
         for patch in (mock.patch.object(lifecycle, "PluginProcess", FakeProc),
                       mock.patch.object(lifecycle.isolation, "prepare"),
