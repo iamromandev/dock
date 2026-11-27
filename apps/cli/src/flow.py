@@ -224,8 +224,10 @@ def _what(s: Step) -> str:
     return f"{s.plugin} {s.command}" + (f" ({s.label})" if s.label is not None else "")
 
 
-def render(f: Flow, store) -> list[str]:
-    """What the flow will do, one line per step, then what each plugin may do; safe to print."""
+def render(f: Flow, store, not_installed: frozenset[str] | set[str] = frozenset()) -> list[str]:
+    """What the flow will do, one line per step, then what each plugin may do; safe to print.
+
+    Plugins in `not_installed` are marked as such in the Permissions block (their manifest is still read)."""
     lines = []
     for n, s in enumerate(f.steps, 1):
         args = " ".join(f"{_s(k)}={_s(v)}" for k, v in s.inputs.items())
@@ -233,11 +235,12 @@ def render(f: Flow, store) -> list[str]:
     lines += ["", "Permissions:"]
     for pid in dict.fromkeys(s.plugin for s in f.steps):
         try:
-            grants = approve.grants(store.get(pid))
+            grants = approve.grants(store.get(pid), store.dirs)
         except ManifestError:
             lines.append(f"  {_s(pid)}: not installed")
             continue
-        lines.append(f"  {_s(pid)}: {', '.join(_s(g) for g in grants) or 'none'}")
+        mark = " (not installed)" if pid in not_installed else ""
+        lines.append(f"  {_s(pid)}{mark}: {', '.join(_s(g) for g in grants) or 'none'}")
     return lines
 
 

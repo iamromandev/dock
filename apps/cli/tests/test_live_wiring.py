@@ -86,6 +86,7 @@ class OneShot(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         main.Store.return_value.resolve.return_value = (mock.Mock(), "cmd")
+        main.Store.return_value.config.return_value = {}  # no config.toml: no [paths]
 
     def run_main(self, live, result=0):
         def fake_run(*args, **kwargs):

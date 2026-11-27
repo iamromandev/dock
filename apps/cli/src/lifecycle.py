@@ -201,6 +201,11 @@ class Session:
                 pass
             proc.handlers = ui.handlers()
             params = {"command": command, "args": args, "cwd": os.getcwd()}  # what prepare() mounts for fs:write:cwd
+            # Checked on every invoke: if the folder is retargeted while a shell runs, the plugin gets a path that
+            # is not mounted in its container and fails to read it (nothing leaks).
+            in_dir = isolation.in_folder(self.store, manifest, os.getcwd())  # None without fs:read:in
+            if in_dir is not None:
+                params["in_dir"] = str(in_dir)  # mounted read-only at this path
             if inputs is not None:
                 params["inputs"] = inputs
             if self.work_dir is not None:

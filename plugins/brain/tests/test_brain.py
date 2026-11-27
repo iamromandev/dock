@@ -1,4 +1,4 @@
-"""The planner plugin driven over its stdio protocol, against a local stand-in for the model's HTTP endpoint."""
+"""The brain plugin driven over its stdio protocol, against a local stand-in for the model's HTTP endpoint."""
 
 import json
 import os
@@ -11,7 +11,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PLANNER = Path(__file__).resolve().parent.parent / "main.py"
+BRAIN = Path(__file__).resolve().parent.parent / "main.py"
 FLOW = {"params": {}, "steps": [{"plugin": "dev.dock.dm", "command": "dm", "inputs": {"url": "http://x", "dir": "{work}"}}]}
 
 
@@ -51,9 +51,9 @@ def chat(content) -> bytes:
     return json.dumps({"message": {"role": "assistant", "content": content}}).encode()
 
 
-class Planner(unittest.TestCase):
+class Brain(unittest.TestCase):
     def setUp(self):
-        self.dir = Path(tempfile.mkdtemp(prefix="dock-planner-"))
+        self.dir = Path(tempfile.mkdtemp(prefix="dock-brain-"))
         self.catalog = self.dir / "catalog.json"
         self.catalog.write_text(json.dumps({"plugins": [{"id": "dev.dock.dm", "commands": []}]}), encoding="utf-8")
         self.models: list[Model] = []
@@ -68,11 +68,11 @@ class Planner(unittest.TestCase):
         return m
 
     def start(self, url, model_name=None):
-        env = {**os.environ, "DOCK_PLANNER_URL": url}
-        env.pop("DOCK_PLANNER_MODEL", None)
+        env = {**os.environ, "DOCK_BRAIN_URL": url}
+        env.pop("DOCK_BRAIN_MODEL", None)
         if model_name:
-            env["DOCK_PLANNER_MODEL"] = model_name
-        return subprocess.Popen([sys.executable, str(PLANNER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            env["DOCK_BRAIN_MODEL"] = model_name
+        return subprocess.Popen([sys.executable, str(BRAIN)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, env=env)
 
     @staticmethod
@@ -103,6 +103,13 @@ class Planner(unittest.TestCase):
         text = json.dumps(body["messages"])
         self.assertIn("get x", text)
         self.assertIn("dev.dock.dm", text)
+
+    def test_the_model_is_told_a_not_installed_plugin_may_be_used(self):
+        m = self.model(body=chat(json.dumps(FLOW)))
+        self.invoke(m.url)
+        system = next(x["content"] for x in m.requests[0]["body"]["messages"] if x["role"] == "system")
+        self.assertIn('"installed": false', system)
+        self.assertIn("dock installs it after the user approves", system)
 
     def test_the_model_is_told_results_go_to_the_current_folder_and_work_is_scratch(self):
         # {work} is deleted after a successful run: a download put there is lost, and a step the request did not ask

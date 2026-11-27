@@ -10,7 +10,9 @@ UV := uv
 .PHONY: install-hooks install check check-ci test clean help \
 	cli-sync cli-install cli-uninstall cli-check cli-check-ci cli-test cli-run cli-clean \
 	dm-install dm-check dm-check-ci dm-test dm-clean \
-	planner-install planner-check planner-check-ci planner-test planner-clean
+	brain-install brain-check brain-check-ci brain-test brain-clean \
+	image-install image-check image-check-ci image-test image-clean \
+	story-install story-check story-check-ci story-test story-clean
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -19,7 +21,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install planner:install
+	$(MOON) run cli:sync dm:install brain:install image:install story:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -74,21 +76,53 @@ dm-test: # Run dm's in-process tests (no Docker or podman needed)
 dm-clean: # Remove dm's Python caches
 	$(MOON) run dm:clean
 
-## planner - delegates to plugins/planner/moon.yml
-planner-install: # Install the planner's dev tools
-	$(MOON) run planner:install
+## brain - delegates to plugins/brain/moon.yml
+brain-install: # Install the brain's dev tools
+	$(MOON) run brain:install
 
-planner-check: # Lint + typecheck the planner (fixes what ruff can)
-	$(MOON) run planner:check
+brain-check: # Lint + typecheck the brain (fixes what ruff can)
+	$(MOON) run brain:check
 
-planner-check-ci: # Lint + typecheck the planner without fixing anything. For CI.
-	$(MOON) run planner:check-ci
+brain-check-ci: # Lint + typecheck the brain without fixing anything. For CI.
+	$(MOON) run brain:check-ci
 
-planner-test: # Run the planner's tests (a local stand-in model server; no Docker or model needed)
-	$(MOON) run planner:test
+brain-test: # Run the brain's tests (a local stand-in model server; no Docker or model needed)
+	$(MOON) run brain:test
 
-planner-clean: # Remove the planner's Python caches
-	$(MOON) run planner:clean
+brain-clean: # Remove the brain's Python caches
+	$(MOON) run brain:clean
+
+## image - delegates to plugins/image/moon.yml
+image-install: # Install the image plugin's dev tools
+	$(MOON) run image:install
+
+image-check: # Lint + typecheck the image plugin (fixes what ruff can)
+	$(MOON) run image:check
+
+image-check-ci: # Lint + typecheck the image plugin without fixing anything. For CI.
+	$(MOON) run image:check-ci
+
+image-test: # Run the image plugin's tests (a local stand-in server; no Docker or GPU needed)
+	$(MOON) run image:test
+
+image-clean: # Remove the image plugin's Python caches
+	$(MOON) run image:clean
+
+## story - delegates to plugins/story/moon.yml
+story-install: # Install the story plugin's dev tools
+	$(MOON) run story:install
+
+story-check: # Lint + typecheck the story plugin (fixes what ruff can)
+	$(MOON) run story:check
+
+story-check-ci: # Lint + typecheck the story plugin without fixing anything. For CI.
+	$(MOON) run story:check-ci
+
+story-test: # Run the story plugin's tests (a local stand-in Ollama server; no Docker or GPU needed)
+	$(MOON) run story:test
+
+story-clean: # Remove the story plugin's Python caches
+	$(MOON) run story:clean
 
 # help
 help:

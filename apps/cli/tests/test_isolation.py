@@ -386,13 +386,13 @@ class RunArgv(unittest.TestCase):
             self.argv(self.manifest(), work_dir="/flows/a,b")
         self.assertIn("work folder", str(cm.exception))
 
-    def test_the_planner_gets_the_work_folder_and_network_but_no_cwd_mount(self):
-        m = Manifest.load(ROOT.parent.parent / "plugins" / "planner")
+    def test_the_brain_gets_the_work_folder_and_network_but_no_cwd_mount(self):
+        m = Manifest.load(ROOT.parent.parent / "plugins" / "brain")
         argv = self.argv(m, work_dir="/flows/w1")
         self.assertIn("type=bind,src=/flows/w1,dst=/flows/w1", argv)
         self.assertNotIn("type=bind,src=/work/dir,dst=/work/dir", argv)
         self.assertNotIn("--network", argv)
-        self.assertEqual(m.env, ["DOCK_PLANNER_URL", "DOCK_PLANNER_MODEL"])
+        self.assertEqual(m.env, ["DOCK_BRAIN_URL", "DOCK_BRAIN_MODEL"])
 
     def test_cwd_is_mounted_only_with_fs_write_cwd(self):
         cwd_mount = "type=bind,src=/work/dir,dst=/work/dir"
@@ -407,6 +407,37 @@ class RunArgv(unittest.TestCase):
         argv = self.argv(self.manifest(["fs:write:cwd"]), cwd="/my dir/x", data_dir="/data dir/p")
         self.assertIn("type=bind,src=/my dir/x,dst=/my dir/x", argv)
         self.assertIn("type=bind,src=/data dir/p,dst=/data dir/p", argv)
+
+    def test_in_folder_is_mounted_read_only_only_with_fs_read_in(self):
+        ro = "type=bind,src=/in/dir,dst=/in/dir,readonly"
+        self.assertNotIn(ro, self.argv(self.manifest(["network"])))
+        self.assertNotIn(ro, self.argv(self.manifest(["network"]), in_dir="/in/dir"))
+        argv = self.argv(self.manifest(["fs:read:in"]), in_dir="/in/dir")
+        self.assertEqual(argv[argv.index(ro) - 1], "--mount")
+        self.assertNotIn("type=bind,src=/work/dir,dst=/work/dir", argv)  # no fs:write:cwd: no cwd mount
+
+    def test_both_permissions_on_one_folder_mount_it_once_read_write(self):
+        argv = self.argv(self.manifest(["fs:write:cwd", "fs:read:in"]), in_dir="/work/dir")
+        self.assertEqual([a for a in argv if "dst=/work/dir" in a], ["type=bind,src=/work/dir,dst=/work/dir"])
+
+    def test_both_permissions_on_other_folders_mount_both(self):
+        argv = self.argv(self.manifest(["fs:write:cwd", "fs:read:in"]), in_dir="/in/dir")
+        self.assertIn("type=bind,src=/work/dir,dst=/work/dir", argv)
+        self.assertIn("type=bind,src=/in/dir,dst=/in/dir,readonly", argv)
+
+    def test_a_nested_mount_comes_after_its_parent_so_that_it_keeps_its_own_mode(self):
+        rw, ro = "type=bind,src=/p/out,dst=/p/out", "type=bind,src=/p/out/in,dst=/p/out/in,readonly"
+        m = self.manifest(["fs:write:cwd", "fs:read:in"])
+        argv = self.argv(m, cwd="/p/out", in_dir="/p/out/in")  # in inside out: in stays read-only
+        self.assertLess(argv.index(rw), argv.index(ro))
+        rw, ro = "type=bind,src=/p/in/out,dst=/p/in/out", "type=bind,src=/p/in,dst=/p/in,readonly"
+        argv = self.argv(m, cwd="/p/in/out", in_dir="/p/in")  # out inside in: out stays writable
+        self.assertLess(argv.index(ro), argv.index(rw))
+
+    def test_an_unsafe_in_path_is_refused_naming_fs_read_in(self):
+        with self.assertRaises(ManifestError) as cm:
+            self.argv(self.manifest(["fs:read:in"]), in_dir="/w/a,b")
+        self.assertIn("fs:read:in", str(cm.exception))
 
     def test_no_user_flag_without_posix_ids(self):
         self.assertNotIn("--user", self.argv(self.manifest(), uid_gid=None))
@@ -744,6 +775,43 @@ class CwdMount(RecordingRuntimeCase):
         launch = self.prepare("/", m)
         self.assertNotIn("/:/", launch.argv)
 
+    def reader(self, *perms):
+        extra = "\n[capabilities]\npermissions = [" + ", ".join(f'"{x}"' for x in perms) + "]"
+        m = Manifest.load(make_plugin(CONTAINER, extra))
+        (m.root / "Dockerfile").write_text("FROM scratch\n")
+        return m
+
+    def with_in(self, path):
+        from types import SimpleNamespace
+        self.store.dirs = SimpleNamespace(in_dir=Path(path), in_source="--in")
+
+    def test_the_in_folder_is_mounted_read_only_defaulting_to_the_cwd(self):
+        project = (self.user_home / "project").resolve()
+        other = self.user_home / "other"
+        other.mkdir()
+        m = self.reader("fs:read:in")
+        self.assertIn(f"type=bind,src={project},dst={project},readonly", self.prepare(project, m).argv)
+        self.with_in(other)
+        argv = self.prepare(project, m).argv
+        self.assertIn(f"type=bind,src={other.resolve()},dst={other.resolve()},readonly", argv)
+        self.assertNotIn(f"type=bind,src={project},dst={project}", argv)
+        both = self.prepare(project, self.reader("fs:write:cwd", "fs:read:in"))
+        self.assertIn(f"type=bind,src={project},dst={project}", both.argv)
+        self.assertIn(f"type=bind,src={other.resolve()},dst={other.resolve()},readonly", both.argv)
+
+    def test_an_in_folder_that_became_too_broad_or_vanished_is_refused_at_launch(self):
+        project = (self.user_home / "project").resolve()
+        m = self.reader("fs:read:in")
+        for what, path, reason in (("home", self.user_home, "home directory"),
+                                   ("gone", self.user_home / "gone", "not an existing folder")):
+            with self.subTest(what):
+                self.with_in(path)
+                with self.assertRaises(ManifestError) as cm:
+                    self.prepare(project, m)
+                self.assertIn(reason, str(cm.exception))
+                self.assertIn("fs:read:in", str(cm.exception))
+        self.assertEqual(self.calls("run"), [])
+
     def test_a_work_folder_is_mounted_and_an_unmountable_one_is_refused_before_anything_starts(self):
         work = (self.tmp / "flows" / "w1").resolve()
         work.mkdir(parents=True)
@@ -778,6 +846,50 @@ class CwdMount(RecordingRuntimeCase):
         link = self.tmp / "innocent"
         link.symlink_to(self.user_home)
         self.assertRefused(link, "home directory")
+
+    def test_no_out_folder_leaves_the_container_argv_as_it_was(self):
+        """NFR3: store.dirs of 'current folder' (no --out, no [paths]) must not change one argument."""
+        project = (self.user_home / "project").resolve()
+        import re
+        from src import paths
+
+        def argv():  # the container name ends in a per-call counter
+            return [re.sub(r"-\d+-\d+", "-N", a) for a in self.prepare(project).argv]
+
+        before = argv()
+        self.store.dirs = paths.Dirs(None, project, "current folder", "current folder")
+        self.assertEqual(argv(), before)
+        self.assertIn(f"type=bind,src={project},dst={project}", before)
+
+    def test_check_mount_refuses_too_broad_a_folder_naming_its_source(self):
+        deep = self.user_home / "x"
+        deep.mkdir()
+        (deep / "y").mkdir()
+        cases = (
+            ("root", "/", "filesystem root"),
+            ("home", self.user_home, "home directory"),
+            ("dock home", self.store.home, "dock home"),
+            ("inside dock home", self.store.home / "data", "dock home"),
+            ("dot-dot to home", deep / "y" / ".." / "..", "home directory"),
+        )
+        for label, path, reason in cases:
+            with self.subTest(label), self.assertRaises(ManifestError) as cm:
+                isolation.check_mount(self.store, path, "--out")
+            self.assertIn(reason, str(cm.exception))
+            self.assertIn("--out", str(cm.exception))
+        link = self.tmp / "innocent"
+        link.symlink_to(self.user_home)
+        with self.subTest("symlink to home"), self.assertRaises(ManifestError) as cm:
+            isolation.check_mount(self.store, link, "[paths] out")
+        self.assertIn("[paths] out", str(cm.exception))
+        isolation.check_mount(self.store, self.user_home / "project", "--out")  # a project folder passes
+
+    def test_check_mount_words_the_mode_for_the_in_folder(self):
+        # catches: "--in" refused with "read-write" although it is only mounted read-only
+        with self.assertRaises(ManifestError) as cm:
+            isolation.check_mount(self.store, self.user_home, "--in", mode="read-only")
+        self.assertIn("read-only", str(cm.exception))
+        self.assertNotIn("read-write", str(cm.exception))
 
     def test_a_cwd_with_a_colon_or_comma_is_refused_before_anything_is_built_or_started(self):
         for name in ("a:b", "a,b"):

@@ -1,5 +1,6 @@
 """Flow model: loading, static check, render and the runner with a fake StepRunner. No Docker needed."""
 
+import dataclasses
 import sys
 import tempfile
 import time
@@ -9,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src import flow
+from src import flow, paths
 from src.flow import Flow, FlowError, Step
 from src.inputs import InputSpec
 from src.manifest import Command, ContainerRun, Manifest, ManifestError
@@ -41,6 +42,7 @@ class FakeStore:
     def __init__(self, *manifests, home=None):
         self.home = Path(home) if home is not None else Path(tempfile.mkdtemp(prefix="dock-home-"))
         self.by_id = {m.id: m for m in manifests}
+        self.dirs = None
 
     def index(self):
         return {pid: {} for pid in self.by_id}
@@ -182,6 +184,13 @@ class RenderTests(unittest.TestCase):
         self.assertIn("Permissions", text)
         self.assertIn("dev.dock.dm: network, env TOKEN", text)
         self.assertIn("dev.dock.unzip: none", text)
+
+    def test_permissions_show_the_out_folder(self):
+        store = make_store()
+        store.by_id["dev.dock.dm"] = dataclasses.replace(store.by_id["dev.dock.dm"], permissions=["fs:write:cwd"])
+        store.dirs = paths.Dirs(None, Path.home() / "o", "--out", "--out")
+        text = "\n".join(flow.render(flow.load_toml(write(GOOD)), store))
+        self.assertIn("dev.dock.dm: fs:write:cwd → ~/o, env TOKEN", text)
 
     def test_hostile_text_is_sanitized(self):
         f = Flow({}, (Step("dev.dock.dm", "dm", {"url": "\x1b[31mred\x07"}, "\x1b]0;x\x07evil"),))

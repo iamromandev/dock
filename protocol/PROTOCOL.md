@@ -50,13 +50,20 @@ What the container gets:
   `invoke.cwd` is mounted read-write at the same path only for plugins that declare `fs:write:cwd`.
   The host refuses to start such a plugin when the cwd is the filesystem root, the user's home directory,
   any folder above it, or the dock home or something above or inside it. A `data_dir` or cwd path that
-  contains `:`, `,` or `"` is refused.
-- Network: none, unless the plugin declares the `network` permission. `network` is all or nothing: the planner plugin
-  (`dev.dock.planner`, used by `dock do`) declares plain `network` in v1, so it is not limited to the model endpoint
+  contains `:`, `,` or `"` is refused. `invoke.cwd` is the out folder: the one the user chose with `--out` or
+  `[paths] out`, else the folder dock was started in.
+- The in folder: only for plugins that declare `fs:read:in`, the folder the user chose with `--in` or `[paths] in`
+  (default: the out folder) is mounted **read-only** at the same path, and `invoke.in_dir` names it. The same refusals
+  as for the cwd apply (filesystem root, home directory, anything above it, the dock home), and the path is checked
+  again at launch. If it is the cwd of a plugin that also has `fs:write:cwd`, the one read-write mount covers it;
+  folders nested in each other are both mounted, the inner one after the outer. The read-only mount is recursive only on
+  Docker 25+ with kernel 5.12+; on older systems submounts inside the in folder may stay writable.
+- Network: none, unless the plugin declares the `network` permission. `network` is all or nothing: the brain plugin
+  (`dev.dock.brain`, used by `dock do`) declares plain `network` in v1, so it is not limited to the model endpoint
   (a known gap).
 - Privileges: all capabilities dropped, `no-new-privileges`, run as the host user's uid:gid.
 
-Permissions are `network` and `fs:write:cwd`, under `[capabilities] permissions`.
+Permissions are `network`, `fs:write:cwd` and `fs:read:in`, under `[capabilities] permissions`.
 A plugin that needs more of the host's environment (say an API key) declares the
 variable names in `[capabilities]`:
 
@@ -238,7 +245,7 @@ next word even if it starts with `-`; a `bool` flag takes no value and sets
 are rejected at install; invalid args fail with `dock: <command>: <message>`
 (exit code 2 in one-shot use) and the plugin is not started.
 
-`invoke` params become `{command, args, cwd, inputs?, work?}`. `inputs` is an object
+`invoke` params become `{command, args, cwd, inputs?, work?, in_dir?}`. `inputs` is an object
 `{name: value}` with JSON types (string, integer, boolean), present only for
 commands that declare `inputs` (an empty declaration gives `{}`). `args` stays
 the unchanged raw list. When present, `inputs` is authoritative: a plugin
@@ -249,6 +256,10 @@ protocol v2.
 flow step: that folder is mounted read-write at that same path, and the plugin
 may write there as well as in `cwd`. Plugins that do not know `work` ignore it.
 Single-command runs never carry it. Still protocol v2.
+
+`in_dir` is an optional absolute path string, sent only to plugins that declare `fs:read:in`: the user's in folder,
+mounted read-only at that same path. Plugins without the permission get neither the mount nor the key; older plugins
+ignore the key. Still protocol v2.
 
 
 ## Error codes

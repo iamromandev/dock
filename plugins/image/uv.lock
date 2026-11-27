@@ -12,7 +12,7 @@ wheels = [
 ]
 
 [[package]]
-name = "dock-planner"
+name = "dock-image"
 version = "0.0.0"
 source = { virtual = "." }
 

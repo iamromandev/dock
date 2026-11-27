@@ -128,17 +128,40 @@ def _mountable(m: Manifest, path, what: str) -> str:
     return text
 
 
-def _bind(path: str) -> list[str]:
-    return ["--mount", f"type=bind,src={path},dst={path}"]
+def _bind(path: str, readonly: bool = False) -> list[str]:
+    return ["--mount", f"type=bind,src={path},dst={path}{',readonly' if readonly else ''}"]
+
+
+def _folder_mounts(m: Manifest, cwd, in_dir) -> list[str]:
+    """The cwd (read-write, fs:write:cwd) and in folder (read-only, fs:read:in) binds.
+
+    The in folder is skipped when it is the cwd and the cwd is already mounted read-write. Docker sorts mounts
+    by destination itself, so a nested mount shadows its parent whatever the order; the depth sort here is
+    defensive, for runtimes that apply them in the order given, so each folder keeps its own mode.
+    """
+    mounts: list[tuple[str, bool]] = []
+    if "fs:write:cwd" in m.permissions:
+        mounts.append((_mountable(m, cwd, "current directory (fs:write:cwd)"), False))
+    if in_dir is not None and "fs:read:in" in m.permissions:
+        path = _mountable(m, in_dir, "in folder (fs:read:in)")
+        if not (mounts and _same_path(path, mounts[0][0])):
+            mounts.append((path, True))
+    mounts.sort(key=lambda x: len(Path(x[0]).parts))  # stable: equal depth keeps cwd first
+    return [a for path, ro in mounts for a in _bind(path, ro)]
+
+
+def _same_path(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
 def run_argv(runtime: str, m: Manifest, *, name: str, data_dir, cwd, uid_gid, env: dict[str, str],
-             passthrough=(), work_dir=None) -> list[str]:
+             passthrough=(), work_dir=None, in_dir=None) -> list[str]:
     """The `run` command line. uid_gid is None where there is no POSIX user (Windows).
 
     `env` is set by value; `passthrough` names are given as a bare `-e NAME`, so the runtime client reads
     the value from its own environment and a secret never shows up in the process list.
     `work_dir` (a flow's work folder) is mounted read-write at the same path for any plugin.
+    `in_dir` is mounted read-only at the same path for a plugin with fs:read:in.
     """
     return [
         runtime, "run", "-i", "--rm", "--pull", "never", "--name", name, "--label", f"{LABEL}={owner_label()}",
@@ -146,7 +169,7 @@ def run_argv(runtime: str, m: Manifest, *, name: str, data_dir, cwd, uid_gid, en
         *(["--user", f"{uid_gid[0]}:{uid_gid[1]}"] if uid_gid else []),
         *(["--network", "none"] if "network" not in m.permissions else []),
         *_bind(_mountable(m, data_dir, "data directory")),
-        *(_bind(_mountable(m, cwd, "current directory (fs:write:cwd)")) if "fs:write:cwd" in m.permissions else []),
+        *_folder_mounts(m, cwd, in_dir),
         *(_bind(_mountable(m, work_dir, "work folder")) if work_dir is not None else []),
         "--workdir", "/plugin",
         *[x for k, v in env.items() for x in ("-e", f"{k}={v}")],
@@ -279,25 +302,63 @@ def _chain(path: Path) -> list[Path]:
     return [path, *path.parents]
 
 
-def _check_cwd_mount(store, m: Manifest, cwd: str) -> None:
-    """The cwd is mounted read-write, so refuse one that would hand over more than a project directory."""
-    real = Path(os.path.realpath(cwd))
+def _mount_refusal(store, path) -> str | None:
+    """Why `path` is too broad to mount read-write (symlinks and `..` resolved first), or None when it is fine."""
+    real = Path(os.path.realpath(path))
     home = Path(os.path.realpath(Path.home()))
     dock_home = Path(os.path.realpath(store.home))
-    reason = None
     if _same(real, Path(real.anchor)):
-        reason = "the filesystem root"
-    elif _same(real, home):
-        reason = "your home directory"
-    elif any(_same(real, d) for d in _chain(dock_home)) or any(_same(d, dock_home) for d in _chain(real)):
-        reason = f"inside or above the dock home ({store.home}), which holds every plugin's data"
-    elif any(_same(real, d) for d in home.parents):
-        reason = "above your home directory"
+        return "the filesystem root"
+    if _same(real, home):
+        return "your home directory"
+    if any(_same(real, d) for d in _chain(dock_home)) or any(_same(d, dock_home) for d in _chain(real)):
+        return f"inside or above the dock home ({store.home}), which holds every plugin's data"
+    if any(_same(real, d) for d in home.parents):
+        return "above your home directory"
+    return None
+
+
+def check_mount(store, path, source: str, mode: str = "read-write") -> None:
+    """Refuse a folder (named by `source`, e.g. `--out`) that would hand over more than a project directory.
+
+    `mode` is how it would be mounted (`read-write` for the out folder, `read-only` for the in folder), for the message."""
+    reason = _mount_refusal(store, path)
+    if reason:
+        raise ManifestError(f"{source} {path}: refusing to mount it {mode}: it is {reason}")
+
+
+def _check_cwd_mount(store, m: Manifest, cwd: str) -> None:
+    """The cwd is mounted read-write, so refuse one that would hand over more than a project directory."""
+    reason = _mount_refusal(store, cwd)
     if reason:
         raise ManifestError(
             f"{m.id}: refusing to mount {cwd} read-write (fs:write:cwd): it is {reason}; "
             "run dock from a project directory"
         )
+
+
+def in_folder(store, m: Manifest, cwd) -> Path | None:
+    """The folder a plugin with fs:read:in reads: --in / [paths] in, else the out folder (cwd); None without the permission.
+
+    Checked again here, at launch, against what the path is now (symlinks resolved): it may have changed since
+    `paths.resolve` looked at it. The realpath checked here is the path that is mounted; the runtime resolves it
+    once more when it starts the container (the same model as the cwd mount), so a swap in between is not caught.
+    """
+    if "fs:read:in" not in m.permissions:
+        return None
+    dirs = getattr(store, "dirs", None)
+    chosen = dirs.in_dir if dirs is not None and dirs.in_dir is not None else None
+    source = dirs.in_source if chosen is not None else "the current folder"
+    real = Path(os.path.realpath(chosen if chosen is not None else cwd))
+    if not real.is_dir():
+        raise ManifestError(f"{m.id}: {source} {real}: not an existing folder (fs:read:in)")
+    reason = _mount_refusal(store, real)
+    if reason:
+        raise ManifestError(
+            f"{m.id}: {source} {real}: refusing to mount it read-only (fs:read:in): it is {reason}; "
+            "choose a project folder with --in, or run dock from one"
+        )
+    return real
 
 
 def prepare(store, m: Manifest, cwd: str | None = None, work_dir=None) -> Launch:
@@ -310,6 +371,9 @@ def prepare(store, m: Manifest, cwd: str | None = None, work_dir=None) -> Launch
     if "fs:write:cwd" in m.permissions:
         _check_cwd_mount(store, m, cwd)
         _mountable(m, cwd, "current directory (fs:write:cwd)")
+    in_dir = in_folder(store, m, cwd)
+    if in_dir is not None:
+        _mountable(m, in_dir, "in folder (fs:read:in)")
     if work_dir is not None:
         _mountable(m, work_dir, "work folder")
     ensure_image(cfg, store, m)
@@ -318,7 +382,7 @@ def prepare(store, m: Manifest, cwd: str | None = None, work_dir=None) -> Launch
     argv = run_argv(
         cfg.runtime, m, name=name, data_dir=data_dir, cwd=cwd,
         uid_gid=(os.getuid(), os.getgid()) if hasattr(os, "getuid") else None,
-        env=container_env(m), passthrough=passthrough_env(m), work_dir=work_dir,
+        env=container_env(m), passthrough=passthrough_env(m), work_dir=work_dir, in_dir=in_dir,
     )
     # The runtime client keeps the host environment (it needs DOCKER_HOST and friends, and resolves the
     # value-free `-e NAME` entries from it); only the -e entries above reach the plugin.
