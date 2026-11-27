@@ -14,9 +14,9 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src import uimsg
-from src.manifest import Manifest
-from src.process import PluginProcess
+from dock_host import uimsg
+from dock_host.manifest import Manifest
+from dock_host.process import PluginProcess
 from src.ui import PlainUI
 
 FFFD = "�"

@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src.store import Store
+from dock_host.store import Store
 
 FIXTURES = ROOT / "tests" / "fixtures"
 BUILD_TIMEOUT = 1200  # the first build pulls base images

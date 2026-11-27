@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src.store import Store
+from dock_host.store import Store
 
 PROMPT = "dock> "
 
@@ -214,7 +214,7 @@ class ShellE2E(unittest.TestCase):
     def _shell_obj(self):
         sys.path.insert(0, str(ROOT))
         from src.shell import Shell
-        from src.store import Store
+        from dock_host.store import Store
 
         return Shell(Store(Path(self.home)), None)
 

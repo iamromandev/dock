@@ -11,11 +11,11 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from src import lifecycle
-from src.lifecycle import Session
+from dock_host import lifecycle
+from dock_host.lifecycle import Session
 from src.live import LiveUI
-from src.process import PluginProcess
-from src.store import Store
+from dock_host.process import PluginProcess
+from dock_host.store import Store
 from src.ui import PlainUI
 from test_live_unit import FakeTerm
 

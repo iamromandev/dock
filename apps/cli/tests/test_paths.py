@@ -14,10 +14,11 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from src import isolation, paths
+from dock_host import isolation
+from src import paths
 from src import main as main_mod
-from src.manifest import ManifestError
-from src.store import Store
+from dock_host.manifest import ManifestError
+from dock_host.store import Store
 import test_catalog as tc
 
 
@@ -67,7 +68,7 @@ class InFolder(PathsCase):
         ):
             self.assertEqual(main_mod.main(["plugin", "list"]), 0, err.getvalue())
         import dataclasses
-        from src.manifest import Manifest
+        from dock_host.manifest import Manifest
 
         m = dataclasses.replace(
             Manifest.load(tc.make_plugin(self.user, "rd", "dev.t.rd")), permissions=["fs:read:in"]

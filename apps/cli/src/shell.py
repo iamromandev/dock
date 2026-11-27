@@ -6,15 +6,16 @@ import os
 import shlex
 import sys
 
-from src import __version__, isolation
+from dock_host import __version__, isolation
+from dock_host.inputs import UsageError
+from dock_host.lifecycle import Session
+from dock_host.manifest import ManifestError
+from dock_host.store import Store
+from dock_host.uimsg import sanitize
+
 from src.editor import LineEditor
-from src.inputs import UsageError
-from src.lifecycle import Session
-from src.manifest import ManifestError
-from src.store import Store
 from src.term import Terminal
 from src.ui import live_mode, make_ui
-from src.uimsg import sanitize
 
 PROMPT = "dock> "
 BUILTINS = ["help", "version", "plugin", "search", "status", "exit", "quit"]

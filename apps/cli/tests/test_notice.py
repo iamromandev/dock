@@ -9,7 +9,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src.store import Store
+from dock_host.store import Store
 
 TEXT = "dock: invalid [shell] idle_timeout -1; using 300"
 

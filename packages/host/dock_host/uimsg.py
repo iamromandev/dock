@@ -10,7 +10,7 @@ import math
 import re
 import unicodedata
 
-from src.process import PluginError
+from dock_host.process import PluginError
 
 MAX_ID = 64
 MAX_AREAS = 32

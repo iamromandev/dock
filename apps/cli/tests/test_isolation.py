@@ -18,9 +18,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src import isolation
-from src.manifest import Manifest, ManifestError
-from src.store import Store
+from dock_host import isolation
+from dock_host.manifest import Manifest, ManifestError
+from dock_host.store import Store
 
 BASE = """\
 id = "dev.dock.sample"
@@ -167,8 +167,8 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
     """AC19 / NFR1: the one `Popen` in src/process.py is only ever given a `<runtime> run` command line."""
 
     def test_every_plugin_argv_given_to_popen_is_the_runtime_then_run(self):
-        from src import process
-        from src.lifecycle import Session
+        from dock_host import process
+        from dock_host.lifecycle import Session
 
         dockenv.prebuild_plugins(ROOT / "tests" / "fixtures" / "probe")
         self.store.install(ROOT / "tests" / "fixtures" / "probe")
@@ -180,7 +180,7 @@ class PopenIsOnlyEverTheRuntime(RecordingRuntimeCase):
             seen.append(list(argv))
             return real_popen(argv, *args, **kw)
 
-        class Proxy:  # src.process's view of `subprocess`, with only Popen watched
+        class Proxy:  # dock_host.process's view of `subprocess`, with only Popen watched
             Popen = staticmethod(spy)
 
             def __getattr__(self, name):

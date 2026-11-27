@@ -1,0 +1,32 @@
+id: "host"
+language: "python"
+layer: "library"
+tags: ["host"]
+
+fileGroups:
+  sources: ["dock_host/**/*"]
+  configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
+
+tasks:
+  sync:
+    command: "uv sync"
+    preset: "utility"
+  check:
+    # Fixes what ruff can, so it edits sources and is never cached.
+    script: "uv run ruff check --fix . && uv run ty check ."
+    deps: ["sync"]
+    options:
+      cache: false
+  check-ci:
+    # Same checks without fixing anything. For CI.
+    script: "uv run ruff check . && uv run ty check ."
+    deps: ["sync"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+  test:
+    # Plain pytest for now; the Docker-backed tests arrive with their runtime check.
+    script: "uv run pytest"
+    deps: ["sync"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+  clean:
+    script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    preset: "utility"

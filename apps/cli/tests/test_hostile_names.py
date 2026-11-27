@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src import main
-from src.store import Store
+from dock_host.store import Store
 
 EVIL = "go\x1b]0;pwned\x07\x9b2J\ud800"
 

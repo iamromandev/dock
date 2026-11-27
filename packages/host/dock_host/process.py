@@ -13,8 +13,8 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from src import isolation, threads
-from src.manifest import Manifest
+from dock_host import isolation, threads
+from dock_host.manifest import Manifest
 
 
 class PluginError(Exception):

@@ -12,10 +12,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src import isolation, lifecycle
-from src.lifecycle import Session
-from src.process import PluginProcess
-from src.store import Store
+from dock_host import isolation, lifecycle
+from dock_host.lifecycle import Session
+from dock_host.process import PluginProcess
+from dock_host.store import Store
 from test_lifecycle_seams import RecordingUI
 
 PROBE = ROOT / "tests" / "fixtures" / "probe"

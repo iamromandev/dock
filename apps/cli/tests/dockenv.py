@@ -171,7 +171,7 @@ def make_home(prefix: str, *plugin_dirs: Path) -> Path:
     import tempfile
 
     sys.path.insert(0, str(ROOT))
-    from src.store import Store
+    from dock_host.store import Store
 
     home = Path(tempfile.mkdtemp(prefix=prefix))
     store = Store(home)
@@ -193,7 +193,7 @@ def prebuild_plugins(*plugin_dirs: Path) -> None:
     home = make_home("dock-prebuild-", *plugin_dirs)
     try:
         sys.path.insert(0, str(ROOT))
-        from src.manifest import Manifest
+        from dock_host.manifest import Manifest
 
         prebuild(home, [Manifest.load(p).id for p in plugin_dirs])
     finally:

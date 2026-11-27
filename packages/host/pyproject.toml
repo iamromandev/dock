@@ -1,0 +1,28 @@
+[project]
+name = "dock-host"
+version = "0.2.0"
+description = "The dock host core: plugin manifests, isolation, lifecycle, store, catalog and flows, independent of any terminal"
+requires-python = "==3.15.2"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.17.0", "ty==0.0.86"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dock_host"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+# The code base is untyped and relies on Optional attributes narrowed at runtime (see apps/cli/pyproject.toml).
+[tool.ty.rules]
+deprecated = "ignore"
+invalid-argument-type = "ignore"
+no-matching-overload = "ignore"
+unresolved-attribute = "ignore"
+unsupported-operator = "ignore"

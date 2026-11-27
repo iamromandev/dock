@@ -6,9 +6,10 @@ import getpass
 import os
 import sys
 
-from src import uimsg
+from dock_host import uimsg
+from dock_host.ui import UI
+
 from src.areas import Areas, plain_lines
-from src.uiproto import UI
 
 FORM_TRIES = 3  # answers a plain form takes per field before it gives up
 

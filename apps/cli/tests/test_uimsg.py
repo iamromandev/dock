@@ -8,8 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src import uimsg
-from src.process import PluginError
+from dock_host import uimsg
+from dock_host.process import PluginError
 
 FFFD = "�"
 

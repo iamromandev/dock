@@ -58,6 +58,9 @@ wheels = [
 name = "dock-cli"
 version = "0.2.0"
 source = { editable = "." }
+dependencies = [
+    { name = "dock-host" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -68,10 +71,25 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "dock-host", editable = "../../packages/host" }]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "coverage", specifier = "==7.17.5" },
+    { name = "pytest", specifier = "==9.1.1" },
+    { name = "ruff", specifier = "==0.17.0" },
+    { name = "ty", specifier = "==0.0.86" },
+]
+
+[[package]]
+name = "dock-host"
+version = "0.2.0"
+source = { editable = "../../packages/host" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = "==0.17.0" },
     { name = "ty", specifier = "==0.0.86" },

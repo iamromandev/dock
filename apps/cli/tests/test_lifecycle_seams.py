@@ -11,9 +11,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-import src.process
-from src.lifecycle import Session
-from src.store import Store
+import dock_host.process
+from dock_host.lifecycle import Session
+from dock_host.store import Store
 
 
 class RecordingUI:
@@ -143,8 +143,8 @@ class InvokeInputs(unittest.TestCase):
         return session, manifest, proc
 
     def test_plugin_error_propagates(self):
-        session, manifest, _ = self.session_with(src.process.PluginError("boom"))
-        with self.assertRaises(src.process.PluginError):
+        session, manifest, _ = self.session_with(dock_host.process.PluginError("boom"))
+        with self.assertRaises(dock_host.process.PluginError):
             session.invoke_inputs(manifest, "go", {})
 
 
@@ -169,7 +169,7 @@ class InvokeBracketsTheUI(unittest.TestCase):
         return code, [kind for _, kind, _ in events]
 
     def test_end_runs_when_the_plugin_fails(self):
-        code, kinds = self.run_invoke(src.process.PluginError("boom"))
+        code, kinds = self.run_invoke(dock_host.process.PluginError("boom"))
         self.assertEqual((code, kinds), (1, ["begin", "invoke", "warn", "end"]))
 
 

@@ -11,11 +11,13 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 
-from src import __version__, approve, catalog, isolation, lifecycle, paths, uimsg
-from src.inputs import UsageError, parse_for
-from src.manifest import Manifest, ManifestError
+from dock_host import __version__, approve, catalog, isolation, lifecycle, uimsg
+from dock_host.inputs import UsageError, parse_for
+from dock_host.manifest import Manifest, ManifestError
+from dock_host.store import Store, staged
+
+from src import paths
 from src.stdio import ask_stdin, tty
-from src.store import Store, staged
 from src.term import Terminal
 from src.ui import live_mode, make_ui
 

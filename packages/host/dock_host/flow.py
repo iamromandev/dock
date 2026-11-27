@@ -14,10 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
-from src import approve, uimsg
-from src.inputs import TYPES, UsageError, check_values
-from src.manifest import Manifest, ManifestError
-from src.process import PluginError
+from dock_host import approve, uimsg
+from dock_host.inputs import TYPES, UsageError, check_values
+from dock_host.manifest import Manifest, ManifestError
+from dock_host.process import PluginError
 
 MAX_STEPS = 16
 REF = re.compile(r"\{(params\.\w+|work|steps\.\d+\.\w+(?:\[\d+\])?)\}")

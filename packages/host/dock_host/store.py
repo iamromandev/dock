@@ -20,9 +20,9 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from src import catalog, isolation
-from src.manifest import Manifest, ManifestError, NotAContainerPlugin, check_removed_tables
-from src.notice import default_notice
+from dock_host import catalog, isolation
+from dock_host.manifest import Manifest, ManifestError, NotAContainerPlugin, check_removed_tables
+from dock_host.notice import default_notice
 
 
 def child(root: Path, name: str, what: str) -> Path:

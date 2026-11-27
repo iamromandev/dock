@@ -14,9 +14,10 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_catalog as tc
-from src import approve, main, stdio
-from src import store as store_mod
-from src.manifest import Manifest
+from dock_host import approve
+from src import main, stdio
+from dock_host import store as store_mod
+from dock_host.manifest import Manifest
 from src.shell import Shell
 
 PID = "dev.t.g"

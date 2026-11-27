@@ -26,7 +26,5 @@ ignore = [
     "UP031",  # %-formatting is used for byte strings and protocol text
 ]
 "src/editor.py" = ["RUF071"]  # commonprefix of completion candidates is character-wise on purpose
-"src/inputs.py" = ["B023", "B905"]  # closure runs inside the same iteration; zip is used as a bounded pairing
 "src/live.py" = ["RUF001", "RUF002"]  # the single angle quote is the deliberate prompt glyph
 "src/main.py" = ["SIM108"]  # if/else kept: the two branches read as separate cases
-"src/process.py" = ["SIM115"]  # the log file is closed in stop()

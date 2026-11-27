@@ -7,8 +7,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from src import isolation
-from src.manifest import ManifestError
+from dock_host import isolation
+from dock_host.manifest import ManifestError
 
 KNOWN_KEYS = ("in", "out")
 _NAME = "paths"

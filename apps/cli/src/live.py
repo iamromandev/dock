@@ -16,7 +16,9 @@ import threading
 import time
 from collections.abc import Callable
 
-from src import keys, threads, uimsg
+from dock_host import threads, uimsg
+
+from src import keys
 from src.areas import BAR_CELLS, Area, Areas, plain_lines
 from src.editor import LineBuffer
 from src.textwidth import cut, width

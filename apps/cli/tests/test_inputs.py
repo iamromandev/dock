@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from src.inputs import InputSpec, UsageError, check_values, parse_args, specs_from_toml
+from dock_host.inputs import InputSpec, UsageError, check_values, parse_args, specs_from_toml
 
 FETCH = [
     {"name": "url", "type": "string", "required": True},

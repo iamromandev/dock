@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 
-from src.manifest import Manifest
-from src.notice import default_notice
+from dock_host.manifest import Manifest
+from dock_host.notice import default_notice
 
 ORDER = ("network", "fs:write:cwd", "fs:read:in")
 

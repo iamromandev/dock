@@ -3,7 +3,7 @@
   [catalog] paths = ["~/plugins", "/opt/dock-plugins"]
 
 Only plugin.toml files are read (through Manifest.load); nothing is built, started or copied. This module takes
-the Store as an argument and never imports src.store (which imports this module).
+the Store as an argument and never imports dock_host.store (which imports this module).
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from src.manifest import Manifest, ManifestError
+from dock_host.manifest import Manifest, ManifestError
 
 CONFIG_KEYS = ("paths",)
 _NAME = "catalog"
@@ -73,11 +73,11 @@ def _candidates(entry: Path) -> list[Path]:
 def builtin_dir(here: Path | None = None) -> Path | None:
     """<repo>/plugins of the checkout dock runs from; None when there is none (a packaged install).
 
-    The checkout is recognised by apps/cli/src/catalog.py being this very file, so an unrelated
+    The checkout is recognised by packages/host/dock_host/catalog.py being this very file, so an unrelated
     <three folders up>/plugins is not trusted. `here` is this file's path (tests give another)."""
     here = here or Path(__file__).resolve()
     repo = here.parents[3]
-    marker = repo / "apps" / "cli" / "src" / "catalog.py"
+    marker = repo / "packages" / "host" / "dock_host" / "catalog.py"
     if not marker.is_file() or marker.resolve() != here:
         return None
     folder = repo / "plugins"

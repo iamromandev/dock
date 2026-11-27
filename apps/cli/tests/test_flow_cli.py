@@ -14,12 +14,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from src import catalog, flow, flow_cli, paths
+from dock_host import catalog, flow
+from src import flow_cli, paths
 from src.main import main
 
-from src.inputs import InputSpec
-from src.manifest import Command, Manifest, ManifestError
-from src.process import PluginError
+from dock_host.inputs import InputSpec
+from dock_host.manifest import Command, Manifest, ManifestError
+from dock_host.process import PluginError
 from test_flow import GOOD, Recorder, make_store, manifest
 
 
@@ -419,7 +420,7 @@ class RealStoreInstall(unittest.TestCase):
     """dock do with a real Store, real staging and a real plugin folder copied from plugins/dm."""
 
     def setUp(self):
-        from src.store import Store
+        from dock_host.store import Store
 
         self.dir = Path(tempfile.mkdtemp(prefix="dock-real-")).resolve()
         self.addCleanup(__import__("shutil").rmtree, self.dir, ignore_errors=True)

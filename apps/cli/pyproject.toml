@@ -3,13 +3,16 @@ name = "dock-cli"
 version = "0.2.0"
 description = "A tiny CLI host where every feature is an out-of-process, any-language plugin"
 requires-python = "==3.15.2"
-dependencies = []
+dependencies = ["dock-host"]
 
 [project.scripts]
 dock = "src.main:main"
 
 [dependency-groups]
 dev = ["coverage==7.17.5", "pytest==9.1.1", "ruff==0.17.0", "ty==0.0.86"]
+
+[tool.uv.sources]
+dock-host = { path = "../../packages/host", editable = true }
 
 [build-system]
 requires = ["hatchling"]

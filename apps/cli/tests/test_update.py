@@ -13,8 +13,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import test_catalog as tc
-from src import catalog
-from src.manifest import Manifest, ManifestError
+from dock_host import catalog
+from dock_host.manifest import Manifest, ManifestError
 
 PID = "dev.t.p"
 
@@ -91,7 +91,7 @@ class StoreUpdate(tc.TmpCase):
             why = e
         seen = []
         self.store_.notice = seen.append
-        with mock.patch("src.isolation.forget_image"):
+        with mock.patch("dock_host.isolation.forget_image"):
             self.store_.update(PID, self.new)
         self.assertEqual(seen, [f"dock: old image dock/{PID}:0.1.0 was not removed: "
                                 f"could not read the old manifest ({why})"])

@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src import main, shell
-from src.store import Store
+from dock_host.store import Store
 from src.ui import PlainUI
 
 

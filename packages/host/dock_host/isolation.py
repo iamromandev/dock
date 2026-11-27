@@ -18,8 +18,8 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from src import API_VERSION
-from src.manifest import Manifest, ManifestError
+from dock_host import API_VERSION
+from dock_host.manifest import Manifest, ManifestError
 
 LABEL = "dev.dock.owner"            # value: <hostname>:<pid> of the dock process that owns the container
 ENV_ALLOW = ("LANG", "TZ")  # the only host variables a container sees (never PATH: the image has its own)

@@ -18,9 +18,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import dockenv
-from src import catalog
-from src.manifest import ManifestError
-from src.store import Store
+from dock_host import catalog
+from dock_host.manifest import ManifestError
+from dock_host.store import Store
 
 REAL_BUILTIN_DIR = catalog.builtin_dir  # before any test patches it
 
@@ -296,11 +296,11 @@ class BuiltIn(TmpCase):
 
     def test_builtin_dir_needs_the_checkout_marker(self):  # catches: trusting any parents[3]/plugins
         (self.tmp / "other" / "plugins").mkdir(parents=True)
-        here = self.tmp / "other" / "apps" / "cli" / "src" / "catalog.py"
+        here = self.tmp / "other" / "packages" / "host" / "dock_host" / "catalog.py"
         here.parent.mkdir(parents=True)
         here.write_text("")
         self.assertEqual(REAL_BUILTIN_DIR(here), self.tmp / "other" / "plugins")
-        lone = self.tmp / "lone" / "a" / "b" / "src" / "catalog.py"
+        lone = self.tmp / "lone" / "a" / "b" / "dock_host" / "catalog.py"
         (self.tmp / "lone" / "plugins").mkdir(parents=True)
         lone.parent.mkdir(parents=True)
         lone.write_text("")

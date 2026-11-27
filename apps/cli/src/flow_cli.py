@@ -11,13 +11,15 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from src import approve, catalog, flow, isolation, paths, uimsg
-from src.inputs import InputSpec, UsageError, check_values
-from src.lifecycle import Session
-from src.manifest import Manifest, ManifestError
-from src.process import PluginError
+from dock_host import approve, catalog, flow, isolation, uimsg
+from dock_host.inputs import InputSpec, UsageError, check_values
+from dock_host.lifecycle import Session
+from dock_host.manifest import Manifest, ManifestError
+from dock_host.process import PluginError
+from dock_host.store import Store, staged
+
+from src import paths
 from src.stdio import ask_stdin
-from src.store import Store, staged
 from src.ui import make_ui
 
 BRAIN_ID = "dev.dock.brain"

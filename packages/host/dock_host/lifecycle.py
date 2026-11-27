@@ -12,12 +12,12 @@ import os
 import time
 from collections.abc import Callable
 
-from src import API_VERSION, __version__, isolation
-from src.inputs import parse_for
-from src.manifest import Manifest
-from src.process import CANCELLED, Cancelled, Hub, PluginError, PluginProcess
-from src.store import Store
-from src.uiproto import UI
+from dock_host import API_VERSION, __version__, isolation
+from dock_host.inputs import parse_for
+from dock_host.manifest import Manifest
+from dock_host.process import CANCELLED, Cancelled, Hub, PluginError, PluginProcess
+from dock_host.store import Store
+from dock_host.ui import UI
 
 INIT_TIMEOUT = 10
 CANCEL_GRACE = float(os.environ.get("DOCK_CANCEL_GRACE", 5))  # seconds a plugin gets to honour `cancel`
