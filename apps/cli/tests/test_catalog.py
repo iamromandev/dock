@@ -672,3 +672,21 @@ class BrainCatalogShowsImage(TmpCase):
         self.assertIn("picture", command["summary"])
         self.assertIn({"name": "prompt", "type": "string", "required": True}, command["inputs"])
         self.assertIn({"name": "width", "type": "int", "required": False}, command["inputs"])
+
+
+class BrainCatalogShowsBuiltInStory(TmpCase):
+    def test_the_story_plugin_is_found_as_a_builtin_and_listed_not_installed(self):  # catches: story manifest not parsed/listed
+        from src import flow_cli
+        builtin = self.tmp / "builtin"
+        shutil.copytree(ROOT.parent.parent / "plugins" / "story", builtin / "story",
+                        ignore=shutil.ignore_patterns(".venv", "__pycache__", ".pytest_cache", ".ruff_cache"))
+        work = self.tmp / "work"
+        work.mkdir()
+        with mock.patch.object(catalog, "builtin_dir", return_value=builtin):
+            found = {a.manifest.id: a.manifest for a in catalog.load(self.store())}
+        self.assertIn("dev.dock.story", found)
+        data = json.loads(flow_cli.write_catalog(self.store(), work, found).read_text(encoding="utf-8"))
+        plugin = next(p for p in data["plugins"] if p["id"] == "dev.dock.story")
+        self.assertIs(plugin["installed"], False)
+        self.assertEqual([c["name"] for c in plugin["commands"]], ["write"])
+        self.assertIn({"name": "prompt", "type": "string", "required": True}, plugin["commands"][0]["inputs"])

@@ -18,7 +18,8 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │  ├─ dm/            the downloader (moon project `dm`)
 │  │  ├─ tests/      dm's in-process tests (pytest, no container runtime) and the torrent fixtures
 │  │  └─ moon.yml    install, check, check-ci, test, clean
-│  └─ brain/       plans a flow from a request with a local model (moon project `brain`)
+│  ├─ brain/       plans a flow from a request with a local model (moon project `brain`)
+│  └─ story/       writes a text story into a Markdown file with a local Ollama model (moon project `story`)
 └─ protocol/         PROTOCOL.md, the plugin protocol every host and plugin follows
 ```
 
@@ -51,6 +52,7 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 | `make dm-test`       | Run dm's in-process tests (no Docker or podman needed)             |
 | `make dm-clean`      | Remove dm's Python caches                                          |
 | `make brain-install`, `brain-check`, `brain-check-ci`, `brain-test`, `brain-clean` | The same for the brain (its tests need no Docker or model) |
+| `make story-install`, `story-check`, `story-check-ci`, `story-test`, `story-clean` | The same for the story plugin (its tests need no Docker or model) |
 | `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
 | `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project (`install` runs `cli:sync` for the CLI) |
 | `make help`          | List the targets                                                   |

@@ -11,7 +11,8 @@ UV := uv
 	cli-sync cli-install cli-uninstall cli-check cli-check-ci cli-test cli-run cli-clean \
 	dm-install dm-check dm-check-ci dm-test dm-clean \
 	brain-install brain-check brain-check-ci brain-test brain-clean \
-	image-install image-check image-check-ci image-test image-clean
+	image-install image-check image-check-ci image-test image-clean \
+	story-install story-check story-check-ci story-test story-clean
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -20,7 +21,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install brain:install image:install
+	$(MOON) run cli:sync dm:install brain:install image:install story:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -106,6 +107,22 @@ image-test: # Run the image plugin's tests (a local stand-in server; no Docker o
 
 image-clean: # Remove the image plugin's Python caches
 	$(MOON) run image:clean
+
+## story - delegates to plugins/story/moon.yml
+story-install: # Install the story plugin's dev tools
+	$(MOON) run story:install
+
+story-check: # Lint + typecheck the story plugin (fixes what ruff can)
+	$(MOON) run story:check
+
+story-check-ci: # Lint + typecheck the story plugin without fixing anything. For CI.
+	$(MOON) run story:check-ci
+
+story-test: # Run the story plugin's tests (a local stand-in Ollama server; no Docker or GPU needed)
+	$(MOON) run story:test
+
+story-clean: # Remove the story plugin's Python caches
+	$(MOON) run story:clean
 
 # help
 help:

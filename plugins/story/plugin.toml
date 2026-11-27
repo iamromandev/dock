@@ -1,0 +1,22 @@
+id = "dev.dock.story"
+version = "0.1.0"
+api_version = "2"
+description = "Write a text story from a prompt with a local Ollama model"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["network", "fs:write:cwd"]
+env = ["DOCK_STORY_URL", "DOCK_STORY_MODEL"]
+
+[[commands]]
+name = "write"
+summary = "Write a story (Markdown file in the current folder): write <prompt> [--audience kids|adult] [--length short|medium|long] [-o name.md]"
+keywords = ["story", "write", "tale", "fiction", "bedtime"]
+inputs = [
+  { name = "prompt", type = "string", required = true },
+  { name = "audience", type = "string", flag = "--audience" },
+  { name = "length", type = "string", flag = "--length" },
+  { name = "output", type = "string", flag = "--output", short = "-o" },
+]
