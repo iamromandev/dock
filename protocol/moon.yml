@@ -1,0 +1,46 @@
+id: "protocol"
+language: "python"
+layer: "library"
+tags: ["protocol"]
+
+fileGroups:
+  sources: ["schema/**/*", "fixtures/**/*", "conformance/**/*"]
+  configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
+  # The suite builds and runs every plugin's image, so a plugin change must rerun it.
+  plugins: ["/plugins/**/*"]
+
+tasks:
+  # python tools (uv)
+  install:
+    command: "uv sync"
+    preset: "utility"
+  check:
+    # Fixes what ruff can, so it edits sources and is never cached.
+    script: "uv run ruff check --fix && uv run ty check"
+    deps: ["install"]
+    options:
+      cache: false
+  check-ci:
+    # Same checks without fixing anything. For CI.
+    script: "uv run ruff check && uv run ty check"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+  test:
+    # Needs Docker or podman, and stops at once without one. The plugin images are built from plugins/ and
+    # tests/fixtures/, both inputs, so a cached pass is never for a stale image.
+    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); from conformance import runtime; runtime.require_runtime()\" && uv run pytest"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "@group(plugins)", "tests/**/*", "$DOCK_TEST_RUNTIME"]
+
+  # cleanup
+  clean:
+    # Also removes the plugin images the suite built, so the next run rebuilds them.
+    script: |
+      find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache
+      rt=${DOCK_TEST_RUNTIME:-$(command -v docker || command -v podman)}
+      if [ -n "$rt" ]; then
+        # by name, not id: test plugins with the same contents share an image id, and removing an id twice fails
+        refs=$("$rt" images 'dock-conformance/*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | sort -u)
+        [ -z "$refs" ] || "$rt" rmi -f $refs >/dev/null || echo "clean: some dock-conformance images were not removed" >&2
+      fi
+    preset: "utility"

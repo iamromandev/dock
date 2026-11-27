@@ -1,0 +1,21 @@
+{
+  "jsonrpc": "2.0",
+  "method": "table",
+  "params": {
+    "title": "T",
+    "columns": [
+      "a",
+      "b"
+    ],
+    "rows": [
+      [
+        "x",
+        1
+      ],
+      [
+        "y",
+        2.5
+      ]
+    ]
+  }
+}

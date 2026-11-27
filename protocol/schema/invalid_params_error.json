@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/invalid_params_error.json",
+  "title": "invalid_params_error",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "id",
+    "error"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "type": [
+        "integer",
+        "string",
+        "null"
+      ]
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "const": -32602
+        },
+        "message": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

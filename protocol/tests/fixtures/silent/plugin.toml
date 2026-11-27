@@ -1,0 +1,6 @@
+id = "test.silent"
+version = "0.0.1"
+api_version = "2"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }

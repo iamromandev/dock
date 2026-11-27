@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/prompt_user_result.json",
+  "title": "prompt_user_result",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "id",
+    "result"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "$ref": "common.json#/$defs/requestId"
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "eof"
+          ],
+          "properties": {
+            "eof": {
+              "const": true
+            }
+          }
+        }
+      ]
+    }
+  }
+}

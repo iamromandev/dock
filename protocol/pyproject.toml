@@ -1,0 +1,19 @@
+[project]
+name = "dock-protocol"
+version = "0.0.0"  # the protocol conformance suite; not published
+requires-python = "==3.15.2"
+dependencies = [
+    "jsonschema==4.26.0",
+    "referencing==0.37.0",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.17.0", "ty==0.0.86"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

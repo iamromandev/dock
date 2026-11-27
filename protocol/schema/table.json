@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/table.json",
+  "title": "table",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "method",
+    "params"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "method": {
+      "const": "table"
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "id",
+        "columns",
+        "rows"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.json#/$defs/id"
+        },
+        "title": {
+          "$ref": "common.json#/$defs/text"
+        },
+        "columns": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "common.json#/$defs/text"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "maxItems": 10000,
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "common.json#/$defs/scalar"
+            }
+          }
+        }
+      }
+    }
+  },
+  "not": {
+    "required": [
+      "id"
+    ]
+  }
+}

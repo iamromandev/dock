@@ -4,6 +4,7 @@ projects:
   globs:
     - "apps/*"
     - "plugins/*"
+    - "protocol"
 
 # Configures the version control system (VCS).
 vcs:

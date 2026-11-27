@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "bar",
+  "params": {
+    "id": "b1",
+    "percent": 5
+  }
+}

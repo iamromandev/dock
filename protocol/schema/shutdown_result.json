@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dock.dev/protocol/v2/shutdown_result.json",
+  "title": "shutdown_result",
+  "type": "object",
+  "required": [
+    "jsonrpc",
+    "id",
+    "result"
+  ],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "$ref": "common.json#/$defs/requestId"
+    },
+    "result": {
+      "type": "object",
+      "required": [],
+      "properties": {}
+    }
+  }
+}

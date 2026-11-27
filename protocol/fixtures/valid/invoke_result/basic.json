@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "exit_code": 0,
+    "outputs": {
+      "files": [
+        "/w/a.zip"
+      ]
+    },
+    "extra": true
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "jsonrpc": "2.0",
+  "method": "output",
+  "params": {
+    "text": "hi\n"
+  }
+}

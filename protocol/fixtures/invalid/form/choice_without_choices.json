@@ -1,0 +1,14 @@
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "form",
+  "params": {
+    "fields": [
+      {
+        "name": "c",
+        "label": "C",
+        "type": "choice"
+      }
+    ]
+  }
+}

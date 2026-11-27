@@ -1,0 +1,33 @@
+{
+  "jsonrpc": "2.0",
+  "id": 8,
+  "method": "form",
+  "params": {
+    "title": "F",
+    "fields": [
+      {
+        "name": "a",
+        "label": "A",
+        "type": "text",
+        "default": "x",
+        "secret": true
+      },
+      {
+        "name": "b",
+        "label": "B",
+        "type": "confirm",
+        "default": false
+      },
+      {
+        "name": "c",
+        "label": "C",
+        "type": "choice",
+        "choices": [
+          "x",
+          "y"
+        ],
+        "default": "x"
+      }
+    ]
+  }
+}
