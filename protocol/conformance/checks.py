@@ -45,7 +45,7 @@ def _expect_unknown(s: PluginSession, step: str) -> None:
 
 def initialize(s: PluginSession) -> dict:
     s.step = "initialize"
-    params = {"api_version": "2", "host": {"name": "dock-conformance", "version": "0"}, "data_dir": "/tmp/data"}
+    params = {"api_version": "2", "host": {"name": "dock-conformance", "version": "0"}, "data_dir": s.data_dir}
     return _expect(s, "initialize", s.request("initialize", params), "initialize_result")
 
 
@@ -77,4 +77,5 @@ def run_invoke(s: PluginSession, fixture: Path) -> dict:
     """Run the invoke described by <plugin_dir>/conformance.json; its result must be valid with an int exit_code."""
     params = json.loads(Path(fixture).read_text())["invoke"]
     s.step = "invoke"
+    s.areas.reset()
     return _expect(s, "invoke", s.request("invoke", params), "invoke_result")

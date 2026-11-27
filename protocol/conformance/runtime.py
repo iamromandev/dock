@@ -99,12 +99,21 @@ def next_name() -> str:
     return f"dock-conformance-{os.getpid()}-{next(_counter)}"
 
 
-def run_argv(rt: str, m: Manifest, tag: str, name: str) -> list[str]:
-    """The `run` command line: the flags dock uses, minus the mounts, user and labels."""
+def host_uid_gid() -> tuple[int, int] | None:
+    """The user and group the container runs as, as dock does; None where the OS has no uids."""
+    return (os.getuid(), os.getgid()) if hasattr(os, "getuid") else None
+
+
+def run_argv(
+    rt: str, m: Manifest, tag: str, name: str, *, data_dir: str, uid_gid: tuple[int, int] | None
+) -> list[str]:
+    """The `run` command line: the flags dock uses, minus the labels; the data dir is mounted at its own path."""
+    user = ["--user", f"{uid_gid[0]}:{uid_gid[1]}"] if uid_gid else []
     return [
         rt, "run", "-i", "--rm", "--pull", "never", "--name", name,
         "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp",
         "--network", "none", "--pids-limit", "256", "--workdir", "/plugin",
-        "-e", f"DOCK_PLUGIN_ID={m.id}", "-e", "DOCK_API_VERSION=2",
+        *user, "--mount", f"type=bind,src={data_dir},dst={data_dir}",
+        "-e", "HOME=/tmp", "-e", f"DOCK_PLUGIN_ID={m.id}", "-e", "DOCK_API_VERSION=2",
         tag, m.cmd, *m.args,
     ]  # fmt: skip

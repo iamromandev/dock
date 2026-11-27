@@ -34,5 +34,13 @@ tasks:
 
   # cleanup
   clean:
-    script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    # Also removes the plugin images the suite built, so the next run rebuilds them.
+    script: |
+      find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache
+      rt=${DOCK_TEST_RUNTIME:-$(command -v docker || command -v podman)}
+      if [ -n "$rt" ]; then
+        # by name, not id: test plugins with the same contents share an image id, and removing an id twice fails
+        refs=$("$rt" images 'dock-conformance/*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | sort -u)
+        [ -z "$refs" ] || "$rt" rmi -f $refs >/dev/null || echo "clean: some dock-conformance images were not removed" >&2
+      fi
     preset: "utility"

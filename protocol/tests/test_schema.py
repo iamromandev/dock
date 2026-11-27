@@ -45,3 +45,9 @@ def test_host_only_method_from_plugin_is_rejected(method):
     # Bug caught: a plugin sending a host-to-plugin method passes because every schema is looked up by method.
     errors = validate({"jsonrpc": "2.0", "method": method, "params": {}})
     assert any("unexpected method from plugin" in e for e in errors)
+
+
+@pytest.mark.parametrize("name", ["prompt_user_result", "form_result"])
+def test_eof_reply_passes_both_result_schemas(name):
+    # Bug caught: a reply schema that forgets {eof: true}, so the checker's own reply to a prompt is rejected.
+    assert validate({"jsonrpc": "2.0", "id": 1, "result": {"eof": True}}, expect=name) == []

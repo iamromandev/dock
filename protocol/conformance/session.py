@@ -5,13 +5,16 @@ from __future__ import annotations
 import collections
 import json
 import queue
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from pathlib import Path
 
 from .checks import CheckFailed
-from .runtime import build, load_manifest, next_name, run_argv
+from .rules import Areas, check_form
+from .runtime import build, host_uid_gid, load_manifest, next_name, run_argv
 from .schema import validate
 
 _EOF = object()
@@ -31,17 +34,23 @@ class PluginSession:
         self.dropped = 0  # stdout lines lost because the queue was full; any loss fails the session
         self._reader_done = False
         self._next_id = 0
+        self.areas = Areas()
         self._lines: queue.Queue = queue.Queue(maxsize=MAX_LINES)
         tag = build(rt, plugin_dir)
-        self._proc = subprocess.Popen(
-            run_argv(rt, self.manifest, tag, self.name),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
+        self.data_dir = tempfile.mkdtemp(prefix="dock-conformance-")
+        try:
+            self._proc = subprocess.Popen(
+                run_argv(rt, self.manifest, tag, self.name, data_dir=self.data_dir, uid_gid=host_uid_gid()),
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except BaseException:  # __exit__ never runs for a session that did not start
+            shutil.rmtree(self.data_dir, ignore_errors=True)
+            raise
         threading.Thread(target=self._read_stdout, daemon=True).start()
         self._stderr_thread = threading.Thread(target=self._read_stderr, daemon=True)
         self._stderr_thread.start()
@@ -58,6 +67,7 @@ class PluginSession:
                     pipe.close()
                 except OSError:
                     pass  # a broken pipe must not mask the CheckFailed being raised
+        shutil.rmtree(self.data_dir, ignore_errors=True)
 
     def fail(self, step: str, reason: str, line: str | None = None) -> CheckFailed:
         if self._proc.poll() is not None:  # the plugin is gone: let the stderr reader finish so the traceback is included
@@ -106,6 +116,12 @@ class PluginSession:
         except OSError:
             pass  # the plugin exited; the next read reports it
 
+    def _reply(self, msg_id, result: dict, method: str) -> None:
+        """Answer a plugin's request, after checking the reply against its own result schema."""
+        reply = {"jsonrpc": "2.0", "id": msg_id, "result": result}
+        assert not validate(reply, expect=f"{method}_result"), "checker sent an invalid reply"
+        self._send(reply)
+
     def notify(self, method: str, params: dict) -> None:
         self._send({"jsonrpc": "2.0", "method": method, "params": params})
 
@@ -142,9 +158,17 @@ class PluginSession:
         errors = validate(msg)
         if errors:
             raise self.fail(self.step, "; ".join(errors), line)
-        if isinstance(msg, dict) and "method" in msg and "id" in msg:  # a prompt_user or form request
+        if msg.get("method") == "form":
+            errors = check_form(msg["params"])
+            if errors:
+                raise self.fail(self.step, "; ".join(errors), line)
+        if "method" in msg and "id" not in msg:
+            problem = self.areas.see(msg)
+            if problem:
+                raise self.fail(self.step, problem, line)
+        if "method" in msg and "id" in msg:  # a prompt_user or form request
             # validate() only lets those two through, so there is nothing else to refuse
-            self._send({"jsonrpc": "2.0", "id": msg["id"], "result": {"eof": True}})
+            self._reply(msg["id"], {"eof": True}, msg["method"])
         return msg
 
     def request(self, method: str, params: dict, timeout: float = 10) -> dict:
@@ -152,17 +176,40 @@ class PluginSession:
         self._next_id += 1
         rid = self._next_id
         self._send({"jsonrpc": "2.0", "id": rid, "method": method, "params": params})
-        end = time.monotonic() + timeout
+        return self._await(rid, time.monotonic() + timeout, f"{method} within {timeout:g}s")
+
+    def _await(self, rid: int, end: float, what: str = "the request") -> dict:
+        """The response with id rid, ignoring notifications; fails when it has not arrived by `end` (monotonic)."""
         while True:
             msg = self._incoming(max(0.0, end - time.monotonic()))
+            if msg is not None and "method" not in msg:
+                return self._check_id(msg, rid)
             if msg is None or time.monotonic() >= end:  # checked every pass: a chatty plugin must still time out
+                late = self._queued_reply(rid)
+                if late is not None:
+                    return late
                 self.kill()
-                raise self.fail(self.step, f"no response to {method} within {timeout:g}s")
-            if "method" in msg:
-                continue
-            if msg.get("id") != rid:
-                raise self.fail(self.step, f"response id {msg.get('id')!r}, expected {rid}", json.dumps(msg))
-            return msg
+                raise self.fail(self.step, f"no response to {what}")
+
+    def _check_id(self, msg: dict, rid: int) -> dict:
+        if msg.get("id") != rid:
+            raise self.fail(self.step, f"response id {msg.get('id')!r}, expected {rid}", json.dumps(msg))
+        return msg
+
+    def _queued_reply(self, rid: int) -> dict | None:
+        """One last look at the queue after the deadline: a reply that has already arrived still counts, even
+        behind notifications (each one is still validated)."""
+        while True:
+            try:
+                line = self._lines.get_nowait()
+            except queue.Empty:
+                return None
+            if not isinstance(line, str):  # _EOF: put it back so the next read reports the exit
+                self._lines.put_nowait(line)
+                return None
+            msg = self._parse(line)
+            if "method" not in msg:
+                return self._check_id(msg, rid)
 
     def expect_silence(self, seconds: float) -> None:
         msg = self._incoming(seconds)
