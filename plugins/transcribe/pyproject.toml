@@ -1,0 +1,19 @@
+[project]
+name = "dock-transcribe"
+version = "0.0.0"  # the transcribe plugin's real version is in plugin.toml; this project only holds dev tools
+requires-python = "==3.15.2"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ruff==0.17.0", "ty==0.0.86"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ty.src]
+exclude = ["server"]  # the host server is its own project

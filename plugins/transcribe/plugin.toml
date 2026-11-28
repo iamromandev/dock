@@ -1,0 +1,22 @@
+id = "dev.dock.transcribe"
+version = "0.1.0"
+api_version = "2"
+description = "Transcribe speech in an audio or video file into text and subtitles with a local Whisper server"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["network", "fs:read:in", "fs:write:cwd"]
+env = ["DOCK_TRANSCRIBE_URL", "DOCK_TRANSCRIBE_MAX_SECONDS"]
+
+[[commands]]
+name = "transcribe"
+summary = "Transcribe speech in an audio or video file into text and subtitle files in the current folder (speech to text, captions, whisper): transcribe <file> [--format txt,srt,vtt] [--language en] [-o name]"
+keywords = ["transcribe", "speech to text", "subtitles", "captions", "srt", "whisper"]
+inputs = [
+  { name = "file", type = "string", required = true },
+  { name = "format", type = "string", flag = "--format" },
+  { name = "language", type = "string", flag = "--language" },
+  { name = "output", type = "string", flag = "--output", short = "-o" },
+]
