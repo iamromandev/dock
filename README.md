@@ -17,7 +17,8 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │  ├─ server/        a localhost WebSocket host for plugins (moon project `server`; see apps/server/docs/SERVER_PROTOCOL.md)
 │  └─ cross/         a Kotlin Multiplatform desktop client for the server (moon project `cross`; see apps/cross/README.md)
 ├─ packages/
-│  └─ host/          the host core the CLI and the server share (moon project `host`)
+│  ├─ host/          the host core the CLI and the server share (moon project `host`)
+│  └─ plugin-kit/    `dock_plugin`, the stdlib-only kit plugins vendor: stdio loop, cancel, files, network (moon project `plugin-kit`; see [docs/PLUGINS.md](docs/PLUGINS.md))
 ├─ plugins/          container plugins, usable by any host
 │  ├─ dm/            the downloader (moon project `dm`)
 │  │  ├─ tests/      dm's in-process tests (pytest, no container runtime) and the torrent fixtures
@@ -64,6 +65,8 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 | `make extract-install`, `extract-check`, `extract-check-ci`, `extract-test`, `extract-clean` | The same for the extract plugin (its tests need no Docker) |
 | `make transcribe-install`, `transcribe-check`, `transcribe-check-ci`, `transcribe-test`, `transcribe-clean` | The same for the transcribe plugin (its tests need no Docker, model or ffmpeg) |
 | `make summarize-install`, `summarize-check`, `summarize-check-ci`, `summarize-test`, `summarize-clean` | The same for the summarize plugin (its tests need no Docker or model) |
+| `make plugin-kit-install`, `plugin-kit-check`, `plugin-kit-check-ci`, `plugin-kit-test`, `plugin-kit-clean` | The same for the plugin kit; `plugin-kit-check` also checks the vendored copies. How to build a plugin: [docs/PLUGINS.md](docs/PLUGINS.md) |
+| `make plugin-kit-sync` | Copy the kit into every plugin listed in `packages/plugin-kit/plugins.txt` |
 | `make transcribe-server` | Start the host-side Whisper server the transcribe plugin calls (Apple Silicon only) |
 | `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
 | `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project (`install` runs `cli:sync` for the CLI) |

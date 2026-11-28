@@ -22,7 +22,10 @@ PLUGIN = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN))
 MAIN = PLUGIN / "main.py"
 
-import main as transcribe  # the loop only runs under __main__, so the pure helpers can be tested directly
+from dock_plugin import cancel, files, rpc
+from transcribecore import client, render, run
+
+rpc.setup({"transcribe": run.run}, "transcribe", "transcribing")  # so rpc.invoke can run the command in this process
 
 RATE_BYTES = 32000  # bytes of 16 kHz int16 mono PCM per second
 WINDOW = 19_200_000  # bytes in a 600 s window
@@ -222,17 +225,18 @@ class Base(unittest.TestCase):
         return p
 
     def inproc(self, url, inputs, pcm="t30"):
-        """Runs transcribe.transcribe in this process (for seams a subprocess cannot reach); returns (the result or
+        """Runs the transcribe command in this process (for seams a subprocess cannot reach); returns (the result or
         the exception it raised, the notifications)."""
         env = {"PATH": f"{self.fake}{os.pathsep}{os.environ['PATH']}", "FAKE_DIR": str(self.fake), "FAKE_PCM": pcm,
                "FAKE_DURATION": str(seconds_of(pcm)), "DOCK_TRANSCRIBE_URL": url}
         out = io.StringIO()
         with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(out):
             try:
-                result = transcribe.transcribe(inputs, str(self.inn), None, str(self.dir))
+                result = rpc.invoke({"command": "transcribe", "inputs": inputs, "cwd": str(self.dir),
+                                     "in_dir": str(self.inn)})
             except BaseException as e:
                 result = e
-        transcribe.cancelled.clear()
+        cancel.cancelled.clear()
         return result, [json.loads(x) for x in out.getvalue().splitlines() if x.startswith("{")]
 
     @staticmethod
@@ -304,22 +308,22 @@ class Manifest(unittest.TestCase):
         self.assertTrue(cmd["inputs"][0]["required"])
         self.assertEqual(cmd["inputs"][3]["short"], "-o")
         self.assertTrue({"transcribe", "speech to text", "subtitles", "captions", "srt", "whisper"} <= set(cmd["keywords"]))
-        self.assertEqual(transcribe.DEFAULT_URL, "http://host.docker.internal:7862")
+        self.assertEqual(run.DEFAULT_URL, "http://host.docker.internal:7862")
 
 
 class Render(unittest.TestCase):
     def test_cues_past_an_hour_and_the_empty_cases(self):  # R10
         cues = [(3661.789, 7322.0, "late"), (0.0004, 0.9996, "edge")]
-        self.assertEqual(transcribe.render("txt", cues), "late\nedge\n")
-        self.assertEqual(transcribe.render("srt", cues),
+        self.assertEqual(render.render("txt", cues), "late\nedge\n")
+        self.assertEqual(render.render("srt", cues),
                          "1\n01:01:01,789 --> 02:02:02,000\nlate\n\n2\n00:00:00,000 --> 00:00:01,000\nedge\n")
-        self.assertEqual(transcribe.render("vtt", cues),
+        self.assertEqual(render.render("vtt", cues),
                          "WEBVTT\n\n01:01:01.789 --> 02:02:02.000\nlate\n\n00:00:00.000 --> 00:00:01.000\nedge\n")
-        self.assertEqual([transcribe.render(f, []) for f in ("txt", "srt", "vtt")], ["", "", "WEBVTT\n"])
+        self.assertEqual([render.render(f, []) for f in ("txt", "srt", "vtt")], ["", "", "WEBVTT\n"])
 
     def test_an_arrow_in_the_text_cannot_fake_a_cue_line(self):
         for fmt, sep in (("srt", ","), ("vtt", ".")):
-            body = transcribe.render(fmt, [(0, 1, "a --> b")])
+            body = render.render(fmt, [(0, 1, "a --> b")])
             self.assertEqual([x for x in body.splitlines() if "-->" in x], [f"00:00:00{sep}000 --> 00:00:01{sep}000"])
             self.assertIn("a -> b", body)
 
@@ -613,12 +617,12 @@ class Transcribe(Base):
         self.assertNotIn("cannot reach", self.said(notes))
 
     def test_the_answer_timeout_is_20_minutes_and_the_connect_timeout_10_seconds(self):
-        self.assertEqual((transcribe.TIMEOUT, transcribe.CONNECT_TIMEOUT), (1200, 10))
+        self.assertEqual((client.TIMEOUT, client.CONNECT_TIMEOUT), (1200, 10))
 
     def test_a_server_that_never_answers_times_out_with_its_own_message(self):
         s = self.server([{"block": True}])
         started = time.monotonic()
-        with mock.patch.object(transcribe, "TIMEOUT", 0.5):
+        with mock.patch.object(client, "TIMEOUT", 0.5):
             result, notes = self.inproc(s.url, {"file": self.media()})
         self.assertLess(time.monotonic() - started, 5)  # the 10 s connect timeout must not apply to the answer
         self.assertEqual(result, {"exit_code": 1})
@@ -627,17 +631,17 @@ class Transcribe(Base):
         self.assertEqual(self.files(), [])
 
     def test_a_cancel_after_the_files_are_linked_removes_them_and_is_cancelled(self):  # R13
-        real, seen = transcribe.Outputs.publish, []
+        real, seen = files.Outputs.publish, []
 
         def publish_then_cancel(outputs, files, call):
             real(outputs, files, call)
             seen.append(self.files())
-            transcribe.cancelled.set()
+            cancel.cancelled.set()
 
-        with mock.patch.object(transcribe.Outputs, "publish", publish_then_cancel):
+        with mock.patch.object(files.Outputs, "publish", publish_then_cancel):
             result, _ = self.inproc(self.server().url, {"file": self.media(), "format": "txt,srt"})
         self.assertEqual(seen, [["talk.srt", "talk.txt"]])
-        self.assertIsInstance(result, transcribe.Cancelled)
+        self.assertIsInstance(result, cancel.Cancelled)
         self.assertEqual(self.files(), [])
 
     def test_a_cancel_while_connecting_closes_the_socket_and_answers_fast(self):  # R13
@@ -652,12 +656,12 @@ class Transcribe(Base):
                 time.sleep(0.02)
             raise OSError("closed")
 
-        threading.Thread(target=lambda: entered.wait(30) and transcribe.cancelled.set(), daemon=True).start()
+        threading.Thread(target=lambda: entered.wait(30) and cancel.cancelled.set(), daemon=True).start()
         started = time.monotonic()
         with mock.patch.object(socket.socket, "connect", hung_connect):
             result, _ = self.inproc("http://127.0.0.1:9", {"file": self.media()})
         self.assertLess(time.monotonic() - started, 2)
-        self.assertIsInstance(result, transcribe.Cancelled)
+        self.assertIsInstance(result, cancel.Cancelled)
         self.assertTrue(freed.wait(2), "the connecting socket was never closed")
         self.assertEqual(self.files(), [])
 
