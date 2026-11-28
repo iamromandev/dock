@@ -1,11 +1,13 @@
 """extract plugin for dock: unpacks an archive (zip, tar, tar.gz/bz2/xz/zst, or a single .gz/.bz2/.xz/.zst file)
 safely into a new folder (stdlib only). JSON-RPC 2.0, one JSON object line on stdin/stdout. See protocol/PROTOCOL.md.
 
-Phase 1: --list and --only are declared in the manifest but answered with "not supported yet".
+--list shows what an unpack would do (one table, nothing written); --only keeps entries matching glob patterns; a zip
+encrypted with the old ZipCrypto scheme asks the host for its password through a `form` request.
 """
 
 import bz2
 import errno
+import fnmatch
 import gzip
 import json
 import lzma
@@ -35,6 +37,7 @@ MAX_PART = 255  # bytes in one name component
 MAX_DEPTH = 128  # components in an entry name
 MAX_HEADER = 4 * 1024**2  # bytes of one tar member's headers (a PAX or GNU long-name header is held in memory)
 MAX_FILES_LISTED = 1000
+MAX_ROWS = 1000  # rows in the --list table
 BAR_EVERY = 0.25  # seconds between progress bars (4 a second; the final bar makes it at most 5)
 SUFFIXES = (".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".zip", ".tar", ".tgz", ".tbz2", ".txz", ".tzst",
             ".gz", ".bz2", ".xz", ".zst")
@@ -64,6 +67,8 @@ inbox: queue.Queue = queue.Queue()
 cancelled = threading.Event()
 state_lock = threading.Lock()
 pending = 0  # invokes read from stdin and not yet finished; guarded by state_lock. A cancel with none is ignored.
+replies: dict[str, queue.Queue] = {}  # request id -> where the reader puts the host's answer; guarded by state_lock
+request_ids = iter(range(1, 1 << 62))  # ids of our requests ("x1", ...), apart from the host's own ids
 
 
 def send(msg):
@@ -91,6 +96,31 @@ def stop_if_cancelled():
         raise Cancelled()
 
 
+def ask(method, **params):
+    """A request to the host; waits for its answer (the result), checking for a cancel every 0.1 s."""
+    with state_lock:
+        req_id = f"x{next(request_ids)}"
+        box: queue.Queue = queue.Queue()
+        replies[req_id] = box
+    try:
+        send({"id": req_id, "method": method, "params": params})
+        while True:
+            try:
+                reply = box.get(timeout=0.1)
+                break
+            except queue.Empty:
+                stop_if_cancelled()
+    finally:
+        with state_lock:
+            replies.pop(req_id, None)  # an answer that comes later finds nobody and is dropped
+    stop_if_cancelled()
+    if "error" in reply:
+        error = reply["error"]
+        raise BadInput(str(error.get("message") if isinstance(error, dict) else error)[:200])
+    result = reply.get("result")
+    return result if isinstance(result, dict) else {}
+
+
 # ---- entries
 
 @dataclass
@@ -99,12 +129,13 @@ class Entry:
 
     name: str
     kind: str  # file | dir | symlink | hardlink | special
-    size: int = 0  # declared; never trusted
+    size: int | None = 0  # declared; never trusted; None when unknown (a single compressed file)
     mode: int | None = None
     mtime: float | None = None
     target: str | None = None  # symlinks and hard links
     encrypted: str | None = None  # None | "zipcrypto" | "aes"
     packed: int | None = None  # compressed size, for the per-entry ratio (zip)
+    problem: str | None = None  # why the entry cannot be read (a symlink's target); the checks refuse it with this
     open: Callable[[], Any] | None = field(default=None, repr=False)
 
 
@@ -148,6 +179,67 @@ def check_link_target(name, target):
         raise BadInput(f"link {shown} points outside the destination folder")
 
 
+class Checker:
+    """The safety checks over a run's entries, in archive order and without touching the disk: names, kinds, link
+    targets, collisions and the entry count. `check` raises BadInput for an entry that must be refused; the state
+    (names seen, regular files) is the same whether the entries are then listed or written."""
+
+    def __init__(self, limits):
+        self.limits = limits
+        self.count = 0
+        self.seen: dict[str, str] = {}  # casefolded path of every entry -> its kind
+        self.dirs: set[str] = set()  # casefolded paths that are a folder (explicit or a parent)
+        self.regular: set[tuple] = set()  # parts of every regular file seen
+        self.kept: set[tuple] = set()  # parts of the regular files that are kept (not filtered out)
+
+    def tick(self):
+        self.count += 1
+        if self.count > self.limits.max_entries:
+            raise BadInput(too_many_entries(self.limits))
+
+    def check(self, entry, keep=True):
+        """The normalised name and its parts (("", []) for the archive root)."""
+        name = check_name(entry.name)
+        shown = repr(entry.name[:60])
+        if entry.problem:
+            raise BadInput(entry.problem)
+        if entry.kind == "special":
+            raise BadInput(f"entry {shown} is a device, a pipe or another special file")
+        if not name:
+            if entry.kind != "dir":  # not skipped: its body would still be read
+                raise BadInput(f"entry {shown} is not a folder but is named like the archive root")
+            return "", []
+        parts = name.split("/")
+        self.collide(name, parts, entry.kind, shown)
+        if entry.kind == "symlink":
+            if entry.target is not None or not entry.encrypted:  # an unread encrypted link has no target to check
+                check_link_target(name, entry.target or "")
+        elif entry.kind == "hardlink":
+            target = tuple(check_name(entry.target or "").split("/"))
+            if target not in self.regular:
+                raise BadInput(f"hard link {shown} points to something that is not a regular file already unpacked")
+            if keep and target not in self.kept:
+                raise BadInput(f"hard link {shown} points to {entry.target[:60]!r}, which --only left out")
+        elif entry.kind == "file":
+            self.regular.add(tuple(parts))
+            if keep:
+                self.kept.add(tuple(parts))
+        return name, parts
+
+    def collide(self, name, parts, kind, shown):
+        key = name.casefold()
+        if key in self.seen or (kind != "dir" and key in self.dirs):
+            raise BadInput(f"entry {shown} collides with another entry of the same name")
+        keys = ["/".join(parts[:i]).casefold() for i in range(1, len(parts))]
+        for parent in keys:
+            if parent in self.seen and self.seen[parent] != "dir":
+                raise BadInput(f"entry {shown} is inside a name that is a file or a link")
+        self.seen[key] = kind
+        self.dirs.update(keys)
+        if kind == "dir":
+            self.dirs.add(key)
+
+
 # ---- limits and writing
 
 @dataclass
@@ -167,8 +259,10 @@ class Extractor:
     `on_bytes(n)` is told each written block; `stop()` raises Cancelled; `archive_size` (tar and single files, not
     zip) enables the whole-stream ratio check. Links and directory metadata are applied by finish()."""
 
-    def __init__(self, temp, limits, on_bytes, stop, archive_size=None):
+    def __init__(self, temp, limits, on_bytes, stop, archive_size=None, keep=None):
         self.temp = temp
+        self.keep = keep or (lambda name: True)  # which normalised names are extracted
+        self.checker = Checker(limits)
         self.limits = limits
         self.on_bytes = on_bytes
         self.stop = stop
@@ -176,12 +270,8 @@ class Extractor:
         self.root = os.open(temp, os.O_RDONLY | os.O_DIRECTORY)
         self.fds = [self.root]  # fds[i]: the open folder of the first i parts of the last path asked for (a cache)
         self.cached: list[str] = []
-        self.count = 0
         self.written = 0
-        self.seen: dict[str, str] = {}  # casefolded path of every entry -> its kind
-        self.dirs: set[str] = set()  # casefolded paths that are a folder (explicit or a parent)
         self.dirmeta: dict[tuple, tuple] = {}  # folder parts -> (mode, mtime)
-        self.regular: set[tuple] = set()  # parts of the regular files written
         self.links: list[Entry] = []
         self.files: list[tuple] = []  # parts of the regular files, in archive order
 
@@ -245,24 +335,14 @@ class Extractor:
     # -- entries
 
     def add(self, entry):
+        """Checks the entry (all of them, kept or not) and writes it if kept. Returns whether it was written."""
         self.stop()
-        self.count += 1
-        if self.count > self.limits.max_entries:
-            raise BadInput(too_many_entries(self.limits))
-        name = check_name(entry.name)
-        shown = repr(entry.name[:60])
-        if entry.encrypted == "aes":
-            raise BadInput("AES-encrypted zips are not supported")
-        if entry.encrypted:
-            raise BadInput("encrypted zips are not supported yet")
-        if entry.kind == "special":
-            raise BadInput(f"entry {shown} is a device, a pipe or another special file")
-        if not name:
-            if entry.kind != "dir":  # not skipped: its body would still be read
-                raise BadInput(f"entry {shown} is not a folder but is named like the archive root")
-            return  # the archive root ("./")
-        parts = name.split("/")
-        self.collide(name, parts, entry.kind, shown)
+        self.checker.tick()
+        probe = check_name(entry.name)
+        wanted = self.keep(probe)
+        name, parts = self.checker.check(entry, wanted)
+        if not name or not wanted:
+            return False  # the archive root, or an entry left out by --only
         try:
             if entry.kind == "dir":
                 self.make_parents(parts)
@@ -272,26 +352,13 @@ class Extractor:
             elif entry.kind == "file":
                 self.make_parents(parts)
                 self.write_file(parts, entry)
-                self.regular.add(tuple(parts))
                 self.files.append(tuple(parts))
             else:
                 self.make_parents(parts)
-                self.plan_link(parts, entry, shown)
+                self.links.append(entry)
         except OSError as e:
             raise write_error(e) from None
-
-    def collide(self, name, parts, kind, shown):
-        key = name.casefold()
-        if key in self.seen or (kind != "dir" and key in self.dirs):
-            raise BadInput(f"entry {shown} collides with another entry of the same name")
-        keys = ["/".join(parts[:i]).casefold() for i in range(1, len(parts))]
-        for parent in keys:
-            if parent in self.seen and self.seen[parent] != "dir":
-                raise BadInput(f"entry {shown} is inside a name that is a file or a link")
-        self.seen[key] = kind
-        self.dirs.update(keys)
-        if kind == "dir":
-            self.dirs.add(key)
+        return True
 
     def write_file(self, parts, entry):
         fd = os.open(parts[-1], os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600,
@@ -336,16 +403,6 @@ class Extractor:
                 raise BadInput(f"entry {entry.name[:60]!r} unpacks over {ratio}:1 (compression ratio limit)")
         elif self.archive_size is not None and self.written > BLOCK and self.written / max(self.archive_size, 1) > ratio:
             raise BadInput(f"the archive unpacks over {ratio}:1 (compression ratio limit)")
-
-    def plan_link(self, parts, entry, shown):
-        name = "/".join(parts)
-        if entry.kind == "symlink":
-            check_link_target(name, entry.target or "")
-        else:
-            target = check_name(entry.target or "")
-            if tuple(target.split("/")) not in self.regular:
-                raise BadInput(f"hard link {shown} points to something that is not a regular file already unpacked")
-        self.links.append(entry)
 
     # -- the end
 
@@ -506,10 +563,45 @@ def sniff(fh, name=""):
     raise BadInput("unsupported archive format")
 
 
+class CryptBody:
+    """An encrypted entry's body: a bad password shows up as an error or a CRC mismatch, on any such entry."""
+
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.body.close()
+        return False
+
+    def read(self, n=-1):
+        try:
+            return self.body.read(n)
+        except (zipfile.BadZipFile, RuntimeError, zlib.error, EOFError):
+            raise BadInput("wrong password") from None
+
+
+def zip_kind(info):
+    mode = info.external_attr >> 16
+    if info.is_dir() or stat.S_ISDIR(mode):
+        return "dir"
+    if stat.S_ISLNK(mode):
+        return "symlink"
+    if stat.S_IFMT(mode) in (stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK):
+        return "special"
+    return "file"
+
+
 class ZipReader:
-    def __init__(self, fh, limits, stop):
+    def __init__(self, fh, limits, stop, password=None):
+        """`password` is bytes (or None); no error raised here or below may carry its text."""
         self.stop = stop
         self.zf = zipfile.ZipFile(fh)
+        self.password = password
+        if password:
+            self.zf.setpassword(password)
         self.archive_size = None
         try:
             infos = self.zf.infolist()
@@ -526,22 +618,26 @@ class ZipReader:
             raise
 
     def open(self, info):
+        encrypted = bool(info.flag_bits & 0x1)
         try:
-            return self.zf.open(info)
+            body = self.zf.open(info)
         except NotImplementedError:  # a compression method zipfile cannot read (deflate64, ...)
             raise BadInput("unsupported zip compression") from None
+        except (zipfile.BadZipFile, RuntimeError, zlib.error, EOFError):
+            if encrypted:  # "Bad password for file ..."; the text is replaced, whatever it holds
+                raise BadInput("wrong password") from None
+            raise
+        except Exception:
+            if encrypted:
+                raise BadInput("cannot read an encrypted entry") from None
+            raise
+        return CryptBody(body) if encrypted else body
 
     def entries(self):
         for info in self.zf.infolist():
             self.stop()
             mode = info.external_attr >> 16
-            kind = "file"
-            if info.is_dir() or stat.S_ISDIR(mode):
-                kind = "dir"
-            elif stat.S_ISLNK(mode):
-                kind = "symlink"
-            elif stat.S_IFMT(mode) in (stat.S_IFCHR, stat.S_IFBLK, stat.S_IFIFO, stat.S_IFSOCK):
-                kind = "special"
+            kind = zip_kind(info)
             encrypted = "aes" if info.compress_type == 99 else "zipcrypto" if info.flag_bits & 0x1 else None
             when = None
             try:
@@ -551,11 +647,16 @@ class ZipReader:
             # orig_filename: the name as stored; filename is cut at a NUL, which would hide the rest from check_name
             entry = Entry(info.orig_filename, kind, info.file_size, (mode & 0o7777) or None, when,
                           encrypted=encrypted, packed=info.compress_size)
-            if encrypted:
-                pass
+            if encrypted and not (encrypted == "zipcrypto" and self.password):
+                pass  # not read: listed only (AES, or no password)
             elif kind == "symlink":
-                with self.open(info) as body:
-                    entry.target = body.read(MAX_NAME + 1).decode("utf-8", "surrogateescape")
+                try:
+                    with self.open(info) as body:
+                        entry.target = body.read(MAX_NAME + 1).decode("utf-8", "surrogateescape")
+                except BadInput as e:  # told when the entry is checked, so a listing can mark the row
+                    entry.problem = str(e)
+                except DAMAGE as e:
+                    entry.problem = f"archive is damaged: {e or type(e).__name__}"
             elif kind == "file":
                 entry.open = lambda info=info: self.open(info)
             yield entry
@@ -607,7 +708,7 @@ class SingleReader:
         self.total = None
 
     def entries(self):
-        yield Entry(self.name, "file", open=lambda: decompressor(self.comp, self.fh))
+        yield Entry(self.name, "file", size=None, open=lambda: decompressor(self.comp, self.fh))
 
     def close(self):
         pass
@@ -740,16 +841,18 @@ def extract(inputs, in_dir, work, cwd):
     if any(v is not None and not isinstance(v, str) for v in (in_dir, work)):
         raise Failure("in_dir and work must be strings", -32602)
     try:
-        if listing or only:
-            raise BadInput("--list and --only are not supported yet")
         limits = Limits(env_limit("DOCK_EXTRACT_MAX_BYTES", DEFAULT_MAX_BYTES),
                         env_limit("DOCK_EXTRACT_MAX_ENTRIES", DEFAULT_MAX_ENTRIES))
+        patterns = [p for p in (item.strip() for item in (only or "").split(",")) if p]
         cwd = os.path.abspath(cwd)
         with resolve_source(file, in_dir, work) as fh:
             archive = os.path.basename(file.rstrip("/")) or "archive"
             kind, comp = sniff(fh, archive)
+            if listing:
+                return list_archive(fh, kind, comp, archive, limits, patterns)
             dest = dest_name(archive, dirname, cwd)
-            return unpack(fh, kind, comp, archive, dest, cwd, limits)
+            password = zip_password(fh, archive, limits, patterns) if kind == "zip" else None
+            return unpack(fh, kind, comp, archive, dest, cwd, limits, patterns, password)
     except BadInput as e:
         say("error", str(e))
         return {"exit_code": 1}
@@ -761,10 +864,66 @@ def extract(inputs, in_dir, work, cwd):
         return {"exit_code": 1}
 
 
-def build_reader(kind, fh, comp, archive, size, limits):
+def matcher(patterns):
+    """Whether a normalised name is kept: every name when there are no patterns, else any glob matches."""
+    if not patterns:
+        return lambda name: True
+    return lambda name: any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)
+
+
+def check_declared(total, limits):
+    if total and total > limits.max_bytes:
+        raise BadInput(f"the archive unpacks to {total} bytes (limit DOCK_EXTRACT_MAX_BYTES {limits.max_bytes})")
+
+
+def zip_password(fh, archive, limits, patterns):
+    """The password (bytes) for a zip with ZipCrypto entries that would be extracted, asked of the host once; None when
+    no such entry exists. AES anywhere refuses the run before any question, and so do the declared-size and --only
+    checks that would refuse it anyway."""
+    fh.seek(0)
+    with zipfile.ZipFile(fh) as zf:
+        infos = zf.infolist()
+        if len(infos) > limits.max_entries:
+            raise BadInput(too_many_entries(limits))
+        encrypted = False
+        total = 0
+        for info in infos:
+            stop_if_cancelled()
+            if info.compress_type == 99:
+                raise BadInput("AES-encrypted zips are not supported")
+            encrypted = encrypted or (bool(info.flag_bits & 0x1) and not info.is_dir())
+            if not info.is_dir():
+                total += info.file_size
+        if not encrypted:
+            return None
+        keep, matched, needed = matcher(patterns), False, False
+        for info in infos:  # a hostile name fails the run later anyway; say so before asking
+            stop_if_cancelled()
+            name = check_name(info.orig_filename)
+            if name and keep(name):
+                matched = True
+                needed = needed or (bool(info.flag_bits & 0x1) and zip_kind(info) != "dir")
+    if not needed:
+        return None
+    check_declared(total, limits)
+    if patterns and not matched:
+        raise BadInput("no entry matches --only")
+    result = ask("form", title=f"Password for {archive}", fields=[
+        {"name": "password", "label": "Password", "type": "text", "secret": True}])
+    values = result.get("values")
+    password = values.get("password") if isinstance(values, dict) else None
+    if not isinstance(password, str) or not password:  # eof, an empty answer or an odd one
+        raise BadInput("no password given")
+    try:
+        return password.encode()
+    except UnicodeEncodeError:  # a lone surrogate: its text must not reach the error
+        raise BadInput("no password given") from None
+
+
+def build_reader(kind, fh, comp, archive, size, limits, password=None):
     try:  # opening reads the archive's start (zip: the directory; tar: the first header)
         if kind == "zip":
-            return ZipReader(fh, limits, stop_if_cancelled)
+            return ZipReader(fh, limits, stop_if_cancelled, password)
         if kind == "tar":
             return TarReader(fh, comp, size, limits, stop_if_cancelled)
         return SingleReader(fh, comp, single_name(archive), size)
@@ -785,7 +944,48 @@ def guarded(entries):
         yield entry
 
 
-def unpack(fh, kind, comp, archive, dest, cwd, limits):
+def list_archive(fh, kind, comp, archive, limits, patterns):
+    """One table of the entries (the matching ones with --only); nothing is written and no password is asked."""
+    size = os.fstat(fh.fileno()).st_size
+    fh.seek(0)
+    keep, checker, rows, total = matcher(patterns), Checker(limits), [], 0
+    reader = build_reader(kind, fh, comp, archive, size, limits)
+    try:
+        for entry in guarded(reader.entries()):
+            stop_if_cancelled()
+            checker.tick()
+            try:
+                name = check_name(entry.name)
+            except BadInput as e:
+                name, note = entry.name, f"refused: {e}"
+            else:
+                note = ""
+            if name == "" and entry.kind == "dir":
+                continue  # the archive root
+            wanted = keep(name)
+            try:
+                if not note:
+                    checker.check(entry, wanted)
+            except BadInput as e:
+                note = f"refused: {e}"
+            if not wanted:
+                continue
+            total += 1
+            if len(rows) < MAX_ROWS:
+                kind_name = {"dir": "dir", "symlink": "link", "hardlink": "link"}.get(entry.kind, "file")
+                rows.append([name[:MAX_NAME], "" if entry.size is None else entry.size, kind_name,
+                             note or ("encrypted" if entry.encrypted else "")])
+    finally:
+        reader.close()
+    if patterns and not total:
+        raise BadInput("no entry matches --only")
+    notify("table", id="entries", title=archive, columns=["name", "size", "type", "note"], rows=rows)
+    if total > len(rows):
+        say("info", f"… {total - len(rows)} more entries not shown")
+    return {"exit_code": 0, "outputs": {"entries": total}}
+
+
+def unpack(fh, kind, comp, archive, dest, cwd, limits, patterns=(), password=None):
     size = os.fstat(fh.fileno()).st_size
     fh.seek(0)
     try:
@@ -795,15 +995,16 @@ def unpack(fh, kind, comp, archive, dest, cwd, limits):
     reader = ex = None
     renamed = False
     try:
-        reader = build_reader(kind, fh, comp, archive, size, limits)
-        if reader.total and reader.total > limits.max_bytes:
-            raise BadInput(f"the archive unpacks to {reader.total} bytes (limit DOCK_EXTRACT_MAX_BYTES "
-                           f"{limits.max_bytes})")
+        reader = build_reader(kind, fh, comp, archive, size, limits, password)
+        check_declared(reader.total, limits)
         progress = Progress(reader.total)
-        ex = Extractor(temp, limits, progress.update, stop_if_cancelled, reader.archive_size)
+        ex = Extractor(temp, limits, progress.update, stop_if_cancelled, reader.archive_size, matcher(patterns))
         bar(progress.percent())
+        kept = 0
         for entry in guarded(reader.entries()):
-            ex.add(entry)
+            kept += ex.add(entry)
+        if patterns and not kept:
+            raise BadInput("no entry matches --only")
         files = ex.finish()
         stop_if_cancelled()
         target = os.path.join(cwd, dest)
@@ -823,7 +1024,9 @@ def unpack(fh, kind, comp, archive, dest, cwd, limits):
             shutil.rmtree(temp, ignore_errors=True)  # only the folder this run made
     paths = [os.path.join(target, *p) for p in files[:MAX_FILES_LISTED]]
     bar(100, done=True)
-    say("info", f"extracted {len(files)} files ({human(ex.written)}) into {dest}/")
+    links = len(ex.links)
+    said = f"{len(files)} files" + (f" and {links} link{'s' if links != 1 else ''}" if links else "")
+    say("info", f"extracted {said} ({human(ex.written)}) into {dest}/")
     return {"exit_code": 0, "outputs": {"dir": target, "files": paths, "truncated": len(files) > MAX_FILES_LISTED}}
 
 
@@ -883,6 +1086,12 @@ def read_stdin():
         except json.JSONDecodeError:
             continue
         if not isinstance(msg, dict):
+            continue
+        if "method" not in msg and isinstance(msg.get("id"), str) and ("result" in msg or "error" in msg):
+            with state_lock:  # the answer to one of our requests; one nobody waits for (any more) is dropped
+                box = replies.get(msg["id"])
+            if box:
+                box.put(msg)
             continue
         if msg.get("method") == "cancel":
             with state_lock:

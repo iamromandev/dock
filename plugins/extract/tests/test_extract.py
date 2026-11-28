@@ -9,6 +9,7 @@ import lzma
 import os
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import tarfile
@@ -20,6 +21,7 @@ import tracemalloc
 import types
 import unittest
 import zipfile
+import zlib
 from compression import zstd
 from pathlib import Path
 from unittest import mock
@@ -155,6 +157,9 @@ class Base(Scratch):
         e.update(env or {})
         p = subprocess.Popen([sys.executable, str(EXTRACT)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, env=e)
+        watchdog = threading.Timer(20, p.kill)  # a plugin stuck on a form nobody answers fails the test, not hangs it
+        watchdog.start()
+        self.addCleanup(watchdog.cancel)
         msg = {"command": "extract", "args": [], "cwd": str(self.dir), "inputs": inputs}
         if in_dir == "default":
             in_dir = str(self.inn)
@@ -172,15 +177,15 @@ class Base(Scratch):
         p.stdin.write(json.dumps({"jsonrpc": "2.0", **msg}) + "\n")
         p.stdin.flush()
 
-    @staticmethod
-    def collect(p, lines=None):
+    def collect(self, p, lines=None):
         # Read until the shutdown answer before closing stdin: closing it mid-invoke cancels the invoke.
         lines = [] if lines is None else lines
         for line in p.stdout:
             lines.append(line)
             if line.startswith("{") and json.loads(line).get("id") == 3:
                 break
-        rest, _ = p.communicate(timeout=60)
+        rest, self.stderr = p.communicate(timeout=60)
+        self.output = "".join(lines) + rest  # everything the plugin wrote: stdout (self.output) and stderr
         msgs = [json.loads(x) for x in "".join(lines).splitlines() + rest.splitlines() if x.startswith("{")]
         return next(m for m in msgs if m.get("id") == 2), [m for m in msgs if "method" in m]
 
@@ -488,14 +493,6 @@ class Basics(Base):
         self.assertEqual(out["files"][0], str(self.dir / "many" / "f0.txt"))
         self.assertEqual(len(os.listdir(self.dir / "many")), 1200)
 
-    def test_phase_two_options_are_refused_for_now(self):  # R17
-        self.put("a.zip", mkzip(self.root / "t.zip", files_of(1)).read_bytes())
-        before = self.tree()
-        for extra in ({"list": True}, {"only": "*.txt"}):
-            with self.subTest(extra):
-                answer, notes = self.run_plugin({"file": "a.zip", **extra})
-                self.assertRefused(answer, notes, before, "not supported yet")
-
     def test_wrong_input_types_are_32602_and_an_unknown_command_32601(self):  # R17
         self.put("a.zip", mkzip(self.root / "t.zip", files_of(1)).read_bytes())
         for inputs in ({"file": 5}, {}, {"file": "a.zip", "dir": 3}, {"file": "a.zip", "list": "yes"},
@@ -655,12 +652,6 @@ class Safety(Base):
             with self.subTest(name):
                 self.refuse("c.tar", tar_bytes(items))
 
-    def test_an_encrypted_zip_is_refused_for_now(self):  # R17
-        raw = bytearray(mkzip(self.root / "e.zip", files_of(1)).read_bytes())
-        for sig, off in ((b"PK\x03\x04", 6), (b"PK\x01\x02", 8)):
-            raw[raw.index(sig) + off] |= 1  # the "encrypted" general purpose flag
-        self.refuse("e.zip", bytes(raw), "encrypted")
-
     def test_a_path_deeper_than_128_parts_is_refused(self):  # R10
         # Bug caught: a 1000-deep entry is accepted and walked again from the root for every folder (64 s).
         self.refuse("deep.tar", tar_bytes([ti("/".join(["d"] * 129), data=b"x")]), "128")
@@ -780,6 +771,389 @@ def zip_with_bad_crc(root):
     raw[raw.index(bytes([2]) * 1000) + 500] ^= 0xFF
     path.unlink()
     return raw
+
+
+# ---- phase 2: --list, --only, passwords
+
+def _crc_table():
+    table = []
+    for i in range(256):
+        c = i
+        for _ in range(8):
+            c = (c >> 1) ^ 0xEDB88320 if c & 1 else c >> 1
+        table.append(c)
+    return table
+
+
+CRC = _crc_table()
+
+
+def zipcrypto(items, password):
+    """A zip of stored entries encrypted with PKWARE traditional encryption (no bit 3: the check byte is the CRC's).
+    An item is (name, data) or (name, data, its own password); a password of None leaves that entry plain."""
+    keys = [0x12345678, 0x23456789, 0x34567890]
+
+    def crc(c, b):
+        return (c >> 8) ^ CRC[(c ^ b) & 0xFF]
+
+    def update(b):
+        keys[0] = crc(keys[0], b)
+        keys[1] = ((keys[1] + (keys[0] & 0xFF)) * 134775813 + 1) & 0xFFFFFFFF
+        keys[2] = crc(keys[2], keys[1] >> 24)
+
+    def encrypt(data):
+        out = bytearray()
+        for p in data:
+            t = (keys[2] | 2) & 0xFFFF
+            out.append(p ^ ((t * (t ^ 1)) >> 8 & 0xFF))
+            update(p)
+        return bytes(out)
+
+    body, central = b"", b""
+    for name, data, *own in items:
+        pw = own[0] if own else password
+        keys[:] = [0x12345678, 0x23456789, 0x34567890]
+        for b in (pw or "").encode():
+            update(b)
+        checksum = zlib.crc32(data)
+        sealed = encrypt(bytes(11) + bytes([checksum >> 24]) + data) if pw is not None else data
+        flag = 1 if pw is not None else 0
+        raw_name = name.encode()
+        head = struct.pack("<HHHHHIIIHH", 20, flag, 0, 0, 0x5C21, checksum, len(sealed), len(data), len(raw_name), 0)
+        central += (b"PK\x01\x02" + struct.pack("<HHHHHHIIIHHHHHII", 20, 20, flag, 0, 0, 0x5C21, checksum, len(sealed),
+                                                len(data), len(raw_name), 0, 0, 0, 0, 0o100644 << 16, len(body))
+                    + raw_name)
+        body += b"PK\x03\x04" + head + raw_name + sealed
+    end = b"PK\x05\x06" + struct.pack("<HHHHIIH", 0, 0, len(items), len(items), len(central), len(body), 0)
+    return body + central + end
+
+
+class Phase2(Base):
+    def rows(self, notes):
+        tables = [n["params"] for n in notes if n["method"] == "table"]
+        self.assertEqual(len(tables), 1, notes)
+        self.assertEqual(tables[0]["columns"], ["name", "size", "type", "note"])
+        return tables[0]["rows"]
+
+    def start(self, inputs, **kw):
+        """Starts a run and returns (process, lines so far, the form request) once the plugin asks for one."""
+        p = self.begin(inputs, **kw)
+        self.send(p, id=3, method="shutdown", params={})  # queued: a plugin that never asks still ends
+        lines = []
+        for line in p.stdout:
+            lines.append(line)
+            if line.startswith("{") and json.loads(line).get("method") == "form":
+                return p, lines, json.loads(line)
+        p.communicate(timeout=60)
+        self.fail("the plugin sent no form request: " + "".join(lines))
+
+    def reply(self, p, req, **result):
+        self.send(p, id=req["id"], result=result)
+
+    def assertNoLeak(self, *needles):
+        """None of `needles` is in anything the last collected run wrote to stdout or stderr."""
+        for needle in needles:
+            self.assertNotIn(needle, self.output, needle)
+            self.assertNotIn(needle, self.stderr, needle)
+
+    def assertNoForm(self, notes):
+        self.assertFalse([n for n in notes if n["method"] == "form"])
+
+    def password_zip(self, password="s3cret", name="p.zip"):
+        self.put(name, zipcrypto([("a.txt", b"alpha"), ("d/b.txt", b"beta")], password))
+        return name
+
+
+class Listing(Phase2):
+    def test_list_sends_one_table_matching_the_archive_and_writes_nothing(self):  # R12
+        # Bug caught: a temp folder or destination is made, or rows differ from the archive (name, size, type).
+        self.put("a.tar", tar_bytes([ti("a.txt", data=b"abc"), ti("d/", tarfile.DIRTYPE),
+                                     ti("d/l", tarfile.SYMTYPE, link="../a.txt")]))
+        before = self.tree()
+        answer, notes = self.run_plugin({"file": "a.tar", "list": True})
+        self.assertEqual(answer["result"], {"exit_code": 0, "outputs": {"entries": 3}})
+        self.assertEqual(self.rows(notes), [["a.txt", 3, "file", ""], ["d", 0, "dir", ""], ["d/l", 0, "link", ""]])
+        self.assertEqual(self.tree(), before)
+
+    def test_list_marks_entries_the_extraction_would_refuse(self):  # R12
+        # Bug caught: list shows a hostile entry as fine, or fails the whole listing instead of marking the row.
+        self.put("h.tar", tar_bytes([ti("ok.txt", data=b"1"), ti("../evil", data=b"2"),
+                                     ti("ln", tarfile.SYMTYPE, link="/etc/passwd"), ti("OK.txt", data=b"3")]))
+        answer, notes = self.run_plugin({"file": "h.tar", "list": True})
+        self.assertEqual(answer["result"]["outputs"], {"entries": 4})
+        got = [(r[0], r[3].startswith("refused: ")) for r in self.rows(notes)]
+        self.assertEqual(got, [("ok.txt", False), ("../evil", True), ("ln", True), ("OK.txt", True)])
+
+    def test_list_shows_at_most_1000_rows_and_logs_the_rest(self):  # R12
+        self.put("many.tar", tar_bytes([ti(n, data=d) for n, d in files_of(1200)]))
+        answer, notes = self.run_plugin({"file": "many.tar", "list": True})
+        self.assertEqual(len(self.rows(notes)), 1000)
+        self.assertIn("… 200 more entries not shown", self.said(notes, "info"))
+        self.assertEqual(answer["result"]["outputs"], {"entries": 1200})
+
+    def test_list_of_an_encrypted_zip_notes_it_and_never_asks_for_a_password(self):  # R12, R14
+        self.password_zip()
+        answer, notes = self.run_plugin({"file": "p.zip", "list": True})
+        self.assertEqual(answer["result"]["exit_code"], 0)
+        self.assertEqual([r[3] for r in self.rows(notes)], ["encrypted", "encrypted"])
+        self.assertFalse([n for n in notes if n["method"] == "form"])
+
+    def test_list_with_only_lists_matching_entries_and_keeps_the_entry_limit(self):  # R12, R13
+        self.put("a.tar", tar_bytes([ti("a.md", data=b"1"), ti("b.txt", data=b"2"), ti("c.md", data=b"3")]))
+        answer, notes = self.run_plugin({"file": "a.tar", "list": True, "only": "*.md"})
+        self.assertEqual([r[0] for r in self.rows(notes)], ["a.md", "c.md"])
+        self.assertEqual(answer["result"]["outputs"], {"entries": 2})
+        before = self.tree()
+        answer, notes = self.run_plugin({"file": "a.tar", "list": True}, env={"DOCK_EXTRACT_MAX_ENTRIES": "2"})
+        self.assertRefused(answer, notes, before, "DOCK_EXTRACT_MAX_ENTRIES")
+
+
+    def test_list_of_a_single_compressed_file_shows_an_empty_size(self):  # R12
+        # Bug caught: the unknown size of a .gz is listed as 0 bytes.
+        self.put("n.txt.gz", gzip.compress(b"hello"))
+        _, notes = self.run_plugin({"file": "n.txt.gz", "list": True})
+        self.assertEqual(self.rows(notes), [["n.txt", "", "file", ""]])
+
+    def test_list_marks_an_entry_it_cannot_read_instead_of_aborting(self):  # R12
+        # Bug caught: a zip symlink with an unsupported method raises while its target is read and ends the listing.
+        link = zinfo("ln", 0o120777, zipfile.ZIP_STORED)
+        raw = bytearray(mkzip(io.BytesIO(), [("ok.txt", b"1"), (link, b"ok.txt")], zipfile.ZIP_STORED).getvalue())
+        raw[raw.rindex(b"PK\x03\x04") + 8] = 9
+        raw[raw.rindex(b"PK\x01\x02") + 10] = 9
+        self.put("s.zip", bytes(raw))
+        answer, notes = self.run_plugin({"file": "s.zip", "list": True})
+        self.assertEqual(answer["result"]["outputs"], {"entries": 2})
+        self.assertEqual([(r[0], r[3]) for r in self.rows(notes)],
+                         [("ok.txt", ""), ("ln", "refused: unsupported zip compression")])
+        before = self.tree()  # and an unpack still refuses it
+        answer, notes = self.run_plugin({"file": "s.zip"})
+        self.assertRefused(answer, notes, before, "unsupported zip compression")
+
+
+class Only(Phase2):
+    def put_tree(self, extra=()):
+        self.put("t.tar", tar_bytes([ti("README.md", data=b"r"), ti("docs/a.md", data=b"a"), ti("img/x.png", data=b"x"),
+                                     ti("src/main.py", data=b"m"), ti("o.txt", data=b"o"), *extra]))
+
+    def test_only_extracts_matching_entries_and_their_parents(self):  # R13
+        # Bug caught: everything is extracted, or a kept file lands without its parent folders.
+        self.put_tree()
+        answer, _ = self.run_plugin({"file": "t.tar", "only": " *.md, img/* ,,"})
+        got = sorted(str(p.relative_to(self.dir / "t")) for p in (self.dir / "t").rglob("*"))
+        self.assertEqual(got, ["README.md", "docs", "docs/a.md", "img", "img/x.png"])
+        self.assertEqual(len(answer["result"]["outputs"]["files"]), 3)
+
+    def test_only_with_no_match_fails(self):  # R13
+        self.put_tree()
+        before = self.tree()
+        answer, notes = self.run_plugin({"file": "t.tar", "only": "*.rs"})
+        self.assertRefused(answer, notes, before, "no entry matches --only")
+
+    def test_a_hostile_entry_outside_the_filter_still_fails_the_run(self):  # R13
+        # Bug caught: filtered-out entries skip the safety checks.
+        self.put_tree([ti("../evil.txt", data=b"e")])
+        before = self.tree()
+        answer, notes = self.run_plugin({"file": "t.tar", "only": "*.md"})
+        self.assertRefused(answer, notes, before, "leaves the destination")
+
+    def test_a_hard_link_whose_target_was_filtered_out_is_refused(self):  # R13
+        self.put_tree([ti("h.md", tarfile.LNKTYPE, link="o.txt")])
+        before = self.tree()
+        answer, notes = self.run_plugin({"file": "t.tar", "only": "*.md"})
+        self.assertRefused(answer, notes, before, "--only")
+
+    def test_filtered_out_links_fifos_and_collisions_still_fail_the_run(self):  # R13
+        # Bug caught: entries left out by --only skip the checks for links, special files and name collisions.
+        # (Lock-in of correct behaviour: proven by a mutation that skips Checker.check for filtered entries.)
+        cases = {"symlink": [ti("l", tarfile.SYMTYPE, link="/etc/passwd")],
+                 "fifo": [ti("f", tarfile.FIFOTYPE)],
+                 "collision": [ti("A.txt", data=b"1"), ti("a.txt", data=b"2")]}
+        for name, extra in cases.items():
+            with self.subTest(name):
+                self.put_tree(extra)
+                before = self.tree()
+                answer, notes = self.run_plugin({"file": "t.tar", "only": "*.md"})
+                self.assertRefused(answer, notes, before)
+
+    def test_a_matching_link_to_a_filtered_target_counts_as_a_link_in_the_log(self):  # R13
+        # Bug caught: the log says "extracted 0 files" although a (dangling) link was made.
+        self.put_tree([ti("l.md", tarfile.SYMTYPE, link="o.txt")])
+        answer, notes = self.run_plugin({"file": "t.tar", "only": "l.md"})
+        self.assertEqual(answer["result"]["outputs"]["files"], [])
+        self.assertIn("extracted 0 files and 1 link ", self.said(notes, "info"))
+
+    def test_a_matching_link_is_kept_and_a_non_matching_one_is_not(self):  # R13
+        self.put_tree([ti("l.md", tarfile.SYMTYPE, link="README.md"), ti("l.txt", tarfile.SYMTYPE, link="README.md")])
+        self.run_plugin({"file": "t.tar", "only": "*.md"})
+        self.assertEqual(os.readlink(self.dir / "t" / "l.md"), "README.md")
+        self.assertFalse(os.path.lexists(self.dir / "t" / "l.txt"))
+
+
+class Password(Phase2):
+    def test_the_fixture_is_a_real_zipcrypto_zip(self):  # R14
+        # Bug caught: the test builder is wrong, so every password test would pass or fail for the wrong reason.
+        path = self.root / "f.zip"
+        path.write_bytes(zipcrypto([("a.txt", b"alpha")], "pw"))
+        with zipfile.ZipFile(path) as z:
+            self.assertTrue(z.infolist()[0].flag_bits & 1)
+            z.setpassword(b"pw")
+            self.assertEqual(z.read("a.txt"), b"alpha")
+            z.setpassword(b"no")
+            with self.assertRaises((RuntimeError, zipfile.BadZipFile)):
+                z.read("a.txt")
+
+    def test_the_right_password_extracts_and_never_appears_in_the_output(self):  # R14
+        # Bug caught: the password is echoed in a log or result, or the form asks the wrong thing.
+        self.password_zip()
+        p, lines, req = self.start({"file": "p.zip"})
+        self.assertEqual(req["params"], {"title": "Password for p.zip", "fields": [
+            {"name": "password", "label": "Password", "type": "text", "secret": True}]})
+        self.assertIsInstance(req["id"], str)
+        self.reply(p, req, values={"password": "s3cret"})
+        answer, _ = self.collect(p, lines)
+        self.assertEqual(answer["result"]["exit_code"], 0, answer)
+        self.assertEqual((self.dir / "p" / "d" / "b.txt").read_bytes(), b"beta")
+        self.assertNoLeak("s3cret")
+
+    def test_a_wrong_password_fails_cleanly(self):  # R14
+        self.password_zip()
+        before = self.tree()
+        p, lines, req = self.start({"file": "p.zip"})
+        self.reply(p, req, values={"password": "Zq7!wrong-pw"})
+        answer, notes = self.collect(p, lines)
+        self.assertRefused(answer, notes, before, "wrong password")
+        self.assertNoLeak("Zq7!wrong-pw", "wrong-pw")
+
+    def test_no_answer_or_an_empty_one_is_no_password_given(self):  # R14
+        self.password_zip()
+        before = self.tree()
+        for result in ({"eof": True}, {"values": {"password": ""}}):
+            with self.subTest(result):
+                p, lines, req = self.start({"file": "p.zip"})
+                self.reply(p, req, **result)
+                answer, notes = self.collect(p, lines)
+                self.assertRefused(answer, notes, before, "no password given")
+                self.assertNoLeak("s3cret")
+
+    def test_a_password_with_a_lone_surrogate_is_no_password_and_is_never_echoed(self):  # R14
+        # Bug caught: encoding the password fails and the error text ("'utf-8' codec can't encode character
+        # '\\ud800' in position 3") is shown as "archive is damaged", leaking part of it.
+        self.password_zip()
+        before = self.tree()
+        p, lines, req = self.start({"file": "p.zip"})
+        self.reply(p, req, values={"password": "abc\ud800def"})
+        answer, notes = self.collect(p, lines)
+        self.assertRefused(answer, notes, before, "no password given")
+        self.assertNoLeak("abc", "def", "\\ud800", "ud800", "\ud800")
+
+    def test_a_wrong_password_found_on_a_later_entry_is_still_wrong_password(self):  # R14
+        # Bug caught: only the first encrypted entry maps a CRC error to "wrong password"; a later one whose check
+        # byte passes by chance says "archive is damaged: Bad CRC-32".
+        right = "s3cret"
+        for i in range(5000):  # a password for entry 2 whose header passes the check byte under `right` (about 1 in 256)
+            other = f"alt-{i}"
+            raw = zipcrypto([("a.txt", b"alpha", right), ("b.txt", b"beta", other)], right)
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                z.setpassword(right.encode())
+                try:
+                    z.open("b.txt").close()
+                except RuntimeError:
+                    continue
+                with self.assertRaises(zipfile.BadZipFile), z.open("b.txt") as body:
+                    body.read()
+            break
+        else:
+            self.fail("no password found whose check byte passes")
+        self.put("p.zip", raw)
+        before = self.tree()
+        p, lines, req = self.start({"file": "p.zip"})
+        self.reply(p, req, values={"password": right})
+        answer, notes = self.collect(p, lines)
+        self.assertRefused(answer, notes, before, "wrong password")
+
+    def test_no_form_when_no_kept_entry_is_encrypted(self):  # R14
+        # Bug caught: the form is sent for a zip whose encrypted entries --only leaves out.
+        self.put("p.zip", zipcrypto([("a.txt", b"alpha"), ("r.md", b"readme", None)], "s3cret"))
+        answer, notes = self.run_plugin({"file": "p.zip", "only": "*.md"})
+        self.assertEqual(answer["result"]["exit_code"], 0, answer)
+        self.assertNoForm(notes)
+        self.assertEqual((self.dir / "p" / "r.md").read_bytes(), b"readme")
+
+    def test_no_form_for_an_over_size_zip_or_a_no_match_filter(self):  # R14
+        # Bug caught: the user is asked for a password for a run that is refused anyway.
+        self.password_zip()
+        before = self.tree()
+        for inputs, env, message in [({"file": "p.zip"}, {"DOCK_EXTRACT_MAX_BYTES": "5"}, "DOCK_EXTRACT_MAX_BYTES"),
+                                     ({"file": "p.zip", "only": "*.rs"}, None, "no entry matches --only")]:
+            with self.subTest(message):
+                answer, notes = self.run_plugin(inputs, env=env)
+                self.assertRefused(answer, notes, before, message)
+                self.assertNoForm(notes)
+
+    def test_an_aes_zip_is_refused_before_any_form(self):  # R14
+        raw = bytearray(zipcrypto([("a.txt", b"alpha")], "pw"))
+        raw[raw.index(b"PK\x03\x04") + 8] = 99  # compression method 99: AES
+        raw[raw.index(b"PK\x01\x02") + 10] = 99
+        self.put("aes.zip", bytes(raw))
+        before = self.tree()
+        answer, notes = self.run_plugin({"file": "aes.zip"})
+        self.assertRefused(answer, notes, before, "AES-encrypted zips are not supported")
+        self.assertFalse([n for n in notes if n["method"] == "form"])
+
+    def test_a_cancel_while_waiting_for_the_form_is_32800_and_late_or_unknown_replies_are_ignored(self):  # R14
+        # Bug caught: the wait ignores a cancel, a late answer crashes the reader, or a stray reply id is mistaken
+        # for the awaited answer.
+        self.password_zip()
+        before = self.tree()
+        p, lines, req = self.start({"file": "p.zip"})
+        self.send(p, id="x99", result={"values": {"password": "s3cret"}})  # not ours: ignored, the wait goes on
+        self.send(p, method="cancel", params={})
+        self.reply(p, req, values={"password": "s3cret"})  # too late: dropped
+        answer, _ = self.collect(p, lines)
+        self.assertEqual(answer["error"]["code"], -32800)
+        self.assertEqual(self.tree(), before)
+
+    def test_replies_are_routed_by_id_only_the_right_one_answers_the_form(self):  # R14
+        # Bug caught: a reply for another id, or a second reply, is taken as the answer to the open form.
+        self.password_zip()
+        p, lines, req = self.start({"file": "p.zip"})
+        for _ in range(2):  # an unknown id, twice
+            self.send(p, id="x99", result={"values": {"password": "Zq7!wrong-pw"}})
+        time.sleep(0.5)  # a plugin that routes it to the form would be failing by now
+        self.reply(p, req, values={"password": "s3cret"})
+        self.reply(p, req, values={"password": "Zq7!wrong-pw"})  # a duplicate: nobody waits any more
+        answer, _ = self.collect(p, lines)
+        self.assertEqual(answer["result"]["exit_code"], 0, answer)
+        self.assertEqual((self.dir / "p" / "a.txt").read_bytes(), b"alpha")
+
+    def test_a_host_request_shaped_like_our_id_is_answered_not_taken_for_a_reply(self):  # R14
+        # Bug caught: a message with a method and the id "x1" is swallowed as the reply to our request x1.
+        # (Lock-in of correct behaviour.)
+        self.put("z.zip", mkzip(io.BytesIO(), files_of(1)).getvalue())
+        p = self.begin({"file": "z.zip"})
+        self.send(p, id="x1", method="shutdown", params={})
+        out, _ = p.communicate(timeout=60)
+        msgs = [json.loads(x) for x in out.splitlines() if x.startswith("{")]
+        self.assertEqual([m["result"] for m in msgs if m.get("id") == "x1"], [{}])
+
+    def test_closing_stdin_while_the_form_is_open_is_32800_and_changes_nothing(self):  # R14, R18
+        # Bug caught: the wait for the form ignores the end of input and hangs, or leaves a .part folder.
+        # (Lock-in of correct behaviour.)
+        self.password_zip()
+        before = self.tree()
+        p, lines, _ = self.start({"file": "p.zip"})
+        p.stdin.close()
+        answer, _ = self.collect(p, lines)
+        self.assertEqual(answer["error"]["code"], -32800)
+        self.assertEqual(self.tree(), before)
+
+    def test_an_error_reply_ends_the_run_with_its_message(self):  # R14
+        self.password_zip()
+        before = self.tree()
+        p, lines, req = self.start({"file": "p.zip"})
+        self.send(p, id=req["id"], error={"code": -32602, "message": "form refused"})
+        answer, notes = self.collect(p, lines)
+        self.assertRefused(answer, notes, before, "form refused")
 
 
 if __name__ == "__main__":
