@@ -164,8 +164,20 @@ class Connection:
             asks.release_all()
 
     def _list(self, msg: dict) -> None:
-        items = [{"id": pid, "commands": list(e["commands"])} for pid, e in self.store.index().items()]
+        items = [{"id": pid, "commands": self._describe(pid, e["commands"])} for pid, e in self.store.index().items()]
         self.send(protocol.plugins(msg.get("id"), items))
+
+    def _describe(self, plugin: str, names: list[str]) -> list[dict]:
+        """The wire form of a plugin's commands: name, summary and declared inputs (None when undeclared)."""
+        out = []
+        for name in names:
+            manifest, _ = self.store.resolve(f"{plugin}:{name}")
+            cmd = manifest.command(name)
+            inputs = None if cmd.inputs is None else [
+                {"name": i.name, "type": i.type, "required": i.required, "default": i.default} for i in cmd.inputs
+            ]
+            out.append({"name": name, "summary": cmd.summary, "inputs": inputs})
+        return out
 
     def _run(self, msg: dict) -> None:
         req = msg.get("id")

@@ -14,7 +14,10 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │     ├─ src/        the host package (python -m src, or the `dock` command)
 │     ├─ tests/      the host tests (pytest), plus the host-driven dm tests (they start containers)
 │     └─ moon.yml    install, check, check-ci, test, run, clean
-│  └─ server/        a localhost WebSocket host for plugins (moon project `server`; see apps/server/docs/SERVER_PROTOCOL.md)
+│  ├─ server/        a localhost WebSocket host for plugins (moon project `server`; see apps/server/docs/SERVER_PROTOCOL.md)
+│  └─ cross/         a Kotlin Multiplatform desktop client for the server (moon project `cross`; see apps/cross/README.md)
+├─ packages/
+│  └─ host/          the host core the CLI and the server share (moon project `host`)
 ├─ plugins/          container plugins, usable by any host
 │  ├─ dm/            the downloader (moon project `dm`)
 │  │  ├─ tests/      dm's in-process tests (pytest, no container runtime) and the torrent fixtures
@@ -23,9 +26,6 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │  └─ story/       writes a text story into a Markdown file with a local Ollama model (moon project `story`)
 └─ protocol/         PROTOCOL.md, the plugin protocol every host and plugin follows
 ```
-
-Planned: `apps/cross` (a Kotlin Multiplatform client), `packages/host` (the host
-core the CLI and the server share).
 
 ## Prerequisites
 

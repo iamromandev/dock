@@ -1,4 +1,4 @@
-# dock server protocol, version 1
+# dock server protocol, version 2
 
 The server listens on `ws://127.0.0.1:<port>` (default port 7464; loopback only). Every WebSocket text message is one
 JSON object with a `"type"`. Server settings: `DOCK_SERVER_TOKEN` (or `[server] token` in `$DOCK_HOME/config.toml`),
@@ -9,8 +9,8 @@ JSON object with a `"type"`. Server settings: `DOCK_SERVER_TOKEN` (or `[server] 
 The first client message must be `hello`. Anything else, or a wrong token, gets `error` (`auth`) and the server closes
 the connection. The `hello` must arrive within 10 seconds. A browser page from another origin is refused at the
 WebSocket upgrade (HTTP 403): only no `Origin` header, `null`, or `http(s)://localhost` / `127.0.0.1` (any port) pass.
-`version` must be the integer 1. An unsupported version gets `error` (`version`), whose message lists the supported versions
-(`[1]`), and the connection closes.
+`version` must be the integer 2. An unsupported version gets `error` (`version`), whose message lists the supported versions
+(`[2]`), and the connection closes.
 
 | Client sends | Fields |
 |---|---|
@@ -18,7 +18,7 @@ WebSocket upgrade (HTTP 403): only no `Origin` header, `null`, or `http(s)://loc
 
 | Server answers | Fields |
 |---|---|
-| `welcome` | `version` (1), `server` (server version string) |
+| `welcome` | `version` (2), `server` (server version string) |
 
 ## Client messages (after `welcome`)
 
@@ -34,9 +34,9 @@ WebSocket upgrade (HTTP 403): only no `Origin` header, `null`, or `http(s)://loc
 | Type | Fields | Meaning |
 |---|---|---|
 | `welcome` | `version`, `server` | Handshake accepted. |
-| `plugins` | `id`, `plugins: [{id, commands: [name, ...]}]` | Reply to `list`. |
-| `ui` | `run`, `method`, `params` | A plugin's output for a run. `method` is one of `output`, `log`, `bar`, `table`, `panel`, `clear`, `warn`; `params` are the plugin's own (for `warn`: `{"message": ...}`). |
-| `ask` | `run`, `ask`, `method`, `params` | The plugin needs input (`prompt_user`, `form`); `ask` is a number, unique within the connection. Reply with `answer`; the run waits for it. After `cancel` or a disconnect the plugin gets `{"eof": true}` instead, and an ask not yet sent by then is never sent. |
+| `plugins` | `id`, `plugins: [{id, commands: [{name, summary, inputs}]}]` | Reply to `list`. `inputs` is `null` when the command declares none (it takes whatever it is given), else a list of `{name, type, required, default}` (`type` is `string`, `int` or `bool`; `default` is `null` when there is none). An empty list means the command takes no inputs. |
+| `ui` | `run`, `method`, `params` | A plugin's output for a run. `method` is one of `output`, `log`, `bar`, `table`, `panel`, `clear`, `warn`; `params` are cleaned and normalised by the server, as the CLI does (control and bidi characters become U+FFFD): `output` `{text}`, `log` `{level, message}`, `bar` `{id, label, percent, message, done}` (label and message may be `""`, percent is `null` or 0-100), `table` `{id, title, columns, rows}`, `panel` `{id, title, items}`, `clear` `{id, kind}`, `warn` `{message}`. A message that is invalid is not sent; the plugin gets the host's usual error (-32602) or a log line. |
+| `ask` | `run`, `ask`, `method`, `params` | The plugin needs input (`prompt_user`, `form`); `ask` is a number, unique within the connection. Reply with `answer`; the run waits for it. `prompt_user` params are `{prompt}`; `form` params are `{title, fields}` where each field is `{name, label, type, default, secret?, choices?}` (all text sanitised; `default` is the displayed text for a choice). Answer a prompt with `{text}` and a form with `{values: {name: value}}`: a string for `text`, a boolean for `confirm`, and for `choice` one of the displayed `choices` strings; the server maps it to the plugin's raw value (an answer not among the choices fails the form for the plugin). `{eof: true}` ends input. After `cancel` or a disconnect the plugin gets `{"eof": true}` instead, and an ask not yet sent by then is never sent. |
 | `done` | `run`, `code`, `error?` | The run ended. `code` is the plugin's exit code, 1 when the plugin failed (then `error` says why), 130 when cancelled. |
 | `error` | `id?`, `code`, `message` | A request failed. `id` is the request's id when it had one. |
 

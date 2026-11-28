@@ -1,10 +1,10 @@
-"""Wire format v1: one JSON object per WebSocket text message, with a "type". See docs/SERVER_PROTOCOL.md."""
+"""Wire format v2: one JSON object per WebSocket text message, with a "type". See docs/SERVER_PROTOCOL.md."""
 
 from __future__ import annotations
 
 import json
 
-VERSIONS = [1]
+VERSIONS = [2]
 SERVER_VERSION = "0.1.0"
 
 CLIENT_TYPES = {"hello", "list", "run", "answer", "cancel"}

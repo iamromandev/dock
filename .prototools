@@ -2,3 +2,5 @@
 # Python is pinned by apps/cli/.python-version (uv installs it), not here.
 moon = "2.6.6"
 uv = "0.13.10"
+# Java for apps/cross (Gradle toolchain jvmToolchain(25)).
+java = "25"
