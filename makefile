@@ -12,7 +12,8 @@ UV := uv
 	dm-install dm-check dm-check-ci dm-test dm-clean \
 	brain-install brain-check brain-check-ci brain-test brain-clean \
 	image-install image-check image-check-ci image-test image-clean \
-	story-install story-check story-check-ci story-test story-clean
+	story-install story-check story-check-ci story-test story-clean \
+	narrate-install narrate-check narrate-check-ci narrate-test narrate-clean
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -21,7 +22,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install brain:install image:install story:install
+	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -123,6 +124,22 @@ story-test: # Run the story plugin's tests (a local stand-in Ollama server; no D
 
 story-clean: # Remove the story plugin's Python caches
 	$(MOON) run story:clean
+
+## narrate - delegates to plugins/narrate/moon.yml
+narrate-install: # Install the narrate plugin's dev tools
+	$(MOON) run narrate:install
+
+narrate-check: # Lint + typecheck the narrate plugin (fixes what ruff can)
+	$(MOON) run narrate:check
+
+narrate-check-ci: # Lint + typecheck the narrate plugin without fixing anything. For CI.
+	$(MOON) run narrate:check-ci
+
+narrate-test: # Run the narrate plugin's tests (a local stand-in Kokoro server; no Docker, GPU or model needed)
+	$(MOON) run narrate:test
+
+narrate-clean: # Remove the narrate plugin's Python caches
+	$(MOON) run narrate:clean
 
 # help
 help:

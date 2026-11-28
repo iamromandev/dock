@@ -32,17 +32,12 @@ def _feed(areas, msgs):
     return [e for m in msgs if (e := areas.see(m))]
 
 
-def test_33rd_distinct_area_fails_naming_the_limit():
-    # Bug caught: the 32-area limit is not enforced, or is off by one.
+def test_the_area_limit_holds_at_the_33rd_and_clear_does_not_free_a_slot():
+    # Bug caught: the 32-area limit is not enforced or is off by one, or clear lowers the count so a plugin
+    # cycling areas slips past the limit.
     areas = Areas()
     assert _feed(areas, [_note("bar", f"b{i}") for i in range(32)]) == []
     assert "32" in str(areas.see(_note("bar", "b32")))
-
-
-def test_clear_does_not_free_a_slot_and_reopening_a_cleared_id_counts_again():
-    # Bug caught: clear lowers the count, so a plugin cycling areas slips past the limit.
-    areas = Areas()
-    _feed(areas, [_note("bar", f"b{i}") for i in range(32)])
     areas.see({"jsonrpc": "2.0", "method": "clear", "params": {"kind": "bar", "id": "b0"}})
     assert "32" in str(areas.see(_note("bar", "b0")))  # reopening a cleared id creates a new area, so it is the 33rd
 
