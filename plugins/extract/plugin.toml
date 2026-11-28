@@ -1,0 +1,22 @@
+id = "dev.dock.extract"
+version = "0.1.0"
+api_version = "2"
+description = "Unpack an archive safely into a new folder"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["fs:read:in", "fs:write:cwd"]
+env = ["DOCK_EXTRACT_MAX_BYTES", "DOCK_EXTRACT_MAX_ENTRIES"]
+
+[[commands]]
+name = "extract"
+summary = "Unpack an archive (zip, tar, tar.gz/bz2/xz/zst, .gz/.bz2/.xz/.zst) from the in folder into a new folder: extract <file> [-d name] [--list] [--only patterns]"
+keywords = ["extract", "unzip", "untar", "unpack", "archive", "decompress", "zip", "tar"]
+inputs = [
+  { name = "file", type = "string", required = true },
+  { name = "dir", type = "string", flag = "--dir", short = "-d" },
+  { name = "list", type = "bool", flag = "--list" },
+  { name = "only", type = "string", flag = "--only" },
+]

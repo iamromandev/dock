@@ -11,14 +11,11 @@ def _text(name):
     return {"name": name, "label": "L", "type": "text"}
 
 
-def test_repeated_field_name_is_reported_case_sensitively():
-    # Bug caught: duplicate names pass (or "A" and "a" are wrongly treated as the same name).
+def test_form_rules_report_repeated_names_and_bad_choice_defaults():
+    # Bug caught: duplicate names pass (or "A" and "a" are wrongly treated as the same name), or a choice
+    # default outside the choices is accepted.
     assert check_form(_form(_text("x"), _text("x"))) == ["form field name 'x' repeated"]
     assert check_form(_form(_text("x"), _text("X"))) == []
-
-
-def test_choice_default_must_be_in_choices():
-    # Bug caught: a default outside the choices is accepted.
     bad = {"name": "c", "label": "C", "type": "choice", "choices": ["a", "b"], "default": "z"}
     assert check_form(_form(bad)) == ["choice field 'c': default 'z' not in choices"]
     assert check_form(_form({**bad, "default": "a"})) == []

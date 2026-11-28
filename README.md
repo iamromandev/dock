@@ -24,8 +24,9 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │  │  └─ moon.yml    install, check, check-ci, test, clean
 │  ├─ brain/       plans a flow from a request with a local model (moon project `brain`)
 │  ├─ story/       writes a text story into a Markdown file with a local Ollama model (moon project `story`)
-│  └─ narrate/     reads a text or Markdown file aloud into a WAV with a local Kokoro server (moon project `narrate`)
-│     └─ server/   the host-side Kokoro (mlx-audio) server the plugin calls; Apple Silicon only
+│  ├─ narrate/     reads a text or Markdown file aloud into a WAV with a local Kokoro server (moon project `narrate`)
+│  │  └─ server/   the host-side Kokoro (mlx-audio) server the plugin calls; Apple Silicon only
+│  └─ extract/     unpacks an archive safely into a new folder (moon project `extract`)
 └─ protocol/         PROTOCOL.md, the plugin protocol every host and plugin follows
 ```
 
@@ -57,6 +58,7 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 | `make brain-install`, `brain-check`, `brain-check-ci`, `brain-test`, `brain-clean` | The same for the brain (its tests need no Docker or model) |
 | `make story-install`, `story-check`, `story-check-ci`, `story-test`, `story-clean` | The same for the story plugin (its tests need no Docker or model) |
 | `make narrate-install`, `narrate-check`, `narrate-check-ci`, `narrate-test`, `narrate-clean` | The same for the narrate plugin (its tests need no Docker or model) |
+| `make extract-install`, `extract-check`, `extract-check-ci`, `extract-test`, `extract-clean` | The same for the extract plugin (its tests need no Docker) |
 | `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
 | `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project (`install` runs `cli:sync` for the CLI) |
 | `make help`          | List the targets                                                   |
@@ -77,8 +79,8 @@ inputs = { url = "{params.url}", dir = "{work}" }
 label = "download"
 
 [[steps]]
-plugin = "dev.dock.unzip"
-command = "unzip"
+plugin = "dev.dock.extract"
+command = "extract"
 inputs = { file = "{steps.1.files[0]}" }
 ```
 
