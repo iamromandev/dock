@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -409,6 +410,39 @@ class Narrate(Base):
         finally:
             narrate.cancelled.clear()
         self.assertEqual(s.requests, [])
+
+    def test_a_stop_while_a_large_body_is_being_sent_ends_the_call_fast(self):  # R13
+        # A server that accepts but never reads: the send blocks once the socket buffers fill.
+        listener = socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(listener.close)
+        accepted = []
+        threading.Thread(target=lambda: accepted.append(listener.accept()[0]), daemon=True).start()
+        self.addCleanup(lambda: [c.close() for c in accepted])
+        url = f"http://127.0.0.1:{listener.getsockname()[1]}"
+        body = {"text": "a" * 20_000_000, "voice": "af_heart", "speed": 1.0, "model": "kokoro"}
+        call, errors = narrate.Call(), []
+
+        def run():
+            try:
+                narrate.speak(url, body, call)
+            except Exception as e:
+                errors.append(e)
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        deadline = time.monotonic() + 5
+        while not accepted and time.monotonic() < deadline:
+            time.sleep(0.01)
+        time.sleep(0.3)  # let the send fill the buffers and block
+        stopper = threading.Thread(target=call.stop, daemon=True)
+        began = time.monotonic()
+        stopper.start()
+        stopper.join(2)
+        worker.join(2)
+        self.assertFalse(stopper.is_alive(), "stop() blocked behind the send")
+        self.assertFalse(worker.is_alive(), "the send was not interrupted")
+        self.assertLess(time.monotonic() - began, 2)
+        self.assertEqual([type(e) for e in errors], [narrate.Cancelled])
 
     def test_a_cancel_just_before_publishing_leaves_no_wav_or_part(self):  # R13
         wav = narrate.Wav(str(self.dir / "x.wav"))
