@@ -15,3 +15,8 @@ inputs = [{ name = "script", type = "string", required = true }]
 name = "ask"
 summary = "Send a form with text, secret, confirm and choice fields and print the values as JSON: ask"
 inputs = []
+
+[[commands]]
+name = "prompt"
+summary = "Send a prompt_user and print the answer as JSON: prompt"
+inputs = []

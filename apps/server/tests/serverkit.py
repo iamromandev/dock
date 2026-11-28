@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 import time
@@ -10,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+os.environ.setdefault("DOCK_CANCEL_GRACE", "1")  # read when dock_host is imported: a stuck plugin is killed after 1 s
 import dockenv
 from dock_host import isolation
 from dock_host.store import Store

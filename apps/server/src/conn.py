@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import itertools
 import json
 import logging
 import re
@@ -15,12 +16,14 @@ from dock_host.process import PluginError
 from websockets.exceptions import ConnectionClosed
 
 from src import protocol
+from src.asks import Asks
 from src.protocol import ProtocolError
 from src.remote_ui import RemoteUI
 
 log = logging.getLogger("dock.server")
 
 HANDSHAKE_TIMEOUT = 10  # seconds a new connection has to send hello
+JOIN_TIMEOUT = 10  # seconds a disconnect waits for the run to stop
 _LOCAL_ORIGIN = re.compile(r"https?://(127\.0\.0\.1|localhost)(:\d+)?")
 
 
@@ -45,6 +48,10 @@ class Connection:
         self.run_id: str | None = None  # the active run, None when idle
         self.worker: threading.Thread | None = None
         self.session: Session | None = None
+        self.asks: Asks | None = None  # the active run's open questions
+        self._close_lock = threading.Lock()
+        self._closing: set[Session] = set()  # sessions whose close() has started
+        self._ask_ids = itertools.count(1)  # unique per connection, across runs
 
     def _hide(self, text: str) -> str:
         d = self.cfg.dirs
@@ -77,11 +84,30 @@ class Connection:
             self._finish()
 
     def _finish(self) -> None:
-        """The client is gone: cancel the active run (if any) and wait for it, so its container does not outlive it."""
-        if self.worker is not None:
-            if self.session is not None and self.worker.is_alive():
-                self.session.cancel()
-            self.worker.join()
+        """The client is gone: cancel the active run, free what it waits on, and stop it, so nothing outlives it."""
+        worker, session, asks = self.worker, self.session, self.asks
+        if worker is None or session is None:
+            return
+        if worker.is_alive():
+            session.cancel()
+        if asks is not None:
+            asks.release_all()
+        worker.join(JOIN_TIMEOUT)
+        if worker.is_alive():
+            log.warning("run %s did not stop within %ss of the disconnect; closing its session", self.run_id, JOIN_TIMEOUT)
+        self._close_session(session)  # kills the containers of a worker that did not stop in time
+
+    def _close_session(self, session: Session) -> None:
+        """Close the session exactly once: the worker (normal end) and the handler (after the join timeout) both
+        call this, and a second close() racing a stuck first one must not touch the same containers."""
+        with self._close_lock:
+            if session in self._closing:
+                return
+            self._closing.add(session)
+        try:
+            session.close()
+        except Exception:
+            log.exception("closing the session of run %s", self.run_id)
 
     def _reject(self, code: str, message: str) -> bool:
         self.send(protocol.error(code, message))
@@ -113,8 +139,29 @@ class Connection:
             self._list(msg)
         elif kind == "run":
             self._run(msg)
+        elif kind == "answer":
+            self._answer(msg)
+        elif kind == "cancel":
+            self._cancel(msg)
         else:
             raise ProtocolError("bad_message", f"unexpected message type {kind!r}")
+
+    def _answer(self, msg: dict) -> None:
+        result = msg.get("result")
+        if not isinstance(result, dict):
+            raise ProtocolError("bad_message", "answer needs an object result")
+        asks = self.asks
+        if asks is None or not asks.answer(msg.get("ask"), result):
+            log.warning("ignored an answer for unknown or finished ask %r", msg.get("ask"))
+
+    def _cancel(self, msg: dict) -> None:
+        run = msg.get("run")
+        session, asks = self.session, self.asks
+        if run is None or run != self.run_id or session is None:
+            return  # idle, or another run: nothing to cancel
+        session.cancel()
+        if asks is not None:
+            asks.release_all()
 
     def _list(self, msg: dict) -> None:
         items = [{"id": pid, "commands": list(e["commands"])} for pid, e in self.store.index().items()]
@@ -150,9 +197,10 @@ class Connection:
             return
         try:
             # begin() on this thread, before the worker exists: a cancel from a disconnect can never be dropped as stale
-            session = Session(self.store, lambda _plugin: RemoteUI(self.send, req))
+            asks = Asks(self._ask_ids)
+            session = Session(self.store, lambda _plugin: RemoteUI(self.send, req, asks))
             session.begin()
-            self.session = session
+            self.session, self.asks = session, asks
             self.run_id = req
             self.worker = threading.Thread(target=self._work, args=(req, session, manifest, name, checked), daemon=True)
             self.worker.start()
@@ -182,10 +230,7 @@ class Connection:
             log.exception("run %s failed", run_id)
             code, error = 1, f"internal error: {type(e).__name__}"
         finally:
-            try:
-                session.close()
-            except Exception:
-                log.exception("closing run %s", run_id)
+            self._close_session(session)
             self.run_id = None
             self.slots.release()
         self.send(protocol.done(run_id, code, error))

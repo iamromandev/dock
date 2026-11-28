@@ -26,8 +26,8 @@ WebSocket upgrade (HTTP 403): only no `Origin` header, `null`, or `http(s)://loc
 |---|---|---|
 | `list` | `id` | List installed plugins and their commands. |
 | `run` | `id`, `plugin`, `command`, `inputs` | Run `plugin:command` with `inputs` (an object, or omitted for a command that declares none). One run at a time per connection. |
-| `answer` | `ask`, `result` | Answer an `ask` frame (phase 2). |
-| `cancel` | `run` | Cancel the active run (phase 2). |
+| `answer` | `ask`, `result` | Answer an `ask` frame: `ask` is the id from that frame, `result` an object (not an object: `bad_message`). An answer for an unknown or finished ask is ignored (logged on the server, no error frame). |
+| `cancel` | `run` | Cancel the run with that id if it is active; it ends with `done` code 130. No-op when idle or for another run id (no error). |
 
 ## Server messages
 
@@ -36,7 +36,7 @@ WebSocket upgrade (HTTP 403): only no `Origin` header, `null`, or `http(s)://loc
 | `welcome` | `version`, `server` | Handshake accepted. |
 | `plugins` | `id`, `plugins: [{id, commands: [name, ...]}]` | Reply to `list`. |
 | `ui` | `run`, `method`, `params` | A plugin's output for a run. `method` is one of `output`, `log`, `bar`, `table`, `panel`, `clear`, `warn`; `params` are the plugin's own (for `warn`: `{"message": ...}`). |
-| `ask` | `run`, `ask`, `method`, `params` | The plugin needs input (`prompt_user`, `form`); reply with `answer` (phase 2). Until then the plugin gets `{"eof": true}`. |
+| `ask` | `run`, `ask`, `method`, `params` | The plugin needs input (`prompt_user`, `form`); `ask` is a number, unique within the connection. Reply with `answer`; the run waits for it. After `cancel` or a disconnect the plugin gets `{"eof": true}` instead, and an ask not yet sent by then is never sent. |
 | `done` | `run`, `code`, `error?` | The run ended. `code` is the plugin's exit code, 1 when the plugin failed (then `error` says why), 130 when cancelled. |
 | `error` | `id?`, `code`, `message` | A request failed. `id` is the request's id when it had one. |
 
@@ -53,9 +53,10 @@ WebSocket upgrade (HTTP 403): only no `Origin` header, `null`, or `http(s)://loc
 | `bad_message` | Not JSON, not an object, unknown `type`, or missing fields. The connection stays open. |
 | `internal` | The server failed while handling a message. Details stay in the server log; the connection stays open. |
 
-## Disconnect (current behaviour)
+## Disconnect
 
-When the client disconnects during a run, the server cancels the run (as `cancel` would), waits for it to stop, and
-frees its slot. Full disconnect handling is phase 2.
+When the client disconnects, the server cancels the active run (as `cancel` would), releases any `ask` it waits on
+(the plugin gets `{"eof": true}`), waits up to 10 seconds for it to stop, then stops its containers and frees its slot.
+Frames the run still sends to the closed socket are dropped.
 
 Error text sent to clients (`done.error`, `error.message`) has host folders replaced by `<dock>`.

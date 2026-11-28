@@ -27,7 +27,8 @@ tasks:
     deps: ["sync"]
     inputs: ["@group(sources)", "@group(configs)", "tests/**/*", "$DOCK_TEST_RUNTIME", "/packages/host/**/*"]
   run:
-    command: "uv run dock-server"
+    # `python -m src` (not a console script) so `src` imports from this folder without installing the package
+    command: "uv run python -m src"
     options:
       cache: false
       interactive: true

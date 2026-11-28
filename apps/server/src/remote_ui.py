@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from src import protocol
+from src.asks import Asks
 
 
 class RemoteUI:
-    def __init__(self, send: Callable[[dict], None], run_id: str, asks=None):
+    def __init__(self, send: Callable[[dict], None], run_id: str, asks: Asks | None = None):
         self._send = send
         self.run_id = run_id
         self.asks = asks
@@ -43,11 +44,16 @@ class RemoteUI:
     def warn(self, message: str) -> None:
         self._ui("warn", {"message": message})
 
+    def _ask(self, method: str, params: dict) -> dict:
+        if self.asks is None:
+            return {"eof": True}
+        return self.asks.ask(self._send, lambda n: protocol.ask(self.run_id, n, method, params))
+
     def prompt_user(self, p: dict) -> dict:
-        return {"eof": True}  # phase 2: ask the client
+        return self._ask("prompt_user", p)
 
     def form(self, p: dict) -> dict:
-        return {"eof": True}  # phase 2: ask the client
+        return self._ask("form", p)
 
     def handlers(self) -> dict:
         return {

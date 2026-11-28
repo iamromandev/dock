@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 
 import pytest
@@ -6,7 +7,8 @@ import serverkit
 from serverkit import TOKEN, Client
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
-from src import conn
+from src import conn, server
+from src.asks import Asks
 
 
 @pytest.fixture(scope="module")
@@ -296,3 +298,138 @@ def test_list_during_a_run_is_answered_between_frames(built_store):
         c.send(type="list", id="L")
         frames = c.until_done("r1")
         assert [f["id"] for f in frames if f["type"] == "plugins"] == ["L"] and frames[-1]["code"] == 0
+
+
+def start_ask(c, command, run="r1"):
+    """Start uiprobe `command` and return its ask frame."""
+    c.send(type="run", id=run, plugin="dev.dock.uiprobe", command=command, inputs={})
+    while True:
+        f = c.recv()
+        if f["type"] == "ask":
+            return f
+
+
+def test_prompt_user_round_trip_reaches_the_plugin(built_store):
+    # bug: the ask is never sent, or the answer does not reach the plugin, so the run hangs or sees eof
+    with serverkit.running(built_store) as (u, _srv):
+        c = authed(u)
+        ask = start_ask(c, "prompt")
+        assert (ask["run"], ask["method"], ask["params"]) == ("r1", "prompt_user", {"prompt": "Name?"})
+        c.send(type="answer", ask=ask["ask"], result={"text": "Ada"})
+        frames = c.until_done("r1")
+        assert '"text": "Ada"' in frames[0]["params"]["text"] and frames[-1]["code"] == 0
+
+
+def test_form_round_trip_reaches_the_plugin(built_store):
+    # bug: form asks are answered with eof, or the field values are lost
+    with serverkit.running(built_store) as (u, _srv):
+        c = authed(u)
+        ask = start_ask(c, "ask")
+        assert ask["method"] == "form" and ask["params"]["title"] == "Settings"
+        c.send(type="answer", ask=ask["ask"], result={"values": {"name": "Bob"}})
+        frames = c.until_done("r1")
+        assert '"Bob"' in frames[0]["params"]["text"] and frames[-1]["code"] == 0
+
+
+def test_answer_for_unknown_ask_is_ignored_and_bad_result_is_bad_message(built_store, caplog):
+    # bug: a stale, duplicate or bool-id answer raises an error frame, kills the connection or reaches an ask; a non-object result is accepted
+    with serverkit.running(built_store) as (u, _srv):
+        c = authed(u)
+        ask = start_ask(c, "prompt")
+        with caplog.at_level(logging.WARNING, logger="dock.server"):
+            for bogus in ("99", 99, True):
+                c.send(type="answer", ask=bogus, result={"text": "x"})
+            c.send(type="answer", ask=ask["ask"], result={"text": "Ada"})
+            c.send(type="answer", ask=ask["ask"], result={"text": "again"})
+            c.send(type="answer", ask=99, result="nope")
+            frames = c.until_done("r1")
+        assert [f["code"] for f in frames if f["type"] == "error"] == ["bad_message"]
+        shown = next(f for f in frames if f["type"] == "ui")
+        assert '"text": "Ada"' in shown["params"]["text"] and frames[-1]["code"] == 0
+        assert caplog.text.count("ignored an answer") == 4
+        c.send(type="list", id="L")
+        assert c.recv()["type"] == "plugins"
+
+
+def test_cancel_a_running_command_ends_with_done_130(built_store):
+    # bug: cancel is ignored, or a cancelled run reports code 0
+    with serverkit.running(built_store) as (u, _srv):
+        c = authed(u)
+        start_slow(c)
+        c.send(type="cancel", run="r1")
+        assert c.until_done("r1")[-1] == {"type": "done", "run": "r1", "code": 130}
+
+
+def test_cancel_releases_a_run_blocked_on_an_ask(built_store):
+    # bug: a run waiting for an answer stays blocked after cancel, holding its slot and container
+    with serverkit.running(built_store) as (u, _srv):
+        c = authed(u)
+        start_ask(c, "prompt")
+        c.send(type="cancel", run="r1")
+        assert c.until_done("r1")[-1] == {"type": "done", "run": "r1", "code": 130}
+
+
+def test_cancel_when_idle_or_for_another_run_is_a_no_op(built_store):
+    # bug: a stray cancel errors, or cancels the active run of a different id
+    with serverkit.running(built_store) as (u, _srv):
+        c = authed(u)
+        c.send(type="cancel", run="nothing")
+        c.send(type="run", id="r1", plugin="dev.dock.uiprobe", command="show", inputs={"script": "basic"})
+        c.send(type="cancel", run="other")
+        frames = c.until_done("r1")
+        assert [f["type"] for f in frames if f["type"] == "error"] == [] and frames[-1]["code"] == 0
+
+
+def test_disconnect_while_blocked_on_an_ask_ends_the_worker_itself(built_store, monkeypatch):
+    # bug: the ask is not released on disconnect, so the worker only ends once the handler's close() kills the container
+    conns = []
+
+    class Recording(server.Connection):
+        def __init__(self, *a):
+            super().__init__(*a)
+            conns.append(self)
+
+    monkeypatch.setattr(server, "Connection", Recording)
+    with serverkit.running(built_store) as (u, srv):
+        c = authed(u)
+        start_ask(c, "ask")
+        c.close()
+        threads = list(srv.handler_threads)
+        for t in threads:
+            t.join(15)
+        assert threads and not any(t.is_alive() for t in threads)
+        assert conns[0].worker is not None
+        conns[0].worker.join(5)
+        assert not conns[0].worker.is_alive()
+
+
+def test_session_close_runs_once_even_when_worker_and_handler_both_try():
+    # bug: after the join timeout the handler closes the session while the worker closes it too
+    class Fake:
+        calls = 0
+
+        def close(self):
+            Fake.calls += 1
+            time.sleep(0.2)
+
+    conn_ = conn.Connection(None, None, None, threading.BoundedSemaphore(1))
+    fake = Fake()
+    ts = [threading.Thread(target=conn_._close_session, args=(fake,)) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert Fake.calls == 1
+
+
+def test_ask_released_before_the_send_is_not_sent_and_answers_eof():
+    # bug: a cancel between registering and sending still delivers the ask frame to the client
+    asks = Asks()
+    sent = []
+
+    def frame(ask_id):
+        asks.release_all()
+        return {"ask": ask_id}
+
+    assert asks.ask(sent.append, frame) == {"eof": True}
+    assert sent == []
