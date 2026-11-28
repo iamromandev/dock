@@ -3,6 +3,7 @@ decodes the media in the container; windows of PCM go to a local Whisper server 
 JSON-RPC 2.0, one JSON object line on stdin/stdout. See protocol/PROTOCOL.md.
 """
 
+import difflib
 import http.client
 import json
 import math
@@ -18,7 +19,7 @@ import urllib.parse
 
 DEFAULT_URL = "http://host.docker.internal:7862"
 DEFAULT_MAX_SECONDS = 14400  # 4 hours
-TIMEOUT = 300  # seconds to wait for the answer to one window
+TIMEOUT = 1200  # seconds to wait for the answer to one window (Whisper can take ~530 s for a hard 600 s window)
 CONNECT_TIMEOUT = 10  # seconds to connect (a cancel closes the connecting socket, so it never waits for this)
 MAX_REPLY = 8_000_000  # bytes accepted in one answer
 RATE_BYTES = 32000  # bytes of 16 kHz int16 mono PCM per second
@@ -28,8 +29,8 @@ WINDOW = WINDOW_SECONDS * RATE_BYTES  # new bytes per window
 OVERLAP = OVERLAP_SECONDS * RATE_BYTES  # bytes each later window repeats from the one before
 CHUNK = 1 << 20  # bytes read from ffmpeg at a time
 SILENCE_RMS = 98  # int16 scale: 0.003 of full scale, the same threshold the server applies to a segment
-SEAM_END = 0.5  # seconds: a last segment ending this close to the end of a window may have been cut by it
-SEAM_SLACK = 0.25  # seconds: how much earlier than a cut segment's start the next window may still keep one
+SEAM_WORDS = 3  # a common run of this many words (2 when a side has under SEAM_SHORT words) marks the splice point
+SEAM_SHORT = 6
 ERROR_CHARS = 300  # characters of the server's own error that are quoted
 PROTOCOLS = "file,pipe"  # the only protocols ffmpeg and ffprobe may open: a crafted playlist cannot reach the network
 PROBE_TIMEOUT = 60  # seconds
@@ -471,6 +472,47 @@ class Outputs:
 
 # ---- the work
 
+def norm(word):
+    return re.sub(r"\W", "", word.casefold()) or word
+
+
+def at(cue, i, n):
+    """The time of word i of n in a cue, by linear interpolation."""
+    return cue[0] + (cue[1] - cue[0]) * i / n if n else cue[0]
+
+
+def splice(tail, new, lo, hi):
+    """Joins the previous window's cues that end after `lo` (`tail`) with this window's `new` cues over the overlap
+    [lo, hi]. Whisper segments each window differently, so the join is by words: from the longest run of words both
+    versions share, this window's (uncut) version wins. With no such run, a time cut at the middle of the overlap."""
+    head = [c for c in new if c[0] < hi]
+    rest = [c for c in new if c[0] >= hi]
+    if not tail or not head:
+        return tail + new
+    words = [[(w, i, k) for k, w in enumerate(c[2].split())] for i, c in enumerate(tail)]
+    a = [x for ws in words for x in ws]
+    words = [[(w, i, k) for k, w in enumerate(c[2].split())] for i, c in enumerate(head)]
+    b = [x for ws in words for x in ws]
+    na, nb = [norm(x[0]) for x in a], [norm(x[0]) for x in b]
+    m = difflib.SequenceMatcher(None, na, nb, autojunk=False).find_longest_match(0, len(na), 0, len(nb))
+    if m.size >= (2 if min(len(a), len(b)) < SEAM_SHORT else SEAM_WORDS):
+        _, ai, ak = a[m.a]
+        _, bi, bk = b[m.b]
+        cut = head[bi]
+        n = len(cut[2].split())
+        begin = min(max(at(cut, bk, n), cut[0]), cut[1])
+        out = tail[:ai]
+        if ak:
+            ends = tail[ai]
+            n = len(ends[2].split())
+            stop = min(max(at(ends, ak, n), ends[0]), begin)
+            out.append((ends[0], max(stop, ends[0]), " ".join(ends[2].split()[:ak])))
+        out.append((begin, cut[1], " ".join(cut[2].split()[bk:])))
+        return out + head[bi + 1:] + rest
+    mid = (lo + hi) / 2
+    return [c for c in tail if c[0] < mid] + [c for c in new if c[0] >= mid]
+
+
 def transcribe_media(path, name, base, language, formats, targets, call, outputs):
     """Runs in a thread: probes, decodes and sends windows, publishes the files. Returns the result dict.
     Raises BadInput (told to the user) or Cancelled."""
@@ -488,30 +530,26 @@ def transcribe_media(path, name, base, language, formats, targets, call, outputs
         raise BadInput(f"cannot run ffmpeg: {e.strerror or e}") from None
     call.track(proc)
     cues: list[tuple[float, float, str]] = []
-    held = None  # a last segment the end of its window may have cut: the next window gives it back whole
+    prev_end = 0.0  # where the previous window's audio ended
     decoded = False
     seconds = 0.0
     try:
-        for index, start, fresh, pcm, last in windows(proc.stdout, limit * RATE_BYTES, call, name):
+        for index, start, _fresh, pcm, last in windows(proc.stdout, limit * RATE_BYTES, call, name):
             decoded = True
             seconds = start + len(pcm) / RATE_BYTES
-            # the first window keeps all; later ones repeat the previous window's last seconds, and start again
-            # where a cut segment began
-            cut = -1.0 if index == 0 else fresh if held is None else min(held[0], fresh) - SEAM_SLACK
             if loud(pcm):
                 found, got = post(base, pcm, language, call)
                 language = language or found  # later windows follow the language heard first
-                kept = [(start + s, start + e, text) for s, e, text in sorted(got, key=lambda c: c[0])
-                        if text and start + s >= cut]
-                held = kept.pop() if not last and kept and kept[-1][1] >= seconds - SEAM_END else None
-                cues += kept
-            elif held is not None:
-                cues.append(held)
-                held = None
+                new = [(start + s, start + e, text) for s, e, text in sorted(got, key=lambda c: c[0]) if text]
+                if index == 0:
+                    cues += new
+                else:
+                    tail = [c for c in cues if c[1] > start]
+                    cues = [c for c in cues if c[1] <= start]
+                    cues += splice(tail, new, start, prev_end)
+            prev_end = seconds
             if duration and not last:
                 bar(min(99, int(seconds / duration * 100)))
-        if held is not None:  # the audio ended where the window did
-            cues.append(held)
         proc.wait()
         if call.cancelled():
             raise Cancelled()
