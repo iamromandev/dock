@@ -388,19 +388,19 @@ class Transcribe(Base):
 
     def test_25_minutes_make_three_shifted_windows_without_duplicates(self):  # R8 R12
         s = self.server([
-            reply("de", [seg(0, 2, "a"), seg(595, 599, "b")]),
-            reply("de", [seg(5, 9, "b duplicate"), seg(10, 12, "c"), seg(605, 609, "d")]),
-            reply("de", [seg(2, 4, "d duplicate"), seg(10, 14, "e")]),
+            reply("de", [seg(0, 2, "a"), seg(595, 599, "b one two")]),
+            reply("de", [seg(5, 9, "b one two"), seg(10, 12, "c"), seg(605, 609, "d four five")]),
+            reply("de", [seg(5, 9, "d four five"), seg(10, 14, "e")]),
         ])
         _, answer, notes = self.run_one(s, inputs={"format": "txt,srt"}, pcm="t1500")
         self.assertEqual([r["length"] for r in s.requests], [WINDOW, MAX_POST, 9_920_000])
         self.assertEqual([r["first"] for r in s.requests], [200, 200 + 590, 200 + 1190])
         self.assertEqual([r["path"] for r in s.requests],
                          ["/transcribe", "/transcribe?language=de", "/transcribe?language=de"])
-        self.assertEqual((self.dir / "talk.txt").read_text(), "a\nb\nc\nd\ne\n")
+        self.assertEqual((self.dir / "talk.txt").read_text(), "a\nb one two\nc\nd four five\ne\n")
         srt = (self.dir / "talk.srt").read_text()
         self.assertIn("3\n00:10:00,000 --> 00:10:02,000\nc\n", srt)
-        self.assertIn("4\n00:19:55,000 --> 00:19:59,000\nd\n", srt)
+        self.assertIn("4\n00:19:55,000 --> 00:19:59,000\nd four five\n", srt)
         self.assertIn("5\n00:20:00,000 --> 00:20:04,000\ne\n", srt)
         starts = [m.split(" --> ")[0] for m in srt.splitlines() if " --> " in m]
         self.assertEqual(starts, sorted(starts))
@@ -541,19 +541,42 @@ class Transcribe(Base):
         self.assertEqual(answer["result"], {"exit_code": 0, "outputs": {"files": [str(self.dir / "b.txt")], "language": None}})
         self.assertEqual(self.said(notes, "info"), "transcribed 10:00 (unknown) into b.txt")
 
-    def test_a_sentence_cut_by_a_window_end_is_taken_whole_from_the_next_window(self):  # R8
-        s = self.server([reply("en", [seg(595, 600, "the quick brown fox"), seg(1, 2, "hi")]),  # out of order
-                         reply("en", [seg(5, 30, "the quick brown fox jumps over the lazy dog")])])
-        _, answer, _ = self.run_one(s, pcm="t630", inputs={"format": "txt,srt"})
-        self.assertEqual(len(s.requests), 2)
-        self.assertEqual((self.dir / "talk.txt").read_text(), "hi\nthe quick brown fox jumps over the lazy dog\n")
-        self.assertIn("00:09:55,000 --> 00:10:20,000", (self.dir / "talk.srt").read_text())
+    A1 = "market filled with farmers selling apples, cheese, and baskets woven from willow. Part 89. When the"
+    A2 = "sun went down, the lamplighter walked slowly from post to post, humming a song nobody else remembered."
+    B1 = "Part 89. When the sun went down, the lamplighter walked slowly from post to post, humming a song"
+    B2 = "nobody else remembered. Part 90. Some evenings a storm rolled in from the hills, and the whole"
 
-    def test_a_segment_kept_from_one_window_is_not_repeated_by_the_next(self):  # R8
-        s = self.server([reply("en", [seg(0, 2, "a"), seg(598, 599, "b")]),
-                         reply("en", [seg(8, 9, "b again"), seg(10, 12, "c")])])
+    def test_a_real_seam_is_spliced_by_words_losing_and_repeating_nothing(self):  # R8
+        s = self.server([
+            reply("en", [seg(585.34, 591.76, " " + self.A1), seg(591.76, 597.42, " " + self.A2),
+                         seg(597.76, 600.0, " Part 90. Some evenings a storm rose.")]),
+            reply("en", [seg(0.0, 6.22, " " + self.B1), seg(6.22, 11.66, " " + self.B2),
+                         seg(11.66, 16.94, " valley listened to the rain on the slate roofs.")])])
+        self.run_one(s, pcm="t630", inputs={"format": "txt,srt"})
+        text = (self.dir / "talk.txt").read_text()
+        self.assertEqual(" ".join(text.split()), "market filled with farmers selling apples, cheese, and baskets woven "
+                         "from willow. " + self.B1 + " " + self.B2 + " valley listened to the rain on the slate roofs.")
+        srt = (self.dir / "talk.srt").read_text()
+        starts = [m.split(" --> ")[0] for m in srt.splitlines() if " --> " in m]
+        self.assertEqual(starts, sorted(starts))
+
+    def test_a_seam_with_no_common_words_is_cut_at_the_middle_of_the_overlap(self):  # R8
+        s = self.server([reply("en", [seg(580, 594, "alpha beta gamma"), seg(596, 600, "delta epsilon zeta")]),
+                         reply("en", [seg(1, 4, "one two three"), seg(6, 9, "four five six"), seg(20, 30, "seven")])])
         self.run_one(s, pcm="t630")
-        self.assertEqual((self.dir / "talk.txt").read_text(), "a\nb\nc\n")
+        self.assertEqual((self.dir / "talk.txt").read_text(), "alpha beta gamma\nfour five six\nseven\n")
+
+    def test_an_uncut_last_segment_is_not_repeated_by_the_next_window(self):  # R8
+        s = self.server([reply("en", [seg(0, 2, "a"), seg(590, 598, "the quick brown fox jumps")]),
+                         reply("en", [seg(0, 8, "the quick brown fox jumps"), seg(10, 12, "over the lazy dog")])])
+        self.run_one(s, pcm="t630")
+        self.assertEqual((self.dir / "talk.txt").read_text(), "a\nthe quick brown fox jumps\nover the lazy dog\n")
+
+    def test_a_silent_window_after_a_seam_does_not_lose_or_repeat_the_tail(self):  # R8
+        s = self.server([reply("en", [seg(1, 2, "a"), seg(595, 600, "tail words here")]),
+                         reply("en", [seg(30, 31, "later")])])
+        self.run_one(s, pcm="t590,s620,t290")
+        self.assertEqual((self.dir / "talk.txt").read_text(), "a\ntail words here\nlater\n")
 
     def test_a_cut_segment_at_the_very_end_of_the_audio_is_kept(self):  # R8
         s = self.server([reply("en", [seg(595, 600, "tail")])])
@@ -588,6 +611,9 @@ class Transcribe(Base):
         s, answer, notes = self.run_one(self.server([{"drop": True}]))
         self.assertRefused(answer, notes, None, f"transcribe server stopped answering ({s.url})", decoded=True)
         self.assertNotIn("cannot reach", self.said(notes))
+
+    def test_the_answer_timeout_is_20_minutes_and_the_connect_timeout_10_seconds(self):
+        self.assertEqual((transcribe.TIMEOUT, transcribe.CONNECT_TIMEOUT), (1200, 10))
 
     def test_a_server_that_never_answers_times_out_with_its_own_message(self):
         s = self.server([{"block": True}])
