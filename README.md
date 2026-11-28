@@ -10,10 +10,11 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 ├─ .prototools       tool versions (moon, uv); `proto install` installs them
 ├─ makefile          delegates to moon (no logic of its own)
 ├─ apps/
-│  └─ cli/           the Python host (moon project `cli`)
+│  ├─ cli/           the Python host (moon project `cli`)
 │     ├─ src/        the host package (python -m src, or the `dock` command)
 │     ├─ tests/      the host tests (pytest), plus the host-driven dm tests (they start containers)
 │     └─ moon.yml    install, check, check-ci, test, run, clean
+│  └─ server/        a localhost WebSocket host for plugins (moon project `server`; see apps/server/docs/SERVER_PROTOCOL.md)
 ├─ plugins/          container plugins, usable by any host
 │  ├─ dm/            the downloader (moon project `dm`)
 │  │  ├─ tests/      dm's in-process tests (pytest, no container runtime) and the torrent fixtures
@@ -23,7 +24,7 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 └─ protocol/         PROTOCOL.md, the plugin protocol every host and plugin follows
 ```
 
-Planned: `apps/server` (a network host), `apps/cross` (a Kotlin Multiplatform client), `packages/host` (the host
+Planned: `apps/cross` (a Kotlin Multiplatform client), `packages/host` (the host
 core the CLI and the server share).
 
 ## Prerequisites

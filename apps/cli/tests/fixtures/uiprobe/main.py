@@ -5,6 +5,7 @@
   invalid  every kind of invalid message, a v1 `progress` and an unknown notification; then a valid bar
   hostile  escape sequences and control bytes in every kind of text
   slow     prints `slow started`, then updates one bar ten times a second for two minutes, or until `cancel`
+`prompt` sends a prompt_user ("Name?") and prints what came back as JSON.
 `ask` sends a form (text, secret text, confirm, choice), and prints what came back as JSON.
 Every `form` error code the host answered with is printed through `output`.
 """
@@ -131,12 +132,23 @@ def ask():
     return 0
 
 
+def prompt():
+    reply = request("prompt-1", "prompt_user", prompt="Name?")
+    if "error" in reply:
+        output(f"error {reply['error']['code']}")
+        return 1
+    output(json.dumps(reply["result"], sort_keys=True))
+    return 0
+
+
 SCRIPTS = {"basic": basic, "invalid": invalid, "hostile": hostile, "slow": slow}
 
 
 def invoke(command, inputs):
     if command == "ask":
         return ask()
+    if command == "prompt":
+        return prompt()
     script = SCRIPTS.get(inputs.get("script"))
     if script is None:
         output(f"unknown script {inputs.get('script')}")

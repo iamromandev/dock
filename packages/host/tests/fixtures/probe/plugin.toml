@@ -11,6 +11,11 @@ name = "code"
 summary = "Return exit code n: code <n>"
 
 [[commands]]
+name = "exitcode"
+summary = "Return the exit code given as input: exitcode --code n"
+inputs = [{ name = "code", type = "int", required = true }]
+
+[[commands]]
 name = "crash"
 summary = "Exit the process mid-invoke"
 
