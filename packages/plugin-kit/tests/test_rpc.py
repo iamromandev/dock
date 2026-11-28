@@ -69,9 +69,22 @@ def test_a_failure_with_a_code_is_a_json_rpc_error(plugin):
 
 def test_any_other_exception_is_32603_and_the_plugin_keeps_serving(plugin):
     answer = plugin.invoke("boom")
-    assert answer["error"] == {"code": -32603, "message": "internal error: kaboom"}
-    assert logs(plugin) == ["sample failed: RuntimeError('kaboom')"]
+    # only the type: an exception's message may quote the plugin's input
+    assert answer["error"] == {"code": -32603, "message": "internal error: RuntimeError"}
+    assert logs(plugin) == ["sample failed: RuntimeError"]
     assert plugin.invoke("echo", text="again")["result"]["exit_code"] == 0
+
+
+def test_a_command_name_that_is_not_a_string_is_32602_not_a_crash(plugin):
+    answer = plugin.answer(plugin.start_with(["boom"], {}))
+    assert answer["error"] == {"code": -32602, "message": "command must be a string"}
+    assert plugin.invoke("echo", text="again")["result"]["exit_code"] == 0
+
+
+def test_an_unknown_command_name_is_echoed_at_most_100_characters(plugin):
+    answer = plugin.answer(plugin.start_with("x" * 500, {}))
+    assert answer["error"]["code"] == -32601
+    assert answer["error"]["message"] == "unknown command " + "x" * 100
 
 
 def test_the_context_has_an_absolute_cwd_and_the_folders(plugin):

@@ -88,9 +88,12 @@ def ask(method: str, params: dict) -> dict:
 
 
 def invoke(params: dict) -> dict:
-    command = commands.get(params.get("command"))
+    name = params.get("command")
+    if not isinstance(name, str):
+        raise Failure("command must be a string", -32602)
+    command = commands.get(name)
     if command is None:
-        raise Failure(f"unknown command {params.get('command')}", -32601)
+        raise Failure(f"unknown command {name[:100]}", -32601)
     inputs = params.get("inputs") or {}
     cwd = params.get("cwd") or os.getcwd()
     in_dir, work = params.get("in_dir"), params.get("work")
@@ -134,9 +137,9 @@ def handle(msg: dict) -> bool:
         send({"id": msg_id, "error": {"code": -32800, "message": "cancelled"}})
     except Failure as e:
         send({"id": msg_id, "error": {"code": -32000 if e.code is None else e.code, "message": str(e)}})
-    except Exception as e:  # the plugin must always answer
-        say("error", f"{plugin_name} failed: {e!r}")
-        send({"id": msg_id, "error": {"code": -32603, "message": f"internal error: {e}"}})
+    except Exception as e:  # the plugin must always answer; only the type, since a message may quote the input
+        say("error", f"{plugin_name} failed: {type(e).__name__}")
+        send({"id": msg_id, "error": {"code": -32603, "message": f"internal error: {type(e).__name__}"}})
     finally:
         if counted:
             with state_lock:
