@@ -104,7 +104,7 @@ def test_any_other_exception_in_the_worker_names_the_plugin():
     def target():
         raise ValueError("x")
 
-    with pytest.raises(Failure, match=r"sample failed: ValueError\('x'\)"):
+    with pytest.raises(Failure, match=r"^sample failed: ValueError$"):
         cancel.run_worker(target, (), Call(), "sample")
 
 

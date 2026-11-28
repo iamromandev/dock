@@ -98,7 +98,7 @@ def open_socket(host, port, call, timeout, read_timeout=None):
 
 def run_worker(target, args, call, name="plugin"):
     """Runs target(*args) in a daemon thread and returns its result, checking for a cancel every 0.1 s. A Failure
-    in the thread is raised here, any other exception becomes Failure(f"{name} failed: {e!r}"). A cancel (also one
+    in the thread is raised here, any other exception becomes Failure(f"{name} failed: <type>"). A cancel (also one
     that arrives together with the answer) stops the call and raises Cancelled; the thread gets 0.5 s to end and
     after the stop it says nothing more."""
     out: queue.Queue = queue.Queue()  # one per call, so a stale worker can never feed the next one
@@ -115,7 +115,7 @@ def run_worker(target, args, call, name="plugin"):
         except Failure as e:
             put(("error", e))
         except Exception as e:  # never let the thread die silently
-            put(("error", Failure(f"{name} failed: {e!r}")))
+            put(("error", Failure(f"{name} failed: {type(e).__name__}")))  # only the type: a message may quote the input
 
     thread = threading.Thread(target=work, daemon=True)
     kind = value = None
