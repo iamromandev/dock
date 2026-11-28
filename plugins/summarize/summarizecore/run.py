@@ -103,6 +103,18 @@ def guarded(*args):
 
 
 def run(inputs, ctx):
+    """The summarize command. An unexpected error is told by its type only (it might quote the document), with
+    the same -32603 answer as before the move to the kit."""
+    try:
+        return checked_run(inputs, ctx)
+    except (Cancelled, Failure):
+        raise
+    except Exception as e:
+        ui.say("error", f"summarize failed: {type(e).__name__}")
+        raise Failure(f"internal error: {type(e).__name__}", -32603) from None
+
+
+def checked_run(inputs, ctx):
     if not isinstance(inputs.get("file"), str) or not inputs["file"]:
         raise Failure("summarize needs the input file", -32602)
     if any(not isinstance(inputs.get(k), str | None) for k in ("style", "output")):
