@@ -4,14 +4,19 @@ layer: "application"
 tags: ["client"]
 
 fileGroups:
-  sources: ["shared/src/**/*", "shared/build.gradle.kts"]
+  sources: ["shared/src/**/*", "shared/build.gradle.kts", "desktopApp/src/**/*", "desktopApp/build.gradle.kts"]
   configs: ["build.gradle.kts", "settings.gradle.kts", "gradle.properties", "gradle/**/*", ".editorconfig"]
 
 tasks:
   check:
     # Lint and compile only: the tests are the test task's, and two Gradle runs of jvmTest at once collide.
-    command: "./gradlew check -x jvmTest -x allTests"
+    command: "./gradlew check -x jvmTest -x allTests -x test"
     inputs: ["@group(sources)", "@group(configs)"]
   test:
-    command: "./gradlew :shared:allTests"
+    command: "./gradlew :shared:allTests :desktopApp:test"
     inputs: ["@group(sources)", "@group(configs)"]
+  run:
+    command: "./gradlew :desktopApp:run"
+    options:
+      cache: false
+      interactive: true

@@ -44,7 +44,7 @@ sealed interface AskInfo {
         private fun form(p: JsonObject): Form? {
             val fields = (p["fields"] as? JsonArray) ?: return null
             val parsed = fields.map { f -> (f as? JsonObject)?.let { field(it) } ?: return null }
-            return Form(p.text("title"), parsed)
+            return Form(p.text("title")?.takeIf { it.isNotEmpty() }, parsed)
         }
 
         private fun field(f: JsonObject): FormField? {

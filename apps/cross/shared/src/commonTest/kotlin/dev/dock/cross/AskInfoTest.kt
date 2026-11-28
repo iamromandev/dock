@@ -45,6 +45,23 @@ class AskInfoTest {
         )
     }
 
+    // Bug caught: the server's normalised form (empty title, null defaults, no raw values) parses to a blank dialog title.
+    @Test
+    fun serverNormalisedFormHasNoBlankTitle() {
+        val form =
+            assertIs<AskInfo.Form>(
+                AskInfo.parse(
+                    "form",
+                    obj(
+                        """{"title":"","fields":[{"name":"m","label":"M","type":"choice","default":null,"secret":false,
+                          "choices":["eu�1","us"]}]}""",
+                    ),
+                ),
+            )
+        assertEquals(null, form.title)
+        assertEquals(listOf(FormField.Choice("m", "M", listOf("eu�1", "us"), null)), form.fields)
+    }
+
     // Bug caught: an unknown field type or malformed params throws, or is dropped silently so the UI cannot answer eof.
     @Test
     fun unknownFieldTypeAndMalformedParamsAreKeptRaw() {

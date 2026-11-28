@@ -4,14 +4,16 @@ pluginManagement {
     repositories {
         gradlePluginPortal()
         mavenCentral()
+        google()
     }
 }
 
 dependencyResolutionManagement {
     repositories {
         mavenCentral()
+        google()
     }
 }
 
-// :desktopApp joins in a later phase.
 include(":shared")
+include(":desktopApp")
