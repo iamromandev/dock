@@ -1,0 +1,36 @@
+id: "server"
+language: "python"
+layer: "application"
+tags: ["host"]
+dependsOn: ["host"]
+
+fileGroups:
+  sources: ["src/**/*"]
+  configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
+
+tasks:
+  sync:
+    command: "uv sync"
+    preset: "utility"
+  check:
+    script: "uv run ruff check --fix . && uv run ty check ."
+    deps: ["sync"]
+    options:
+      cache: false
+  check-ci:
+    script: "uv run ruff check . && uv run ty check ."
+    deps: ["sync"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*", "/packages/host/**/*"]
+  test:
+    # Needs Docker or podman, and stops at once without one.
+    script: "uv run python -c \"import sys; sys.excepthook = lambda t, e, tb: print('moon: ' + str(e), file=sys.stderr); sys.path.insert(0, 'tests'); import dockenv; dockenv.require_runtime()\" && uv run pytest"
+    deps: ["sync"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*", "$DOCK_TEST_RUNTIME", "/packages/host/**/*"]
+  run:
+    command: "uv run dock-server"
+    options:
+      cache: false
+      interactive: true
+  clean:
+    script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    preset: "utility"

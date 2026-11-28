@@ -35,6 +35,8 @@ def invoke(command, args, params):
         output(json.dumps({"args": args, "inputs": params.get("inputs", "<absent>")}))
     if command == "code":
         return int(args[0])
+    if command == "exitcode":
+        return int(params["inputs"]["code"])
     if command == "crash":
         os._exit(7)
     if command == "pid":
