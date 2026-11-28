@@ -443,6 +443,9 @@ class Basics(Base):
         self.assertEqual(sorted(os.listdir(self.dir)), ["a"])  # no .part left behind
         self.assertIn("extracted 2 files", self.said(notes, "info"))
         self.assertIn("into a/", self.said(notes, "info"))
+        self.put("b.zip", mkzip(self.root / "u.zip", [("one.txt", b"1")]).read_bytes())
+        _, notes = self.run_plugin({"file": "b.zip"})
+        self.assertIn("extracted 1 file (", self.said(notes, "info"))  # singular
 
     def test_every_format_is_found_by_content_whatever_the_suffix(self):  # R3, R5
         t = tar_bytes([ti("d/", tarfile.DIRTYPE), ti("d/x.txt", data=b"hello")])

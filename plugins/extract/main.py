@@ -1025,7 +1025,7 @@ def unpack(fh, kind, comp, archive, dest, cwd, limits, patterns=(), password=Non
     paths = [os.path.join(target, *p) for p in files[:MAX_FILES_LISTED]]
     bar(100, done=True)
     links = len(ex.links)
-    said = f"{len(files)} files" + (f" and {links} link{'s' if links != 1 else ''}" if links else "")
+    said = f"{len(files)} file{'s' if len(files) != 1 else ''}" +(f" and {links} link{'s' if links != 1 else ''}" if links else "")
     say("info", f"extracted {said} ({human(ex.written)}) into {dest}/")
     return {"exit_code": 0, "outputs": {"dir": target, "files": paths, "truncated": len(files) > MAX_FILES_LISTED}}
 
