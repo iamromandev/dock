@@ -27,8 +27,9 @@ A tiny CLI host where every feature is an out-of-process, any-language plugin th
 │  ├─ narrate/     reads a text or Markdown file aloud into a WAV with a local Kokoro server (moon project `narrate`)
 │  │  └─ server/   the host-side Kokoro (mlx-audio) server the plugin calls; Apple Silicon only
 │  ├─ extract/     unpacks an archive safely into a new folder (moon project `extract`)
-│  └─ transcribe/  turns speech in an audio or video file into text and subtitles with a local Whisper server (moon project `transcribe`)
-│     └─ server/   the host-side Whisper (mlx-whisper) server the plugin calls; Apple Silicon only
+│  ├─ transcribe/  turns speech in an audio or video file into text and subtitles with a local Whisper server (moon project `transcribe`)
+│  │  └─ server/   the host-side Whisper (mlx-whisper) server the plugin calls; Apple Silicon only
+│  └─ summarize/   summarizes a text, Markdown or subtitle file with a local Ollama model (moon project `summarize`)
 └─ protocol/         PROTOCOL.md, the plugin protocol every host and plugin follows
 ```
 
@@ -62,6 +63,7 @@ Run from the repository root. Each one runs a moon task (`moon run <project>:<ta
 | `make narrate-install`, `narrate-check`, `narrate-check-ci`, `narrate-test`, `narrate-clean` | The same for the narrate plugin (its tests need no Docker or model) |
 | `make extract-install`, `extract-check`, `extract-check-ci`, `extract-test`, `extract-clean` | The same for the extract plugin (its tests need no Docker) |
 | `make transcribe-install`, `transcribe-check`, `transcribe-check-ci`, `transcribe-test`, `transcribe-clean` | The same for the transcribe plugin (its tests need no Docker, model or ffmpeg) |
+| `make summarize-install`, `summarize-check`, `summarize-check-ci`, `summarize-test`, `summarize-clean` | The same for the summarize plugin (its tests need no Docker or model) |
 | `make transcribe-server` | Start the host-side Whisper server the transcribe plugin calls (Apple Silicon only) |
 | `make install-hooks` | Install pre-commit and its git hook (runs `cli:check` on staged `apps/cli/**/*.py`, `dm:check` on staged `plugins/dm/**/*.py`); once per clone |
 | `make install`, `check`, `check-ci`, `test`, `clean` | The same task in every project (`install` runs `cli:sync` for the CLI) |
