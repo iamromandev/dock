@@ -1,0 +1,45 @@
+id: "plugin-kit"
+language: "python"
+layer: "library"
+tags: ["library"]
+
+fileGroups:
+  sources: ["dock_plugin/**/*", "tools/**/*", "plugins.txt"]
+  configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
+
+tasks:
+  # python tools (uv)
+  install:
+    command: "uv sync"
+    preset: "utility"
+  check:
+    # Fixes what ruff can, so it edits sources and is never cached.
+    script: "uv run ruff check --fix && uv run ty check"
+    deps: ["install"]
+    options:
+      cache: false
+  check-ci:
+    # Same checks without fixing anything, plus the vendored copies in plugins/ must match the kit. For CI.
+    script: "uv run ruff check && uv run ty check && python3 -I tools/vendor.py check"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*", "/plugins/*/dock_plugin/**/*"]
+  test:
+    # Stand-in servers over localhost and a sample plugin driven over stdio: no container runtime needed.
+    command: "uv run pytest"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+
+  # vendoring
+  sync-plugins:
+    # Copies dock_plugin/ into every plugin listed in plugins.txt. Edits files outside this project, so never cached.
+    command: "python3 -I tools/vendor.py sync"
+    preset: "utility"
+  check-plugins:
+    # Fails when a vendored copy differs from the kit.
+    command: "python3 -I tools/vendor.py check"
+    inputs: ["@group(sources)", "/plugins/*/dock_plugin/**/*"]
+
+  # cleanup
+  clean:
+    script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    preset: "utility"

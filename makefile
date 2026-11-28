@@ -16,7 +16,8 @@ UV := uv
 	narrate-install narrate-check narrate-check-ci narrate-test narrate-clean \
 	extract-install extract-check extract-check-ci extract-test extract-clean \
 	transcribe-install transcribe-check transcribe-check-ci transcribe-test transcribe-clean transcribe-server \
-	summarize-install summarize-check summarize-check-ci summarize-test summarize-clean
+	summarize-install summarize-check summarize-check-ci summarize-test summarize-clean \
+	plugin-kit-install plugin-kit-check plugin-kit-check-ci plugin-kit-test plugin-kit-clean plugin-kit-sync
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -25,7 +26,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install extract:install transcribe:install summarize:install
+	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install extract:install transcribe:install summarize:install plugin-kit:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -198,3 +199,22 @@ summarize-clean: # Remove the summarize plugin's Python caches
 # help
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?#' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?#"}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
+
+## plugin-kit - delegates to packages/plugin-kit/moon.yml
+plugin-kit-install: # Install the plugin kit's dev tools
+	$(MOON) run plugin-kit:install
+
+plugin-kit-check: # Lint + typecheck the plugin kit (fixes what ruff can) and check the vendored copies match it
+	$(MOON) run plugin-kit:check plugin-kit:check-plugins
+
+plugin-kit-check-ci: # Lint + typecheck the plugin kit and check the vendored copies without fixing anything. For CI.
+	$(MOON) run plugin-kit:check-ci
+
+plugin-kit-test: # Run the plugin kit's tests (stand-in servers and a sample plugin; no Docker needed)
+	$(MOON) run plugin-kit:test
+
+plugin-kit-clean: # Remove the plugin kit's Python caches
+	$(MOON) run plugin-kit:clean
+
+plugin-kit-sync: # Copy packages/plugin-kit/dock_plugin into every plugin listed in its plugins.txt
+	$(MOON) run plugin-kit:sync-plugins
