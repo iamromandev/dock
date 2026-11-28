@@ -50,7 +50,7 @@ A command is `(inputs: dict, ctx: Context) -> dict`; the dict is sent as `{"exit
 1. Create `plugins/<name>/` with `main.py`, `plugin.toml`, `<name>core/`, `tests/` and the project files; copy `moon.yml`, `pyproject.toml` and `ruff.toml` from a similar plugin.
 2. Add `<name>` to `packages/plugin-kit/plugins.txt`.
 3. Run `make plugin-kit-sync`. It creates `plugins/<name>/dock_plugin/` and a `VENDORED` note.
-4. Dockerfile: `COPY main.py plugin.toml <name>core/ dock_plugin/ /plugin/`.
+4. Dockerfile: `COPY main.py plugin.toml /plugin/`, then `COPY <name>core/ /plugin/<name>core/` and `COPY dock_plugin/ /plugin/dock_plugin/` (a directory is copied by its contents, so each gets its own line).
 5. `moon.yml`: put `main.py`, `plugin.toml`, `Dockerfile`, `<name>core/**/*` and `dock_plugin/**/*` in the `sources` file group, so changes rerun the checks.
 6. Write the tests, `make <name>-check` and `make <name>-test`.
 
@@ -67,4 +67,4 @@ Edit `packages/plugin-kit/dock_plugin/`, never a plugin's copy. Then `make plugi
 
 ## Not yet on the kit
 
-These plugins still carry their own copy of the plumbing and have no `dock_plugin/`: transcribe, summarize, extract, narrate, story, image, brain, dm. They move over one at a time, starting with transcribe.
+transcribe is on the kit. These plugins still carry their own copy of the plumbing and have no `dock_plugin/`: summarize, extract, narrate, story, image, brain, dm. They move over one at a time.

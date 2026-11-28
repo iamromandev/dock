@@ -44,4 +44,8 @@ Permissions: `network`, `fs:read:in`, `fs:write:cwd`.
 
 ## Develop
 
-`make transcribe-test`, `make transcribe-check-ci` (tests use a local stand-in server and fake ffmpeg/ffprobe; no Docker, GPU, model or ffmpeg needed). A few tests call `main.transcribe` in the test process to reach seams a subprocess cannot: the answer timeout (`TIMEOUT`), the connect (`socket.socket.connect`) and `Outputs.publish` (a cancel right after the files are linked). The server has its own tests: `uv run --project plugins/transcribe/server pytest`.
+`make transcribe-test`, `make transcribe-check-ci` (tests use a local stand-in server and fake ffmpeg/ffprobe; no Docker, GPU, model or ffmpeg needed). A few tests run the command in the test process (`rpc.invoke`) to reach seams a subprocess cannot: the answer timeout (`client.TIMEOUT`), the connect (`socket.socket.connect`) and `Outputs.publish` (a cancel right after the files are linked). The server has its own tests: `uv run --project plugins/transcribe/server pytest`.
+
+## Layout
+
+`main.py` is the command table and `rpc.run`. The logic is in `transcribecore/`: `media.py` (ffprobe, the ffmpeg decoder), `windows.py` (windows, silence gate), `seams.py` (splice), `render.py` (times, txt/srt/vtt), `client.py` (the Whisper POST and its answer), `run.py` (input checks and the command). `dock_plugin/` is the vendored plugin kit: do not edit it here (see [docs/PLUGINS.md](../../docs/PLUGINS.md)).
