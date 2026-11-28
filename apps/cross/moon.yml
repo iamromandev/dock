@@ -15,6 +15,13 @@ tasks:
   test:
     command: "./gradlew :shared:allTests :desktopApp:test"
     inputs: ["@group(sources)", "@group(configs)"]
+  test-live:
+    # Starts a real apps/server with the server fixtures: needs uv and a running Docker or podman.
+    command: "./gradlew :shared:liveTest"
+    deps: ["server:sync"]
+    inputs: ["@group(sources)", "@group(configs)", "/apps/server/**/*", "/packages/host/**/*", "$DOCK_TEST_RUNTIME"]
+    options:
+      cache: false
   run:
     command: "./gradlew :desktopApp:run"
     options:
