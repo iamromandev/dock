@@ -44,7 +44,7 @@ Fixed limits:
 
 ## Outputs
 
-`{"exit_code": 0, "outputs": {"dir": "/abs/dest", "files": ["/abs/dest/a.txt", ...], "truncated": false}}`: `files` lists the regular files in archive order, at most 1000 (`truncated` is true when there were more). An info log says `extracted N files (size) into name/`, or `extracted N files and M links (size) into name/` when links were made (`files` still lists regular files only). A bar `extract` ("extracting") shows written / declared total (zip only; `null` for tar and single files), at most 5 a second, and ends with 100 `done`.
+`{"exit_code": 0, "outputs": {"dir": "/abs/dest", "files": ["/abs/dest/a.txt", ...], "truncated": false}}`: `files` lists the regular files in archive order, at most 1000 (`truncated` is true when there were more). An info log says `extracted N files (size) into name/` (`1 file`, `1 link` when one), or `extracted N files and M links (size) into name/` when links were made (`files` still lists regular files only). A bar `extract` ("extracting") shows written / declared total (zip only; `null` for tar and single files), at most 5 a second, and ends with 100 `done`.
 
 ## Errors
 
