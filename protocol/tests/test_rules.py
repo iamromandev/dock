@@ -29,18 +29,15 @@ def _feed(areas, msgs):
     return [e for m in msgs if (e := areas.see(m))]
 
 
-def test_the_area_limit_holds_at_the_33rd_and_clear_does_not_free_a_slot():
-    # Bug caught: the 32-area limit is not enforced or is off by one, or clear lowers the count so a plugin
-    # cycling areas slips past the limit.
+def test_the_area_limit_holds_at_the_33rd_counts_ids_per_kind_and_reset_forgets():
+    # Bug caught: the 32-area limit is not enforced or is off by one, clear lowers the count so a plugin cycling
+    # areas slips past the limit, ids are counted across kinds (16 bars plus 16 panels fail), or reset leaks
+    # between invokes.
     areas = Areas()
     assert _feed(areas, [_note("bar", f"b{i}") for i in range(32)]) == []
     assert "32" in str(areas.see(_note("bar", "b32")))
     areas.see({"jsonrpc": "2.0", "method": "clear", "params": {"kind": "bar", "id": "b0"}})
     assert "32" in str(areas.see(_note("bar", "b0")))  # reopening a cleared id creates a new area, so it is the 33rd
-
-
-def test_same_id_in_two_kinds_counts_twice_and_reset_forgets():
-    # Bug caught: ids are counted across kinds, so 16 bars plus 16 panels fail; reset leaks between invokes.
     areas = Areas()
     msgs = [_note(k, f"i{i}") for i in range(16) for k in ("bar", "panel")]
     assert _feed(areas, msgs) == []

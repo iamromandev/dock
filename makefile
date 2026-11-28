@@ -14,7 +14,8 @@ UV := uv
 	image-install image-check image-check-ci image-test image-clean \
 	story-install story-check story-check-ci story-test story-clean \
 	narrate-install narrate-check narrate-check-ci narrate-test narrate-clean \
-	extract-install extract-check extract-check-ci extract-test extract-clean
+	extract-install extract-check extract-check-ci extract-test extract-clean \
+	transcribe-install transcribe-check transcribe-check-ci transcribe-test transcribe-clean transcribe-server
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -23,7 +24,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install extract:install
+	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install extract:install transcribe:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -157,6 +158,25 @@ extract-test: # Run the extract plugin's tests (they drive main.py over stdio; n
 
 extract-clean: # Remove the extract plugin's Python caches
 	$(MOON) run extract:clean
+
+## transcribe - delegates to plugins/transcribe/moon.yml
+transcribe-install: # Install the transcribe plugin's dev tools
+	$(MOON) run transcribe:install
+
+transcribe-check: # Lint + typecheck the transcribe plugin (fixes what ruff can)
+	$(MOON) run transcribe:check
+
+transcribe-check-ci: # Lint + typecheck the transcribe plugin without fixing anything. For CI.
+	$(MOON) run transcribe:check-ci
+
+transcribe-test: # Run the transcribe plugin's tests (a stand-in Whisper server and fake ffmpeg; no Docker, GPU or model needed)
+	$(MOON) run transcribe:test
+
+transcribe-clean: # Remove the transcribe plugin's Python caches
+	$(MOON) run transcribe:clean
+
+transcribe-server: # Start the host-side Whisper server the transcribe plugin calls (Apple Silicon only; Ctrl-C stops it)
+	$(UV) run --project plugins/transcribe/server python plugins/transcribe/server/serve.py
 
 # help
 help:
