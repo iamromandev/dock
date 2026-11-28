@@ -369,15 +369,18 @@ def speak(base, body, call):
         conn.connect()
         if conn.sock is not None:
             conn.sock.settimeout(TIMEOUT)
-        with call.lock:
+        with call.lock:  # held only for the check: stop() must be able to shut the socket mid-send
             if call.cancelled():
                 raise Cancelled()
-            conn.request("POST", f"{parts.path.rstrip('/')}/speak", json.dumps(body).encode(),
-                         {"Content-Type": "application/json"})
+        # a stop() from here on closes the connection, which never reopens (auto_open = 0)
+        conn.request("POST", f"{parts.path.rstrip('/')}/speak", json.dumps(body).encode(),
+                     {"Content-Type": "application/json"})
         resp = conn.getresponse()
         data = resp.read(MAX_REPLY + 1)
         status = resp.status
     except (OSError, http.client.HTTPException) as e:
+        if call.cancelled():
+            raise Cancelled() from None
         raise RuntimeError(f"cannot reach the narrate server at {where}: {getattr(e, 'reason', e) or type(e).__name__}. "
                            "Set DOCK_NARRATE_URL if it runs elsewhere; to start it see "
                            "plugins/narrate/server/README.md") from None
