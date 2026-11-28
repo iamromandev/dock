@@ -51,19 +51,19 @@ def test_first_message_not_hello_is_auth_error(url):
         c.recv()
 
 
-@pytest.mark.parametrize("version", [99, True, 1.0])
+@pytest.mark.parametrize("version", [1, 99, 2.0])
 def test_unsupported_version_lists_supported_and_closes(url, version):
-    # bug: version 99 is welcomed, or true / 1.0 pass because they equal 1; the error must list what is supported
+    # bug: version 99 is welcomed, or v1 or 2.0 pass; the error must list what is supported
     c = Client(url)
     reply = c.hello(version=version)
-    assert reply["code"] == "version" and "[1]" in reply["message"]
+    assert reply["code"] == "version" and "[2]" in reply["message"]
     with pytest.raises(ConnectionClosed):
         c.recv()
 
 
 def test_hello_gets_welcome(url):
     # bug: the handshake never answers with welcome
-    assert Client(url).hello() == {"type": "welcome", "version": 1, "server": "0.1.0"}
+    assert Client(url).hello() == {"type": "welcome", "version": 2, "server": "0.1.0"}
 
 
 def test_list_returns_installed_plugins_and_commands(url):
@@ -72,8 +72,13 @@ def test_list_returns_installed_plugins_and_commands(url):
     c.hello()
     c.send(type="list", id="L1")
     reply = c.recv()
-    by_id = {p["id"]: p["commands"] for p in reply["plugins"]}
-    assert reply["id"] == "L1" and "code" in by_id["dev.dock.probe"] and "show" in by_id["dev.dock.uiprobe"]
+    by_id = {p["id"]: {c["name"]: c for c in p["commands"]} for p in reply["plugins"]}
+    probe = by_id["dev.dock.probe"]
+    assert reply["id"] == "L1" and "show" in by_id["dev.dock.uiprobe"]
+    assert probe["code"]["inputs"] is None and probe["code"]["summary"]
+    assert probe["exitcode"]["inputs"] == [{"name": "code", "type": "int", "required": True, "default": None}]
+    assert probe["noargs"]["inputs"] == []
+    assert {"name": "retries", "type": "int", "required": False, "default": 3} in probe["fetch"]["inputs"]
 
 
 @pytest.mark.parametrize("text", ["not json", '{"type": "nope"}'])

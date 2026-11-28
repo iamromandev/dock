@@ -1,0 +1,18 @@
+[versions]
+kotlin = "2.4.20"
+kotlinter = "5.7.0"
+# 1.13.0 is under two weeks old; 1.12.0 (19 Oct 2026) is the latest release past that.
+kotlinx-serialization = "1.12.0"
+# 1.9.0 is the version Compose Multiplatform 1.12.1 resolves (as in anydm); a newer pin here would be
+# overridden or conflict once phase 2 adds Compose.
+kotlinx-coroutines = "1.9.0"
+
+[libraries]
+kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinx-coroutines" }
+kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "kotlinx-coroutines" }
+
+[plugins]
+kotlin-multiplatform = { id = "org.jetbrains.kotlin.multiplatform", version.ref = "kotlin" }
+kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
+kotlinter = { id = "org.jmailen.kotlinter", version.ref = "kotlinter" }

@@ -1,0 +1,17 @@
+id: "cross"
+language: "kotlin"
+layer: "application"
+tags: ["client"]
+
+fileGroups:
+  sources: ["shared/src/**/*", "shared/build.gradle.kts"]
+  configs: ["build.gradle.kts", "settings.gradle.kts", "gradle.properties", "gradle/**/*", ".editorconfig"]
+
+tasks:
+  check:
+    # Lint and compile only: the tests are the test task's, and two Gradle runs of jvmTest at once collide.
+    command: "./gradlew check -x jvmTest -x allTests"
+    inputs: ["@group(sources)", "@group(configs)"]
+  test:
+    command: "./gradlew :shared:allTests"
+    inputs: ["@group(sources)", "@group(configs)"]

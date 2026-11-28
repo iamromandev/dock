@@ -79,7 +79,7 @@ class Client:
     def recv(self, timeout: float = 60) -> dict:
         return json.loads(self.ws.recv(timeout=timeout))
 
-    def hello(self, token: str = TOKEN, version: int = 1) -> dict:
+    def hello(self, token: str = TOKEN, version: int = 2) -> dict:
         self.send(type="hello", version=version, token=token)
         return self.recv()
 
