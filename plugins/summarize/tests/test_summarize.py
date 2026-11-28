@@ -20,7 +20,13 @@ PLUGIN = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PLUGIN))
 MAIN = PLUGIN / "main.py"
 
-import main as summarize  # the loop only runs under __main__, so the helpers can be tested directly
+import main  # the loop only runs under __main__, so the helpers can be tested directly
+from dock_plugin import cancel, files, rpc
+from dock_plugin.cancel import Failure
+from summarizecore import client, prompts, rounds
+from summarizecore import text as textmod
+
+rpc.setup(main.COMMANDS, "summarize", "summarizing")  # so rpc.invoke can run the command in this process
 
 LIMIT = 20_000
 SECRET = "SECRETDOCWORD"
@@ -132,77 +138,77 @@ class Server:
 
 class Clean(unittest.TestCase):
     def test_srt_loses_numbers_and_times_and_repeated_cues_but_keeps_a_numeric_line(self):  # R3
-        self.assertEqual(summarize.clean(summarize.decode(SRT.encode()), ".srt"), "Hello there. 42 how are you?")
+        self.assertEqual(textmod.clean(textmod.decode(SRT.encode()), ".srt"), "Hello there. 42 how are you?")
 
     def test_vtt_loses_header_blocks_ids_times_and_tags(self):  # R3
-        self.assertEqual(summarize.clean(summarize.decode(VTT.encode()), ".vtt"),
+        self.assertEqual(textmod.clean(textmod.decode(VTT.encode()), ".vtt"),
                          "Hello there, friend. Second line of the cue")
 
     def test_text_keeps_its_paragraphs_and_the_decoder_drops_bom_and_normalises_newlines(self):  # R2
-        self.assertEqual(summarize.decode(b"\xef\xbb\xbfa\r\nb\rc\n\nd"), "a\nb\nc\n\nd")
-        self.assertEqual(summarize.clean("a\n\nb\n", ".md"), "a\n\nb")
-        with self.assertRaisesRegex(summarize.BadInput, "file is not UTF-8 text"):
-            summarize.decode(b"caf\xe9")
+        self.assertEqual(textmod.decode(b"\xef\xbb\xbfa\r\nb\rc\n\nd"), "a\nb\nc\n\nd")
+        self.assertEqual(textmod.clean("a\n\nb\n", ".md"), "a\n\nb")
+        with self.assertRaisesRegex(Failure, "file is not UTF-8 text"):
+            textmod.decode(b"caf\xe9")
 
     def test_nothing_with_a_letter_or_digit_is_nothing_to_summarize(self):  # R3
         for text, suffix in (("", ".txt"), (" \n\n ", ".md"), ("... !!! ---", ".txt"), ("1\n00:00:01,000 --> 00:00:02,000\n", ".srt"),
                              ("WEBVTT\n\n00:00.000 --> 00:01.000\n<c></c>\n", ".vtt")):
-            with self.subTest(text=text), self.assertRaisesRegex(summarize.BadInput, "nothing to summarize"):
-                summarize.clean(text, suffix)
+            with self.subTest(text=text), self.assertRaisesRegex(Failure, "nothing to summarize"):
+                textmod.clean(text, suffix)
 
 
 class Clean2(unittest.TestCase):
     def test_rolling_captions_keep_each_word_once(self):  # R3
         vtt = "WEBVTT\n\n" + "\n\n".join(f"00:0{i}.000 --> 00:0{i}.500\n{t}" for i, t in
                                           enumerate(("A B", "A B C D", "C D E F", "X B C"))) + "\n"
-        self.assertEqual(summarize.clean(vtt, ".vtt"), "A B C D E F X B C")
+        self.assertEqual(textmod.clean(vtt, ".vtt"), "A B C D E F X B C")
 
     def test_vtt_strips_only_real_tags(self):  # R3
         vtt = "WEBVTT\n\n00:00.000 --> 00:01.000\n<v Bo>x < y and y > z <i>so</i><00:00.500> <c.a b>it</c>\n"
-        self.assertEqual(summarize.clean(vtt, ".vtt"), "x < y and y > z so it")
+        self.assertEqual(textmod.clean(vtt, ".vtt"), "x < y and y > z so it")
 
     def test_a_cue_right_after_the_webvtt_line_is_kept(self):  # R3
         vtt = "WEBVTT\n00:00.000 --> 00:01.000\nFirst cue\n\n00:01.000 --> 00:02.000\nSecond\n"
-        self.assertEqual(summarize.clean(vtt, ".vtt"), "First cue Second")
+        self.assertEqual(textmod.clean(vtt, ".vtt"), "First cue Second")
         meta = "WEBVTT\nKind: captions\nLanguage: en\n\n00:00.000 --> 00:01.000\nHi there\n"
-        self.assertEqual(summarize.clean(meta, ".vtt"), "Hi there")
+        self.assertEqual(textmod.clean(meta, ".vtt"), "Hi there")
 
 
 class Chunk(unittest.TestCase):
     def test_cjk_text_is_cut_by_its_token_estimate_but_english_is_not(self):  # R5
-        parts = summarize.chunk("字" * 15_000)
+        parts = textmod.chunk("字" * 15_000)
         self.assertEqual(len(parts), 3)
-        self.assertTrue(all(summarize.estimate(p) <= 5000 for p in parts))
-        self.assertEqual(len(summarize.chunk("word " * 3000)), 1)
+        self.assertTrue(all(textmod.estimate(p) <= 5000 for p in parts))
+        self.assertEqual(len(textmod.chunk("word " * 3000)), 1)
 
     def test_a_cut_must_be_past_half_the_window_so_the_first_chunk_is_not_tiny(self):  # R5
-        parts = summarize.chunk("Hi\n\n" + "x" * 25_000)
+        parts = textmod.chunk("Hi\n\n" + "x" * 25_000)
         self.assertEqual([len(p) for p in parts], [20_000, 5_004])
-        parts = summarize.chunk("Hi. " + "x" * 25_000)
+        parts = textmod.chunk("Hi. " + "x" * 25_000)
         self.assertGreater(len(parts[0]), 10_000)
 
     def test_a_text_at_the_limit_is_one_chunk_and_one_over_is_two(self):  # R5
-        self.assertEqual(summarize.chunk("a" * 10, 10), ["a" * 10])
-        self.assertEqual(summarize.chunk("a" * 11, 10), ["a" * 10, "a"])
-        self.assertEqual(summarize.chunk("aaaa bbbb", 9), ["aaaa bbbb"])  # not cut at its space
-        self.assertEqual(summarize.LIMIT, LIMIT)
+        self.assertEqual(textmod.chunk("a" * 10, 10), ["a" * 10])
+        self.assertEqual(textmod.chunk("a" * 11, 10), ["a" * 10, "a"])
+        self.assertEqual(textmod.chunk("aaaa bbbb", 9), ["aaaa bbbb"])  # not cut at its space
+        self.assertEqual(textmod.LIMIT, LIMIT)
 
     def test_a_paragraph_break_beats_a_later_sentence_end(self):  # R5
-        self.assertEqual(summarize.chunk("aaaa bbbb cccc dddd.\n\neeee ffff. gggg", 34), ["aaaa bbbb cccc dddd.", "eeee ffff. gggg"])
+        self.assertEqual(textmod.chunk("aaaa bbbb cccc dddd.\n\neeee ffff. gggg", 34), ["aaaa bbbb cccc dddd.", "eeee ffff. gggg"])
 
     def test_a_sentence_end_beats_a_later_space_for_each_ender(self):  # R5
         for end in ".!?":
             with self.subTest(end=end):
-                self.assertEqual(summarize.chunk(f"aaaa bbbb cccc{end} dddd eeee ffff", 26),
+                self.assertEqual(textmod.chunk(f"aaaa bbbb cccc{end} dddd eeee ffff", 26),
                                  [f"aaaa bbbb cccc{end}", "dddd eeee ffff"])
 
     def test_a_space_beats_a_hard_cut_and_a_word_longer_than_the_limit_is_cut_hard(self):  # R5
-        self.assertEqual(summarize.chunk("aaaaaaaa bbbbbbbb cccc", 12), ["aaaaaaaa", "bbbbbbbb", "cccc"])
-        self.assertEqual(summarize.chunk("a" * 25, 10), ["a" * 10, "a" * 10, "a" * 5])
+        self.assertEqual(textmod.chunk("aaaaaaaa bbbbbbbb cccc", 12), ["aaaaaaaa", "bbbbbbbb", "cccc"])
+        self.assertEqual(textmod.chunk("a" * 25, 10), ["a" * 10, "a" * 10, "a" * 5])
 
     def test_65000_characters_make_four_chunks_of_at_most_20000_that_lose_no_word(self):  # R5
         text = "word " * 13000
-        parts = summarize.chunk(text.strip())
+        parts = textmod.chunk(text.strip())
         self.assertEqual(len(parts), 4)
         self.assertTrue(all(0 < len(p) <= LIMIT for p in parts))
         self.assertEqual(" ".join(parts).split(), text.split())
@@ -224,20 +230,20 @@ class Plan(unittest.TestCase):
             calls.append((instruction, part))
             return answer(len(calls), instruction, part)
 
-        result = summarize.summarize_text(text, style, ask, lambda done, total: ticks.append((done, total)))
+        result = rounds.summarize_text(text, style, ask, lambda done, total: ticks.append((done, total)))
         return result, calls, ticks
 
     def test_9000_characters_are_one_call_with_the_style_prompt(self):  # R5
         text = "word " * 1800
         (final, first), calls, ticks = self.run_plan(text, lambda n, i, t: " out ")
         self.assertEqual((final, first, ticks), ("out", 1, [(1, 1)]))
-        self.assertEqual(calls, [(summarize.INSTRUCTIONS["bullets"], text)])
+        self.assertEqual(calls, [(prompts.INSTRUCTIONS["bullets"], text)])
 
     def test_65000_characters_are_four_partials_then_one_final_call(self):  # R5 R8
         text = ("word " * 13000).strip()
         (final, first), calls, ticks = self.run_plan(text, lambda n, i, t: f"p{n}")
         self.assertEqual((final, first), ("p5", 4))
-        self.assertEqual([i for i, _ in calls], [summarize.PARTIAL] * 4 + [summarize.INSTRUCTIONS["bullets"]])
+        self.assertEqual([i for i, _ in calls], [prompts.PARTIAL] * 4 + [prompts.INSTRUCTIONS["bullets"]])
         self.assertEqual(calls[4][1], "p1\n\np2\n\np3\n\np4")
         self.assertEqual(ticks, [(1, 5), (2, 5), (3, 5), (4, 5), (5, 5)])
 
@@ -251,7 +257,7 @@ class Plan(unittest.TestCase):
         (final, first), calls, ticks = self.run_plan(text, answer)
         self.assertEqual(first, 4)
         self.assertEqual(len(calls), 4 + 4 + 1)  # 4 + 4 partials, then the final call
-        self.assertEqual(calls[-1][0], summarize.INSTRUCTIONS["bullets"])
+        self.assertEqual(calls[-1][0], prompts.INSTRUCTIONS["bullets"])
         self.assertEqual([t for _, t in ticks], [5] * 4 + [9] * 5)  # the second round adds its calls to the total
         self.assertEqual(ticks[-1], (9, 9))
 
@@ -265,9 +271,9 @@ class Plan(unittest.TestCase):
             self.assertLessEqual(len(calls), 12, "kept asking past the round limit")
             return long
 
-        with self.assertRaisesRegex(summarize.BadInput, "input too long to summarize"):
-            summarize.summarize_text(text, "brief", ask, lambda d, t: None)
-        self.assertEqual(calls, [summarize.PARTIAL] * 12)  # three rounds of four calls, no final call
+        with self.assertRaisesRegex(Failure, "input too long to summarize"):
+            rounds.summarize_text(text, "brief", ask, lambda d, t: None)
+        self.assertEqual(calls, [prompts.PARTIAL] * 12)  # three rounds of four calls, no final call
 
 
 class Base(unittest.TestCase):
@@ -319,7 +325,7 @@ class Base(unittest.TestCase):
         return p
 
     def inproc(self, url, inputs, env=None):
-        """Runs summarize.summarize in this process (for seams a subprocess cannot reach); returns (the result or the
+        """Runs the summarize command in this process (for seams a subprocess cannot reach); returns (the result or the
         exception it raised, the notifications)."""
         e = {k: v for k, v in os.environ.items() if not k.startswith("DOCK_SUMMARIZE")}
         e["DOCK_SUMMARIZE_URL"] = url
@@ -327,10 +333,11 @@ class Base(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.dict(os.environ, e, clear=True), contextlib.redirect_stdout(out):
             try:
-                result = summarize.summarize(inputs, str(self.inn), None, str(self.dir))
+                result = rpc.invoke({"command": "summarize", "inputs": inputs, "cwd": str(self.dir),
+                                     "in_dir": str(self.inn)})
             except BaseException as ex:
                 result = ex
-        summarize.cancelled.clear()
+        cancel.cancelled.clear()
         return result, [json.loads(x) for x in out.getvalue().splitlines() if x.startswith("{")]
 
     @staticmethod
@@ -395,7 +402,7 @@ class Manifest(unittest.TestCase):
             {"name": "style", "type": "string", "flag": "--style"},
             {"name": "output", "type": "string", "flag": "--output", "short": "-o"},
         ])
-        self.assertEqual((summarize.TIMEOUT, summarize.CONNECT_TIMEOUT), (600, 10))
+        self.assertEqual((client.TIMEOUT, client.CONNECT_TIMEOUT), (600, 10))
 
 
 class Requests(Base):
@@ -411,7 +418,7 @@ class Requests(Base):
         self.assertEqual((system["role"], user["role"]), ("system", "user"))
         nonce, document = split_user(user["content"])
         self.assertEqual(document, "Hello world, this is a talk.")
-        self.assertEqual(system["content"], summarize.SYSTEM_BASE.format(nonce=nonce) + summarize.INSTRUCTIONS["bullets"])
+        self.assertEqual(system["content"], prompts.SYSTEM_BASE.format(nonce=nonce) + prompts.INSTRUCTIONS["bullets"])
         target = self.dir / "talk.summary.md"
         self.assertEqual(target.read_bytes(), b"# Summary of talk.txt\n\nThe answer.\n")
         self.assertEqual(answer["result"], {"exit_code": 0, "outputs": {"file": str(target), "chunks": 1, "model": "m:1"}})
@@ -470,8 +477,8 @@ class Requests(Base):
         self.assertEqual(len(s.requests), 5)
         systems = [r["body"]["messages"][0]["content"] for r in s.requests]
         users = [split_user(r["body"]["messages"][1]["content"]) for r in s.requests]
-        self.assertEqual(systems[:4], [summarize.SYSTEM_BASE.format(nonce=users[i][0]) + summarize.PARTIAL for i in range(4)])
-        self.assertEqual(systems[4], summarize.SYSTEM_BASE.format(nonce=users[4][0]) + summarize.INSTRUCTIONS["bullets"])
+        self.assertEqual(systems[:4], [prompts.SYSTEM_BASE.format(nonce=users[i][0]) + prompts.PARTIAL for i in range(4)])
+        self.assertEqual(systems[4], prompts.SYSTEM_BASE.format(nonce=users[4][0]) + prompts.INSTRUCTIONS["bullets"])
         self.assertEqual(users[4][1], "part 1\n\npart 2\n\npart 3\n\npart 4")
         self.assertEqual(answer["result"]["outputs"]["chunks"], 4)
         self.assertEqual([n["params"]["percent"] for n in notes if n["method"] == "bar"], [0, 20, 40, 60, 80, 99, 100])
@@ -657,8 +664,8 @@ class Failures(Base):
             self.assertEqual(answer["result"]["exit_code"], 0)
 
     def test_a_host_name_the_resolver_cannot_encode_is_called_unreachable(self):  # R10
-        with self.assertRaisesRegex(summarize.BadInput, "cannot reach Ollama"):
-            summarize.post("http://" + "a" * 64 + ".example:11434", "m", "i", "t", summarize.Call())
+        with self.assertRaisesRegex(Failure, "cannot reach Ollama"):
+            client.post("http://" + "a" * 64 + ".example:11434", "m", "i", "t", cancel.Call())
 
     def test_a_server_that_hangs_up_is_not_called_unreachable(self):  # R10
         s, answer, notes = self.run_one(self.server([{"drop": True}]))
@@ -677,7 +684,7 @@ class Failures(Base):
     def test_a_server_that_never_answers_times_out_with_its_own_message(self):  # R10
         s = self.server([{"block": True}])
         started = time.monotonic()
-        with mock.patch.object(summarize, "TIMEOUT", 0.5):
+        with mock.patch.object(client, "TIMEOUT", 0.5):
             result, notes = self.inproc(s.url, {"file": self.doc()})
         self.assertLess(time.monotonic() - started, 5)  # the 10 s connect timeout must not apply to the answer
         self.assertEqual(result, {"exit_code": 1})
@@ -693,14 +700,14 @@ class Failures(Base):
 
     def test_a_file_that_appears_while_working_is_kept_and_nothing_else_is_left(self):  # R7
         s = self.server([{"json": chat("Done.")}])
-        real = summarize.Outputs.one
+        real = files.Outputs.one
         target = self.dir / "talk.summary.md"
 
         def meanwhile(outputs, path, text):
             target.write_text("theirs")
             real(outputs, path, text)
 
-        with mock.patch.object(summarize.Outputs, "one", meanwhile):
+        with mock.patch.object(files.Outputs, "one", meanwhile):
             result, notes = self.inproc(s.url, {"file": self.doc()})
         self.assertEqual(result, {"exit_code": 1})
         self.assertIn("already exists", self.said(notes))
@@ -741,17 +748,17 @@ class Cancel(Base):
         p.wait(timeout=10)
 
     def test_a_cancel_after_the_file_is_linked_removes_it_and_is_cancelled(self):  # R7 R9
-        real, seen = summarize.Outputs.publish, []
+        real, seen = files.Outputs.publish, []
 
         def publish_then_cancel(outputs, files, call):
             real(outputs, files, call)
             seen.append(self.files())
-            summarize.cancelled.set()
+            cancel.cancelled.set()
 
-        with mock.patch.object(summarize.Outputs, "publish", publish_then_cancel):
+        with mock.patch.object(files.Outputs, "publish", publish_then_cancel):
             result, _ = self.inproc(self.server().url, {"file": self.doc()})
         self.assertEqual(seen, [["talk.summary.md"]])
-        self.assertIsInstance(result, summarize.Cancelled)
+        self.assertIsInstance(result, cancel.Cancelled)
         self.assertEqual(self.files(), [])
 
     def test_a_cancel_while_connecting_closes_the_socket_and_answers_fast(self):  # R9
@@ -768,12 +775,12 @@ class Cancel(Base):
                 time.sleep(0.02)
             raise OSError("closed")
 
-        threading.Thread(target=lambda: entered.wait(30) and summarize.cancelled.set(), daemon=True).start()
+        threading.Thread(target=lambda: entered.wait(30) and cancel.cancelled.set(), daemon=True).start()
         started = time.monotonic()
         with mock.patch.object(socket.socket, "connect", hung_connect):
             result, _ = self.inproc("http://127.0.0.1:9", {"file": self.doc()})
         self.assertLess(time.monotonic() - started, 2)
-        self.assertIsInstance(result, summarize.Cancelled)
+        self.assertIsInstance(result, cancel.Cancelled)
         self.assertTrue(freed.wait(2), "the connecting socket was never closed")
         self.assertEqual(self.files(), [])
 

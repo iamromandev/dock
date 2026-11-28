@@ -67,4 +67,4 @@ Edit `packages/plugin-kit/dock_plugin/`, never a plugin's copy. Then `make plugi
 
 ## Not yet on the kit
 
-transcribe is on the kit. These plugins still carry their own copy of the plumbing and have no `dock_plugin/`: summarize, extract, narrate, story, image, brain, dm. They move over one at a time.
+transcribe and summarize are on the kit. These plugins still carry their own copy of the plumbing and have no `dock_plugin/`: extract, narrate, story, image, brain, dm. They move over one at a time.

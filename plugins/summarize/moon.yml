@@ -4,7 +4,7 @@ layer: "application"
 tags: ["plugin"]
 
 fileGroups:
-  sources: ["main.py", "plugin.toml", "Dockerfile"]
+  sources: ["main.py", "plugin.toml", "Dockerfile", "summarizecore/**/*", "dock_plugin/**/*"]
   configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
 
 tasks:

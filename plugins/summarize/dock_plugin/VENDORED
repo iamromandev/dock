@@ -1,0 +1,2 @@
+This folder is a copy of packages/plugin-kit/dock_plugin. Do not edit it here:
+edit the kit and run `make plugin-kit-sync`.

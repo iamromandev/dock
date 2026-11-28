@@ -1,3 +1,4 @@
 # Plugin folders (under plugins/) that carry a vendored copy of dock_plugin, one per line.
 # `make plugin-kit-sync` mirrors the kit into each; `make plugin-kit-check` fails when a copy drifts.
 transcribe
+summarize
