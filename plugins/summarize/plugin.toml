@@ -1,0 +1,21 @@
+id = "dev.dock.summarize"
+version = "0.1.0"
+api_version = "2"
+description = "Summarize a text, Markdown or subtitle file with a local Ollama model"
+
+[run]
+container = { cmd = "python3", args = ["/plugin/main.py"] }
+
+[capabilities]
+permissions = ["network", "fs:read:in", "fs:write:cwd"]
+env = ["DOCK_SUMMARIZE_URL", "DOCK_SUMMARIZE_MODEL", "DOCK_SUMMARIZE_MAX_BYTES"]
+
+[[commands]]
+name = "summarize"
+summary = "Summarize a .txt, .md, .srt or .vtt file (Markdown file in the current folder): summarize <file> [--style brief|bullets|notes] [-o name.md]"
+keywords = ["summarize", "summary", "notes", "tldr", "key points", "minutes"]
+inputs = [
+  { name = "file", type = "string", required = true },
+  { name = "style", type = "string", flag = "--style" },
+  { name = "output", type = "string", flag = "--output", short = "-o" },
+]

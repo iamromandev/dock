@@ -15,7 +15,8 @@ UV := uv
 	story-install story-check story-check-ci story-test story-clean \
 	narrate-install narrate-check narrate-check-ci narrate-test narrate-clean \
 	extract-install extract-check extract-check-ci extract-test extract-clean \
-	transcribe-install transcribe-check transcribe-check-ci transcribe-test transcribe-clean transcribe-server
+	transcribe-install transcribe-check transcribe-check-ci transcribe-test transcribe-clean transcribe-server \
+	summarize-install summarize-check summarize-check-ci summarize-test summarize-clean
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -24,7 +25,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install extract:install transcribe:install
+	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install extract:install transcribe:install summarize:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -177,6 +178,22 @@ transcribe-clean: # Remove the transcribe plugin's Python caches
 
 transcribe-server: # Start the host-side Whisper server the transcribe plugin calls (Apple Silicon only; Ctrl-C stops it)
 	$(UV) run --project plugins/transcribe/server python plugins/transcribe/server/serve.py
+
+## summarize - delegates to plugins/summarize/moon.yml
+summarize-install: # Install the summarize plugin's dev tools
+	$(MOON) run summarize:install
+
+summarize-check: # Lint + typecheck the summarize plugin (fixes what ruff can)
+	$(MOON) run summarize:check
+
+summarize-check-ci: # Lint + typecheck the summarize plugin without fixing anything. For CI.
+	$(MOON) run summarize:check-ci
+
+summarize-test: # Run the summarize plugin's tests (a local stand-in Ollama server; no Docker or GPU needed)
+	$(MOON) run summarize:test
+
+summarize-clean: # Remove the summarize plugin's Python caches
+	$(MOON) run summarize:clean
 
 # help
 help:

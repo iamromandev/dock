@@ -1,0 +1,35 @@
+id: "summarize"
+language: "python"
+layer: "application"
+tags: ["plugin"]
+
+fileGroups:
+  sources: ["main.py", "plugin.toml", "Dockerfile"]
+  configs: ["pyproject.toml", "uv.lock", "ruff.toml"]
+
+tasks:
+  # python tools (uv)
+  install:
+    command: "uv sync"
+    preset: "utility"
+  check:
+    # Fixes what ruff can, so it edits sources and is never cached.
+    script: "uv run ruff check --fix && uv run ty check"
+    deps: ["install"]
+    options:
+      cache: false
+  check-ci:
+    # Same checks without fixing anything. For CI.
+    script: "uv run ruff check && uv run ty check"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+  test:
+    # The Ollama server is a local stand-in HTTP server: no container runtime or GPU needed.
+    command: "uv run pytest"
+    deps: ["install"]
+    inputs: ["@group(sources)", "@group(configs)", "tests/**/*"]
+
+  # cleanup
+  clean:
+    script: "find . -name __pycache__ -type d -prune -exec rm -r {} + && rm -rf .pytest_cache .ruff_cache"
+    preset: "utility"
