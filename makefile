@@ -13,7 +13,8 @@ UV := uv
 	brain-install brain-check brain-check-ci brain-test brain-clean \
 	image-install image-check image-check-ci image-test image-clean \
 	story-install story-check story-check-ci story-test story-clean \
-	narrate-install narrate-check narrate-check-ci narrate-test narrate-clean
+	narrate-install narrate-check narrate-check-ci narrate-test narrate-clean \
+	extract-install extract-check extract-check-ci extract-test extract-clean
 
 ## repo setup
 install-hooks: # Install pre-commit (as a uv tool) and its git hook for this repo. Run once per clone
@@ -22,7 +23,7 @@ install-hooks: # Install pre-commit (as a uv tool) and its git hook for this rep
 
 ## all projects - runs the task in every project that defines it
 install: # Install every project's dependencies
-	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install
+	$(MOON) run cli:sync dm:install brain:install image:install story:install narrate:install extract:install
 
 check: # Lint (with fixes) and type-check every project
 	$(MOON) run :check
@@ -140,6 +141,22 @@ narrate-test: # Run the narrate plugin's tests (a local stand-in Kokoro server; 
 
 narrate-clean: # Remove the narrate plugin's Python caches
 	$(MOON) run narrate:clean
+
+## extract - delegates to plugins/extract/moon.yml
+extract-install: # Install the extract plugin's dev tools
+	$(MOON) run extract:install
+
+extract-check: # Lint + typecheck the extract plugin (fixes what ruff can)
+	$(MOON) run extract:check
+
+extract-check-ci: # Lint + typecheck the extract plugin without fixing anything. For CI.
+	$(MOON) run extract:check-ci
+
+extract-test: # Run the extract plugin's tests (they drive main.py over stdio; no Docker needed)
+	$(MOON) run extract:test
+
+extract-clean: # Remove the extract plugin's Python caches
+	$(MOON) run extract:clean
 
 # help
 help:

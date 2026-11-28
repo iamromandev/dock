@@ -14,7 +14,7 @@ DIRS = sorted(p.parent for p in PLUGINS.glob("*/plugin.toml"))
 
 def test_expected_plugins_are_discovered():
     # Bug caught: a wrong PLUGINS path makes the glob empty, so the parametrized lifecycle test silently runs nothing.
-    assert {"brain", "dm", "image", "narrate", "story"} <= {p.name for p in DIRS}
+    assert {"brain", "dm", "extract", "image", "narrate", "story"} <= {p.name for p in DIRS}
 
 
 @pytest.mark.parametrize("plugin_dir", DIRS, ids=lambda p: p.name)
